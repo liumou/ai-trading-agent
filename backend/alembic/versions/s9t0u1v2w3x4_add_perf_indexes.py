@@ -58,11 +58,11 @@ _INDEXES = [
     ),
     (
         "ix_audit_logs_created_at",
-        "CREATE INDEX IF NOT EXISTS ix_audit_logs_created_at ON audit_logs (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_audit_logs_created_at ON audit_log (created_at)",
     ),
     (
         "ix_audit_logs_action_created",
-        "CREATE INDEX IF NOT EXISTS ix_audit_logs_action_created ON audit_logs (action, created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_audit_logs_action_created ON audit_log (action, created_at)",
     ),
     (
         "ix_ohlcv_data_symbol_tf_time",

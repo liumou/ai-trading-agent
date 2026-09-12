@@ -34,14 +34,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 _JSONB_TARGETS = [
-    ("audit_logs", "detail"),
+    ("audit_log", "detail"),
     ("trades", "pre_trade_snapshot"),
     ("trades", "post_trade_analysis"),
     ("runners", "tags"),
     ("runners", "resource_limits"),
     ("runner_jobs", "input"),
     ("runner_jobs", "output"),
-    ("agent_memory", "evidence"),
+    ("agent_memories", "evidence"),
     ("ai_usage_logs", "raw_usage"),
 ]
 
