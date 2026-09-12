@@ -179,6 +179,20 @@ async def get_all_prompts() -> list[dict]:
     _load_defaults()
     result = []
 
+    # 每 agent 实际模型名（与运行时一致：orchestrator→model_orchestrator，其余→model_specialist）
+    try:
+        from app.config import settings
+
+        orch_model = settings.model_orchestrator or "claude-sonnet-4-20250514"
+        spec_model = settings.model_specialist or "claude-haiku-4-5-20251001"
+    except Exception:
+        orch_model = "claude-sonnet-4-20250514"
+        spec_model = "claude-haiku-4-5-20251001"
+    agent_model = {
+        "orchestrator": orch_model,
+        "single_agent": orch_model,
+    }
+
     for agent_id, meta in AGENT_META.items():
         default = _DEFAULTS.get(agent_id, "")
         active = default
@@ -197,7 +211,7 @@ async def get_all_prompts() -> list[dict]:
             {
                 "id": agent_id,
                 "name": meta["name"],
-                "model": meta["model"],
+                "model": agent_model.get(agent_id, spec_model),
                 "description": meta["description"],
                 "default_prompt": default,
                 "active_prompt": active,

@@ -261,17 +261,42 @@ async def get_integration_config(db: AsyncSession = Depends(get_db)):
     telegram_token = await _get_config_value(db, "TELEGRAM_BOT_TOKEN", getattr(settings, "telegram_bot_token", ""))
     telegram_chat = await _get_config_value(db, "TELEGRAM_CHAT_ID", getattr(settings, "telegram_chat_id", ""))
 
+    # 根据当前 LLM provider 决定该集成项的展示名称与描述（不泄露 api_key）
+    provider_label = (
+        "Claude AI (Max Subscription)"
+        if settings.llm_provider == "claude"
+        else f"LLM Provider ({settings.llm_provider})"
+    )
+
     return {
         "integrations": [
             {
                 "id": "anthropic",
-                "name": "Claude AI (Max Subscription)",
-                "description": "Claude AI for market analysis and autonomous trading decisions",
-                "status": "configured" if claude_token else "not_configured",
+                "name": provider_label,
+                "description": (
+                    "Claude AI for market analysis and autonomous trading decisions"
+                    if settings.llm_provider == "claude"
+                    else f"LLM provider ({settings.llm_provider}) for market analysis and autonomous trading decisions"
+                ),
+                "status": (
+                    ("configured" if claude_token else "not_configured")
+                    if settings.llm_provider == "claude"
+                    else ("configured" if settings.llm_base_url else "not_configured")
+                ),
                 "config": {
                     "Auth": "Max Subscription (OAuth)" if claude_token else "Not configured",
-                    "Orchestrator Model": "claude-sonnet-4-20250514",
-                    "Specialist Model": "claude-haiku-4-5-20251001",
+                    "Orchestrator Model": settings.model_orchestrator,
+                    "Specialist Model": settings.model_specialist,
+                    "Provider": settings.llm_provider,
+                    # 仅在 openai_compat 模式下展示 base_url 与脱敏后的 api_key，绝不泄露明文
+                    **(
+                        {
+                            "Base URL": settings.llm_base_url,
+                            "API Key": _mask(settings.llm_api_key),
+                        }
+                        if settings.llm_provider == "openai_compat"
+                        else {}
+                    ),
                 },
                 "tools": [
                     {
@@ -427,6 +452,18 @@ async def diagnose_claude_cli():
                 }
             )
 
+    # 5b. LLM provider 配置状态（不含 api_key 明文）
+    result["checks"].append(
+        {
+            "name": "llm_provider",
+            "ok": True,
+            "detail": (
+                f"{settings.llm_provider}"
+                + (f" base_url={settings.llm_base_url}" if settings.llm_provider == "openai_compat" else "")
+            ),
+        }
+    )
+
     # 6. Try a minimal SDK query
     stderr_out: list[str] = []
     text_out: list[str] = []
@@ -438,6 +475,8 @@ async def diagnose_claude_cli():
             prompt="Reply with exactly: OK",
             options=ClaudeAgentOptions(
                 max_turns=1,
+                # Claude CLI 诊断与 LLM provider 配置解耦：固定 Claude 字面量，
+                # 避免 openai_compat 模式下的模型名（如 gpt-4o）打进 Claude SDK 误报
                 model="claude-haiku-4-5-20251001",
                 permission_mode="bypassPermissions",
                 stderr=lambda line: stderr_out.append(line),

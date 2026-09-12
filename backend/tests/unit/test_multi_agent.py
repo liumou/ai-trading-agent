@@ -43,13 +43,75 @@ class TestToolSubsets:
 
         assert "place_order" in ORCHESTRATOR_TOOL_NAMES
 
+    @pytest.mark.asyncio
+    async def test_agent_tool_names_never_drift_from_registered_tools(self):
+        """AC-12 不变式：所有 agent 的 TOOL_NAMES 必须 ⊆ 真实 list_tools() 名称集。
+
+        防止「agent 引用未注册工具」漂移再次发生（reflector 的 memory 三工具
+        历史上就漏注册过）。新增 agent/工具时此测试自动守护。
+        """
+        from mcp_server.agents.fundamental_analyst import TOOL_NAMES as fund
+        from mcp_server.agents.orchestrator import ORCHESTRATOR_TOOL_NAMES as orch
+        from mcp_server.agents.reflector import TOOL_NAMES as reflector
+        from mcp_server.agents.risk_analyst import TOOL_NAMES as risk_t
+        from mcp_server.agents.technical_analyst import TOOL_NAMES as tech
+        from mcp_server.server import get_server
+
+        registered = {t.name for t in await get_server().list_tools()}
+        all_agent_tools = set(tech) | set(fund) | set(risk_t) | set(reflector) | set(orch)
+        missing = all_agent_tools - registered
+        assert not missing, f"agent TOOL_NAMES 引用了未注册工具: {missing}"
+        # 交易执行工具必须在册（orchestrator 白名单的前提）
+        assert {"place_order", "modify_position", "close_position"} <= registered
+
 
 class TestModelSelection:
-    def test_specialist_uses_haiku(self):
-        assert "haiku" in MODEL_SPECIALIST.lower()
+    def test_specialist_matches_settings_default(self):
+        """MODEL_SPECIALIST 常量应等于 settings.model_specialist 的默认值（而非裸模型名断言）。"""
+        from app.config import settings
 
-    def test_orchestrator_uses_sonnet(self):
-        assert "sonnet" in MODEL_ORCHESTRATOR.lower()
+        assert MODEL_SPECIALIST == (settings.model_specialist or MODEL_SPECIALIST)
+
+    def test_orchestrator_matches_settings_default(self):
+        from app.config import settings
+
+        assert MODEL_ORCHESTRATOR == (settings.model_orchestrator or MODEL_ORCHESTRATOR)
+
+    @pytest.mark.asyncio
+    async def test_run_agent_loop_resolves_model_from_settings(self):
+        """model 参数缺省时按 agent_id 解析到 settings 的 per-agent 模型。"""
+        from unittest.mock import AsyncMock, patch
+
+        from mcp_server.agents.base import run_agent_loop
+
+        with patch("mcp_server.agents.base.sdk_agent_loop", AsyncMock(return_value={})) as mock_loop:
+            # model=None（默认）→ 解析到 settings.model_specialist（非 orchestrator agent）
+            await run_agent_loop(system_prompt="s", user_message="u", agent_id="technical_analyst")
+        # sdk_agent_loop 收到的 model 应等于默认 specialist 模型
+        assert mock_loop.call_args.kwargs["model"] == "claude-haiku-4-5-20251001"
+
+    @pytest.mark.asyncio
+    async def test_single_agent_uses_orchestrator_grade_model(self):
+        """零回归（H1）：single_agent 模式默认模型必须与旧行为一致 = orchestrator 档
+        （settings.model_orchestrator），而非被静默降级为 specialist 档。"""
+        from unittest.mock import AsyncMock, patch
+
+        from mcp_server.agents.base import run_agent_loop
+
+        with patch("mcp_server.agents.base.sdk_agent_loop", AsyncMock(return_value={})) as mock_loop:
+            await run_agent_loop(system_prompt="s", user_message="u", agent_id="single_agent")
+        assert mock_loop.call_args.kwargs["model"] == "claude-sonnet-4-20250514"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_uses_orchestrator_grade_model(self):
+        """multi-agent 的 orchestrator 同样解析到 orchestrator 档模型。"""
+        from unittest.mock import AsyncMock, patch
+
+        from mcp_server.agents.base import run_agent_loop
+
+        with patch("mcp_server.agents.base.sdk_agent_loop", AsyncMock(return_value={})) as mock_loop:
+            await run_agent_loop(system_prompt="s", user_message="u", agent_id="orchestrator")
+        assert mock_loop.call_args.kwargs["model"] == "claude-sonnet-4-20250514"
 
 
 class TestBaseAgentLoop:

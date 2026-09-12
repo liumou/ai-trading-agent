@@ -1,18 +1,39 @@
 """
-AI Client — wrapper for Claude Agent SDK (Max subscription).
-AI is an optional layer — all calls return None on failure.
+AI Client — 包装 LLM Provider（默认 Claude Agent SDK Max 订阅）。
+AI 是可选层 — 所有调用失败返回 None。
 """
-
-import json
-import re
 
 from loguru import logger
 
+from app.ai.provider import get_provider
+from app.config import settings
+
+# 默认模型名（仅当 settings 未配置时作 fallback；实际模型调用时解析）
 MODEL = "claude-haiku-4-5-20251001"
+
+# Provider 懒加载单例（首次调用时按 settings 初始化）
+_provider = None
+
+
+def _resolve_model() -> str:
+    """调用时解析实际模型：settings.llm_model > 默认常量。"""
+    return settings.llm_model or MODEL
 
 
 class AIClient:
-    """AI client using Claude Agent SDK. No API key needed — uses Max subscription."""
+    """AI client using a pluggable LLM Provider. No API key needed — Max subscription by default."""
+
+    def __init__(self, provider=None):
+        # 允许测试注入 mock provider；未注入时首次调用懒加载
+        global _provider
+        self._provider = provider or _provider
+
+    def _get_provider(self):
+        if self._provider is None:
+            global _provider
+            _provider = get_provider()
+            self._provider = _provider
+        return self._provider
 
     async def complete_async(
         self,
@@ -22,9 +43,15 @@ class AIClient:
         agent_id: str = "sentiment",
     ) -> str | None:
         try:
-            from mcp_server.sdk_client import sdk_complete
-
-            return await sdk_complete(user_prompt, system_prompt, model=MODEL, agent_id=agent_id)
+            provider = self._get_provider()
+            return await provider.complete(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=_resolve_model(),
+                max_tokens=max_tokens,
+                agent_id=agent_id,
+                temperature=settings.llm_temperature,
+            )
         except Exception as e:
             logger.error(f"AI call failed: {e}")
             return None
@@ -36,14 +63,16 @@ class AIClient:
         max_tokens: int = 256,
         agent_id: str = "sentiment",
     ) -> dict | None:
-        text = await self.complete_async(system_prompt, user_prompt, max_tokens, agent_id=agent_id)
-        if text is None:
-            return None
         try:
-            cleaned = text.strip()
-            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-            cleaned = re.sub(r"\s*```$", "", cleaned)
-            return json.loads(cleaned)
-        except json.JSONDecodeError as e:
-            logger.error(f"AI JSON parse failed: {e}\nRaw: {text[:200]}")
+            provider = self._get_provider()
+            return await provider.complete_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=_resolve_model(),
+                max_tokens=max_tokens,
+                agent_id=agent_id,
+                temperature=settings.llm_temperature,
+            )
+        except Exception as e:
+            logger.error(f"AI JSON call failed: {e}")
             return None

@@ -167,6 +167,9 @@ class TestStart:
         call_args = mock_backend.start.call_args
         secrets = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("secrets", {})
         assert "CLAUDE_TOKEN" in secrets
+        # §2.5 方案 a：LLM 配置必须定向注入子进程 env（否则 openai_compat 在生产 runner 静默失效）
+        assert "LLM_PROVIDER" in secrets
+        assert "MODEL_SPECIALIST" in secrets
 
 
 class TestStop:

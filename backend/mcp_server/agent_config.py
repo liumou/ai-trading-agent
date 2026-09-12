@@ -7,7 +7,7 @@ Tools are served via MCP server (server.py), dispatched by Claude Agent SDK.
 import json
 from pathlib import Path
 
-from mcp_server.agents.base import MODEL_ORCHESTRATOR, run_agent_loop
+from mcp_server.agents.base import run_agent_loop
 from mcp_server.guardrails import AGENT_TIMEOUT, MAX_AGENT_TURNS
 
 # ─── System Prompt ───────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ def _load_system_prompt() -> str:
 async def run_agent(
     job_type: str,
     job_input: dict | None,
-    model: str = MODEL_ORCHESTRATOR,
+    model: str | None = None,
 ) -> dict:
     """Run single-agent loop."""
     from mcp_server.agents.prompt_registry import get_active_prompt

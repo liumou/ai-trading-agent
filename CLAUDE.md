@@ -1,3 +1,18 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Language Rule (强制)
+
+**中文是唯一工作语言** — 所有以下内容必须使用中文：
+- **代码注释**：任何新增/修改代码的注释必须用中文撰写
+- **对话**：与用户的交流必须使用中文
+- **思考过程**：内部推理、分析、计划必须使用中文
+
+代码标识符、变量名、函数名、类型名、字符串字面量、日志消息中的英文专有名词（如 API 端点名、品牌名、错误码）除外。提交信息（git commit）保持英文（见 Git Workflow）。
+
+---
+
 # AI Trading Agent — Claude Code Guide
 
 ## Project Overview
@@ -23,7 +38,7 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `bot/engine.py` — main trading engine (refactored: process_candle → sub-methods)
   - `bot/scheduler.py` — APScheduler jobs (candle, sentiment, sync, health, retrain)
   - `bot/health_monitor.py` — MT5 Bridge heartbeat + auto-pause/resume
-  - `strategy/` — 5 strategies + ensemble + MTF filter + regime detection
+  - `strategy/` — 11 strategies (EMA, RSI, Breakout, Mean Reversion, ML, DCA, Grid, MomentumRank, PairSpread, RiskParity, Ensemble) + MTF filter + regime detection
   - `risk/` — risk manager, circuit breaker, correlation filter
   - `ml/` — LightGBM trainer, features (40+), predictor, drift detection, sentiment features
   - `backtest/` — engine, optimizer, walk_forward, monte_carlo, overfitting (composite score)
@@ -32,7 +47,7 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `notifications/` — Telegram alerts
   - `memory/` — session memory service + consolidator
   - `ai/` — Claude AI client (SDK first, Anthropic API fallback), context builder, prompts, strategy optimizer
-  - `api/routes/` — 83 REST endpoints across 20 route files
+  - `api/routes/` — 114 REST endpoints across 26 route files
   - `auth.py` — legacy JWT password auth (active)
   - `auth_webauthn.py` — Passkey (WebAuthn) auth (code exists, disabled)
   - `middleware/auth.py` — global JWT cookie auth middleware (backward compat)
@@ -44,7 +59,7 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
     - `job_queue.py` — Redis-backed job queue with DB persistence
     - `heartbeat.py` — RunnerHeartbeatMonitor (APScheduler integration)
     - `agent_entrypoint.py` — asyncio job loop, Redis BRPOP, health check, heartbeat
-  - `api/routes/runners.py` — Runner CRUD + lifecycle + observability (13 endpoints)
+  - `api/routes/runners.py` — Runner CRUD + lifecycle + observability (12 endpoints)
   - `api/routes/jobs.py` — Job CRUD + cancel + retry (5 endpoints)
   - `api/routes/activity.py` — AI activity log
   - `api/routes/agent_prompts.py` — agent prompt CRUD
@@ -66,7 +81,7 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `sdk_client.py` — Claude Code SDK client
   - `server.py` — MCP server entry
   - `agent_config.py` — agent entry point
-- `frontend/` — Next.js App Router (12 pages)
+- `frontend/` — Next.js App Router (18 pages: dashboard, backtest, history, insights, ai-usage, ml, macro, quant, activity, agent-prompts, integration, notifications, settings, db-health, symbols, login, setup, root)
   - `app/dashboard/` — main trading dashboard
   - `app/backtest/` — backtest, optimizer, walk-forward analysis
   - `app/history/` — trade history/journal
@@ -79,28 +94,33 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `app/notifications/` — event history
   - `app/login/` — passkey login (WebAuthn via @simplewebauthn/browser)
   - `app/setup/` — first-time passkey registration wizard
+  - `app/settings/` — per-symbol risk + AI filter + paper trade switch
+  - `app/quant/` — quantitative risk analysis (VaR, correlation, volatility)
+  - `app/ai-usage/` — per-agent token + cost monitoring
   - `components/layout/` — AppShell (auth guard + sidebar), Sidebar, PageHeader, PageInstructions
-  - `components/ui/` — 21 UI primitives (badge, button, card, dialog, etc.)
+  - `components/ui/` — 33 UI primitives (badge, button, card, dialog, data-table, gold-gauge, etc.)
   - `components/ai/` — NewsCard, OptimizationReport, SentimentBadge
   - `components/chart/` — PriceChart (lightweight-charts)
   - `lib/api.ts` — axios client with auth interceptor
   - `lib/websocket.ts` — WS client with token auth
-- `mt5_bridge/` — FastAPI on Windows VPS (MetaTrader5 SDK)
+- `mt5_bridge/` — FastAPI on Windows VPS (MetaTrader5 SDK); `main.py` + `watchdog.py` (auto-restart) + `requirements.txt`
 - `scripts/backup_db.sh` — daily pg_dump
-- `backend/tests/` — 444 tests across 27 test files (unit + integration)
-- `Dockerfile.trading-agent` — Python 3.11-slim agent image
+- `backend/tests/` — 496 tests across 27 test files (unit + integration)
+- `Dockerfile.trading-agent` — Python 3.11-slim agent image (for sandboxed agents)
+- `backend/Dockerfile` — Python 3.12-slim **main app image** (Railway deploy target; CMD runs `alembic upgrade head` then uvicorn)
+- `docs/` — `LONG-TERM-DB-SCALING.md` + logo/screenshots
 
 ## Tech Stack
 
 | Layer | Tech |
 |-------|------|
-| Backend | FastAPI 0.115, SQLAlchemy 2.0 (async), asyncpg, Redis, APScheduler |
+| Backend | FastAPI 0.115, SQLAlchemy 2.0 (async), asyncpg, Redis, APScheduler, Python 3.12 (backend/Dockerfile) |
 | Frontend | Next.js 16, React 19, Tailwind 4, Zustand, lightweight-charts, recharts |
 | ML | LightGBM, scikit-learn, pandas |
 | AI | Claude Code SDK (Max subscription) + Anthropic SDK fallback |
 | Auth | JWT Bearer token (username/password) — WebAuthn code exists but disabled |
 | CI/CD | GitHub Actions (ruff, pytest, tsc, build), Railway auto-deploy |
-| DB | PostgreSQL 15, Redis 7 (AOF persistence), 14 Alembic migrations |
+| DB | PostgreSQL 15, Redis 7 (AOF persistence), 22 Alembic migrations |
 | Notifications | Telegram bot alerts |
 
 ## AI Agent Architecture (Phases 0-F — all code complete)
@@ -122,12 +142,12 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
 - RunnerManager: lifecycle, secrets injection from Vault, observability
 - Job Queue: Redis-backed with DB persistence, rebuild on restart
 - Heartbeat Monitor: APScheduler job, 3-miss auto-restart
-- Runner API (13 endpoints) + Job API (5 endpoints) + WebSocket live logs
+- Runner API (12 endpoints) + Job API (5 endpoints) + WebSocket live logs
 - Agent entrypoint: asyncio job loop, Redis BRPOP, health check on :8090
 
 ### Phase C — Claude Agent Core (code complete)
 - Claude Code SDK: `claude-code-sdk` (Max subscription, no API key needed)
-- MCP Tools (12 modules): broker, market_data, indicators, risk, portfolio, sentiment, history, journal, learning, session, strategy_gen, memory
+- MCP Tools (15 modules): broker, market_data, indicators, risk, portfolio, quant, sentiment, history, journal, learning, session, strategy_gen, strategy_switch, memory, overfitting
 - Guardrails: non-bypassable limits at broker tool level
 - `backend/app/ai/client.py`: `complete_async()` tries SDK first, falls back to Anthropic API
 
@@ -152,11 +172,13 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
 ## Development Commands
 
 ```bash
-# Backend
+# Backend (Python 3.12 venv)
 cd backend
-.venv/Scripts/python.exe -m pytest tests/ -v --no-cov    # run tests (403 tests)
-.venv/Scripts/python.exe -m ruff check .                   # lint
-.venv/Scripts/python.exe -m ruff format .                  # format
+.venv/bin/python -m pytest tests/ -v --no-cov      # 全部测试（496 tests）；pyproject 默认 addopts 含 --cov，用 --no-cov 跳过覆盖统计加快速度
+.venv/bin/python -m pytest tests/unit/test_risk_manager.py -v --no-cov  # 单个测试文件
+.venv/bin/python -m pytest tests/unit/test_risk_manager.py -k "lot_size" -v --no-cov  # 单个用例
+.venv/bin/python -m ruff check .                   # lint（pyproject.toml: line-length 120, E/F/I/UP/B）
+.venv/bin/python -m ruff format .                  # format
 
 # Frontend
 cd frontend
@@ -178,7 +200,7 @@ railway vars set -s backend "KEY=value"  # set env var
 - **Lot sizing**: `RiskManager.calculate_lot_size(balance, sl_distance, ...)` and `calculate_kelly_size(...)` take a **price-unit distance** (NOT pips). Formula uses `contract_size` directly — passing the wrong unit silently mis-sizes trades. Originally used `pip_value × 100`, only correct for GOLD; broken for OIL / BTC / USDJPY (10×–100× off).
 - **SYMBOL_PROFILES**: Per-symbol config in config.py (timeframe, pip_value, SL/TP mults, ML defaults). Use `AssetClass` enum (in `app.market.sessions`) instead of raw strings when comparing or constructing.
 - **Constants**: All magic numbers in `constants.py` — never hardcode
-- **Tests**: 454+ tests across 27 files. SQLite in-memory for DB, fakeredis, mock MT5 connector. Auth disabled via `os.environ["AUTH_PASSWORD_HASH"] = ""` in conftest.py. SDK mocks use `type` attribute instead of `isinstance`. mcp-dependent tests need `claude-agent-sdk` package.
+- **Tests**: 496 tests across 27 files. SQLite in-memory for DB, fakeredis, mock MT5 connector. Auth disabled via `os.environ["AUTH_PASSWORD_HASH"] = ""` in conftest.py. SDK mocks use `type` attribute instead of `isinstance`. mcp-dependent tests need `claude-agent-sdk` package.
 - **Runner**: `RunnerManager` init in `main.py` lifespan. Uses `ProcessRunnerBackend` by default (Railway-compatible). Heartbeat monitor runs as APScheduler job. Job queue uses dual Redis+DB storage. Runner logs streamed via Redis pub/sub to WebSocket.
 - **DB pool**: Default `db_pool_size=8`, `max_overflow=12` (Railway Hobby plan caps connections at 25). Bump in env on Pro plans.
 - **Daily reset**: Per-asset-class hour from `app.market.sessions._RULES` — forex/metal/energy reset at 22 UTC, index 22, stock 21, crypto 0. Scheduler registers one cron job per unique reset hour across active engines.
@@ -193,8 +215,8 @@ railway vars set -s backend "KEY=value"  # set env var
 - DB datetime columns: must use `datetime.utcnow()` (naive), NOT `datetime.now(timezone.utc)` (offset-aware) — asyncpg rejects offset-aware for `TIMESTAMP WITHOUT TIME ZONE`
 - Claude Code SDK: `rate_limit_event` parse error on heavy usage — handled gracefully in `base.py`
 - WebAuthn passkey auth: disabled due to cross-origin cookie issues on Railway (`.up.railway.app` is public suffix)
-- Deploy: Railway uses Dockerfile CMD, NOT Procfile — always edit `backend/Dockerfile` line 33 for startup changes
-- Deploy: Alembic migration can hang on table lock during zero-downtime deploy (old instance holds locks) — mitigated with `timeout 30` in CMD + `lock_timeout = 5s` in alembic/env.py and lifespan
+- Deploy: Railway uses Dockerfile CMD, NOT Procfile — always edit `backend/Dockerfile` (Python 3.12, Node.js 22 installed for claude-agent-sdk CLI) CMD for startup changes
+- Deploy: Alembic migration can hang on table lock during zero-downtime deploy (old instance holds locks) — mitigated with `timeout 120` in backend/Dockerfile CMD + `lock_timeout = 5s` in alembic/env.py and lifespan
 - Alembic: Never reuse revision IDs — each migration file must have a unique revision and correct down_revision chain
 - Alembic: `s9t0u1v2w3x4` adds performance indexes (idempotent, fast). `t0u1v2w3x4y5` converts `JSON` columns to `JSONB` — runs `ALTER TYPE jsonb USING col::jsonb` per column, takes ACCESS EXCLUSIVE lock, **maintenance window required** for large tables.
 - Backups: APScheduler runs `scripts/backup_db.sh` daily at 02:30 UTC when `ENABLE_DB_BACKUPS=1` is set. No-op otherwise so dev environments stay clean.
@@ -208,3 +230,4 @@ railway vars set -s backend "KEY=value"  # set env var
 - **ตรวจละเอียด**: After every edit, grep to verify ALL occurrences were updated. Don't trust replace_all blindly.
 - **Check both frontend AND backend** when a feature spans both sides.
 - **ภาษา**: User communicates in Thai, code/commits in English.
+- **中文规则**: 代码注释、对话、思考过程必须使用中文（见本文件顶部 Language Rule）。与用户交流时，优先使用中文，若用户用泰语则跟随泰语。

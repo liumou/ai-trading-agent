@@ -1,3 +1,6 @@
+import json
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 # Per-symbol trading profiles
@@ -183,6 +186,32 @@ class Settings(BaseSettings):
     # Actual API client is built around the SDK's OAuth flow.
     anthropic_api_key: str = ""
 
+    # ─── LLM Provider (multi-model support) ────────────────────────────────
+    # Default "claude" keeps the existing Claude Agent SDK path unchanged.
+    # Set "openai_compat" to route both simple completions and the agent tool
+    # loop through any OpenAI-compatible endpoint (OpenAI / DeepSeek /
+    # OpenRouter / Ollama / vLLM). See app/ai/provider.py.
+    llm_provider: str = "claude"  # claude | openai_compat
+    llm_base_url: str = ""  # e.g. https://api.deepseek.com/v1 ; Ollama: http://localhost:11434/v1
+    llm_api_key: str = ""  # may be empty for local servers (Ollama/vLLM); never sent to the frontend
+    llm_model: str = ""  # global fallback model name; empty = per-agent defaults below
+    llm_temperature: float = 0.2  # low by default — trading decisions favour determinism
+    llm_timeout: int = 120  # per-request timeout (seconds)
+    llm_fallback_to_claude: bool = False  # explicit opt-in; default fail-closed (no silent switch)
+    llm_allow_live: bool = False  # opt-in to let non-Claude agents execute beyond shadow/paper
+    llm_max_orders_per_loop: int = 1  # hard cap on executed trade tools per agent loop (max 3)
+
+    # Per-agent model defaults. Resolution order (most specific wins):
+    #   per-agent setting > llm_model > built-in Claude default.
+    model_orchestrator: str = "claude-sonnet-4-20250514"
+    model_specialist: str = "claude-haiku-4-5-20251001"
+
+    # Optional cost table for non-Claude models (USD per 1M tokens).
+    # Env: CUSTOM_PRICE_PER_MILLION={"gpt-4o":{"input":2.5,"output":10}}
+    # Accepts a JSON string (env) or a parsed dict (code/tests). Unknown models
+    # without an entry produce a null cost rather than crashing.
+    custom_price_per_million: dict = {}
+
     # Binance (for BTCUSD — uses Binance API instead of MT5)
     binance_api_key: str = ""
     binance_api_secret: str = ""
@@ -331,6 +360,34 @@ class Settings(BaseSettings):
     # transaction mode. Disables asyncpg prepared statement cache, which PgBouncer
     # transaction mode cannot share across connections.
     db_pgbouncer_mode: bool = False
+
+    @field_validator("custom_price_per_million", mode="before")
+    @classmethod
+    def _parse_custom_price(cls, v):
+        """Env 注入的是 JSON 字符串（如 '{"gpt-4o":{"input":2.5,"output":10}}'），
+        pydantic 不会自动反序列化 dict 字段 —— 这里显式解析。解析失败回退空表
+        （未知模型成本返回 None 而非崩溃，见 app/ai/pricing.py）。"""
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str | bytes):
+            raw = v.decode() if isinstance(v, bytes) else v
+            raw = raw.strip()
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    @field_validator("llm_provider")
+    @classmethod
+    def _validate_llm_provider(cls, v: str) -> str:
+        """允许空串（runner 子进程可能尚未注入配置，等价默认 claude）。"""
+        if v in ("", "claude", "openai_compat"):
+            return v or "claude"
+        raise ValueError(f"llm_provider must be 'claude' or 'openai_compat', got {v!r}")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

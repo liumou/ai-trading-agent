@@ -19,6 +19,7 @@ from mcp_server.tools import (
     journal,
     learning,
     market_data,
+    memory,
     overfitting,
     portfolio,
     quant,
@@ -28,6 +29,18 @@ from mcp_server.tools import (
     strategy_gen,
     strategy_switch,
 )
+
+# 模块级单例 —— openai_loop 通过 get_server() 复用同一实例枚举/执行工具，
+# 避免重复构建 41 个工具定义（也避免闭包函数无法 import 的问题）。
+_mcp_server: FastMCP | None = None
+
+
+def get_server() -> FastMCP:
+    """懒加载 MCP server 单例。首次调用时创建并注册全部工具。"""
+    global _mcp_server
+    if _mcp_server is None:
+        _mcp_server = create_server()
+    return _mcp_server
 
 
 def create_server() -> FastMCP:
@@ -300,6 +313,36 @@ def create_server() -> FastMCP:
     async def get_switch_status(symbol: str) -> dict:
         """Get auto-strategy-switch status: enabled, current strategy, cooldown, daily count."""
         return await strategy_switch.get_switch_status(symbol)
+
+    # ─── Persistent Memory Tools (Phase E reflector — 修复现存缺口) ─────────
+    # reflector.py 的 TOOL_NAMES 引用了 get_memories/save_memory/validate_memory，
+    # 但此前从未在 server.py 注册 —— 导致 SDK allowed_tools 与 OpenAI loop
+    # 的白名单都包含不存在于 list_tools() 的名字（AC-12 漂移断言前提）。
+
+    @mcp.tool()
+    async def save_memory(
+        summary: str,
+        category: str = "pattern",
+        symbol: str | None = None,
+        evidence: dict | None = None,
+    ) -> dict:
+        """Save an insight to mid-term memory (30 days, promotable to permanent)."""
+        return await memory.save_memory(summary, category, symbol, evidence)
+
+    @mcp.tool()
+    async def get_memories(
+        symbol: str | None = None,
+        category: str | None = None,
+        tier: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """Recall stored memories, sorted by confidence."""
+        return await memory.get_memories(symbol, category, tier, limit)
+
+    @mcp.tool()
+    async def validate_memory(memory_id: int, hit: bool) -> dict:
+        """Validate whether a stored memory's prediction matched reality."""
+        return await memory.validate_memory(memory_id, hit)
 
     return mcp
 

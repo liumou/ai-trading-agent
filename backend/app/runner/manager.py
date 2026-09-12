@@ -11,6 +11,7 @@ from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import (
     JobStatus,
     Runner,
@@ -22,6 +23,31 @@ from app.db.models import (
 )
 from app.runner.backend import RunnerBackend
 from app.vault import VaultService
+
+
+def _llm_runner_env() -> dict[str, str]:
+    """构造注入 runner 子进程的 LLM 配置 env（白名单，方案 a）。
+
+    ProcessRunnerBackend 用 env={**secrets} 完全替换父进程环境，因此主服务
+    配置的 LLM_*/MODEL_* 必须在这里显式传播 —— 否则 openai_compat 模式在
+    生产 runner 中静默失效（回退 Claude 或崩溃）。api_key 只注入子进程 env，
+    不出现在任何 API 响应/前端。空值键跳过（保持 runner 内 defaults）。
+    """
+    candidates = {
+        "LLM_PROVIDER": settings.llm_provider,
+        "LLM_BASE_URL": settings.llm_base_url,
+        "LLM_API_KEY": settings.llm_api_key,
+        "LLM_MODEL": settings.llm_model,
+        "LLM_TEMPERATURE": str(settings.llm_temperature),
+        "LLM_TIMEOUT": str(settings.llm_timeout),
+        "LLM_FALLBACK_TO_CLAUDE": str(settings.llm_fallback_to_claude).lower(),
+        "LLM_ALLOW_LIVE": str(settings.llm_allow_live).lower(),
+        "LLM_MAX_ORDERS_PER_LOOP": str(settings.llm_max_orders_per_loop),
+        "MODEL_ORCHESTRATOR": settings.model_orchestrator,
+        "MODEL_SPECIALIST": settings.model_specialist,
+        "ROLLOUT_MODE": settings.rollout_mode,
+    }
+    return {k: v for k, v in candidates.items() if v}
 
 
 class RunnerManager:
@@ -133,6 +159,15 @@ class RunnerManager:
         try:
             # Decrypt secrets from vault
             secrets = await self._get_decrypted_secrets()
+
+            # 注入 LLM 配置到子进程环境（方案 a，CRITICAL）：
+            # ProcessRunnerBackend 用 env={**secrets} 完全替换父环境，主服务配置的
+            # LLM_*/MODEL_* 不会自动出现在 runner 子进程 —— 这里定向合入，避免
+            # 交易决策路径在生产环境静默停留在 Claude。
+            # 只注入白名单键（不合并 os.environ，避免泄漏 DATABASE_URL/VAULT_KEY）。
+            # 合并顺序：主服务配置在底层，Vault 解密值覆盖其上 —— 运维按 runner
+            # 粒度在 Vault 配的 LLM_* secret（如独立 api_key）优先级更高。
+            secrets = {**_llm_runner_env(), **secrets}
 
             # Start via backend
             container_id = await self.backend.start(runner_id, runner.image, secrets)

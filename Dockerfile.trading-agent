@@ -20,7 +20,8 @@ RUN pip install --no-cache-dir \
     loguru \
     pydantic-settings \
     sqlalchemy[asyncio] \
-    && pip install --no-cache-dir -r /app/requirements-backend.txt || true
+    "openai>=1.40,<2" \
+    && pip install --no-cache-dir -r /app/requirements-backend.txt
 
 # Copy application code
 COPY backend/mcp_server/ /app/mcp_server/

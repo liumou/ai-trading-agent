@@ -18,10 +18,7 @@ import time
 from loguru import logger
 
 from mcp_server.agents import fundamental_analyst, reflector, risk_analyst, technical_analyst
-from mcp_server.agents.base import (
-    MODEL_ORCHESTRATOR,
-    run_agent_loop,
-)
+from mcp_server.agents.base import run_agent_loop
 
 SYSTEM_PROMPT = """You are the Orchestrator of a multi-agent trading system for {TRADABLE_SYMBOLS}.
 
@@ -165,7 +162,6 @@ async def run_multi_agent(
         system_prompt=active_prompt,
         user_message=synthesis_message,
         tool_names=ORCHESTRATOR_TOOL_NAMES,
-        model=MODEL_ORCHESTRATOR,
         max_turns=10,
         timeout=120,
         oauth_token=oauth_token,

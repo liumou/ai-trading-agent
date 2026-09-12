@@ -286,6 +286,9 @@ async def _test_anthropic(token: str) -> dict:
         from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
         from claude_agent_sdk.types import TextBlock
 
+        # 这是「Claude 连通性」诊断：模型固定用 Claude 字面量，与 settings.
+        # model_specialist 解耦 —— 否则 openai_compat 配置（如 gpt-4o）会被
+        # 送进 Claude SDK，报假故障。
         text = ""
         async for msg in query(
             prompt="Say OK",

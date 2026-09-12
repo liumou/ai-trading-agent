@@ -113,6 +113,17 @@ async def lifespan(app: FastAPI):
 
     _assert_auth_consistent()
 
+    # LLM provider 配置 fail-fast（AC-10）：未知名/openai_compat 缺 base_url 时
+    # 拒绝启动，避免交易任务在运行中才 KeyError/超时。
+    try:
+        from app.ai.provider import get_provider
+
+        _provider = get_provider()
+        logger.info(f"LLM provider: {_provider.name} (model={settings.llm_model or 'per-agent defaults'})")
+    except RuntimeError as e:
+        logger.error(f"LLM provider config invalid: {e}")
+        raise
+
     # Phase 1 observability: slow query logger — attach once, survives entire app lifetime
     install_slow_query_logger(db_engine, threshold_ms=settings.db_slow_query_threshold_ms)
 

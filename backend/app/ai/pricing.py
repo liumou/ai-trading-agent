@@ -19,6 +19,24 @@ PRICING: dict[str, dict[str, float]] = {
 }
 
 
+def get_price_for_model(model: str) -> dict[str, float] | None:
+    """查模型单价表：优先用户自定义（settings.custom_price_per_million），
+    其次内置 Claude 表。未知模型返回 None（成本字段留空，不崩溃）。"""
+    from app.config import settings
+
+    custom = settings.custom_price_per_million or {}
+    entry = custom.get(model)
+    if isinstance(entry, dict):
+        # 自定义表可能只给 input/output，缺失字段按 0 处理
+        return {
+            "input": float(entry.get("input", 0) or 0),
+            "output": float(entry.get("output", 0) or 0),
+            "cache_read": float(entry.get("cache_read", 0) or 0),
+            "cache_write": float(entry.get("cache_write", 0) or 0),
+        }
+    return PRICING.get(model)
+
+
 def calculate_cost(
     model: str,
     input_tokens: int,
@@ -26,7 +44,7 @@ def calculate_cost(
     cache_read: int,
     cache_write: int,
 ) -> float | None:
-    p = PRICING.get(model)
+    p = get_price_for_model(model)
     if not p:
         return None
     return (
