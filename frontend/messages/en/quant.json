@@ -1,0 +1,87 @@
+{
+  "title": "Quant Analytics",
+  "subtitle": "Quantitative risk, signals, and portfolio analysis",
+  "instructions": {
+    "item1": "VaR/CVaR shows potential loss at 95% and 99% confidence levels.",
+    "item2": "Regime detection uses HMM to identify trending vs ranging markets.",
+    "item3": "Correlation monitor tracks cross-symbol relationships in real-time."
+  },
+  "var95": "VaR 95%",
+  "cvar95": "CVaR 95%",
+  "annVol": "Ann. Vol",
+  "garchVol": "GARCH Vol",
+  "forecast1": "Forecast 1-step",
+  "garchMethod": "GARCH Method",
+  "marketRegime": "Market Regime",
+  "correlationMatrix": "Correlation Matrix",
+  "signalsTitle": "{symbol} Signals",
+  "agreement": "Agreement",
+  "signals": {
+    "zScore": "Z-Score",
+    "hurst": "Hurst",
+    "rollingSharpe": "Rolling Sharpe",
+    "momentum": "Momentum",
+    "halfLife": "Half-life",
+    "bars": "{value} bars"
+  },
+  "hurstState": {
+    "trending": "trending",
+    "meanRev": "mean-rev",
+    "neutral": "neutral"
+  },
+  "regime": {
+    "trending": "Trending",
+    "ranging": "Ranging",
+    "normal": "Normal"
+  },
+  "maxSharpe": "Max Sharpe ({value})",
+  "portfolioAllocation": "Portfolio Allocation",
+  "riskParity": "Risk Parity",
+  "noPortfolioHeading": "No portfolio data",
+  "noPortfolioDescription": "Portfolio allocation will appear when data is available",
+  "stressTitle": "Stress Testing",
+  "worstSymbol": "Worst: {symbol}",
+  "varBreach": "VaR BREACH",
+  "stressPrompt": "Run stress scenarios to evaluate portfolio resilience",
+  "running": "Running...",
+  "runStressTests": "Run Stress Tests",
+  "stressNoResults": "No results — bot must be running with market data available",
+  "stressFailedMessage": "Stress test failed — check backend logs",
+  "stressFailedToast": "Stress test failed",
+  "stressCompleted": "Stress test completed",
+  "accountability": {
+    "skilledWin": "Skilled Win",
+    "correctProcess": "Correct Process",
+    "luckyWin": "Lucky",
+    "realMistake": "Mistake"
+  },
+  "summary": {
+    "var": "VaR",
+    "regime": "Regime",
+    "vol": "Vol",
+    "corr": "Corr",
+    "portfolio": "Portfolio"
+  },
+  "volLevel": {
+    "low": "low",
+    "normal": "normal",
+    "high": "high"
+  },
+  "correlationStatus": {
+    "stable": "stable",
+    "shifting": "shifting",
+    "breakdown": "breakdown"
+  },
+  "portfolioStatus": {
+    "balanced": "balanced",
+    "concentrated": "concentrated",
+    "unknown": "unknown"
+  },
+  "confirmations": "Confirmations",
+  "confirmationCount": "{passed}/{total} (need {required})",
+  "confirmationTooltip": "{name}: {status} ({pct}%)",
+  "confirmationStatus": {
+    "pass": "pass",
+    "fail": "fail"
+  }
+}

@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 
 interface SignalConfidenceBarProps {
@@ -13,6 +14,7 @@ export function SignalConfidenceBar({
   required = 3,
   className,
 }: SignalConfidenceBarProps) {
+  const t = useTranslations("quant");
   const passed = confirmations.filter((c) => c.passed).length;
   const total = confirmations.length;
 
@@ -20,7 +22,7 @@ export function SignalConfidenceBar({
     <div className={cn("space-y-1", className)}>
       <div className="flex items-center justify-between">
         <span className="text-[10px] text-muted-foreground font-medium">
-          Confirmations
+          {t("confirmations")}
         </span>
         <span
           className={cn(
@@ -28,7 +30,7 @@ export function SignalConfidenceBar({
             passed >= required ? "text-green-400" : "text-yellow-400",
           )}
         >
-          {passed}/{total} (need {required})
+          {t("confirmationCount", { passed, total, required })}
         </span>
       </div>
       <div className="flex gap-0.5">
@@ -39,7 +41,11 @@ export function SignalConfidenceBar({
               "h-1.5 rounded-full flex-1 transition-colors",
               c.passed ? "bg-green-500" : "bg-muted",
             )}
-            title={`${c.name}: ${c.passed ? "pass" : "fail"} (${Math.round(c.confidence * 100)}%)`}
+            title={t("confirmationTooltip", {
+              name: c.name,
+              status: t(`confirmationStatus.${c.passed ? "pass" : "fail"}`),
+              pct: Math.round(c.confidence * 100),
+            })}
           />
         ))}
       </div>

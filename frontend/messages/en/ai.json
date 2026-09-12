@@ -1,0 +1,20 @@
+{
+  "sentiment": {
+    "bullish": "Bullish",
+    "bearish": "Bearish",
+    "neutral": "Neutral"
+  },
+  "news": {
+    "justNow": "just now"
+  },
+  "optimization": {
+    "title": "Strategy Optimization",
+    "parameter": "Parameter",
+    "current": "Current",
+    "suggested": "Suggested",
+    "confidence": "Confidence",
+    "stopBotToApply": "Stop bot to apply",
+    "applySuggestions": "Apply Suggestions",
+    "appliedSuccessfully": "Applied successfully"
+  }
+}

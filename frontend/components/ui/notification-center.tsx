@@ -2,9 +2,11 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Bell, AlertCircle, TrendingUp, Zap, Info } from "lucide-react";
+import { useTranslations, useLocale } from "next-intl";
 import { useBotStore } from "@/store/botStore";
 import type { BotEvent } from "@/store/botStore";
 import { cn } from "@/lib/utils";
+import { translateServerText } from "@/lib/serverText";
 
 const eventIcons: Record<string, typeof Info> = {
   signal: TrendingUp,
@@ -22,17 +24,19 @@ const eventColors: Record<string, string> = {
   system: "text-muted-foreground",
 };
 
-function getTimeAgo(dateStr: string): string {
+function getTimeAgo(dateStr: string, t: ReturnType<typeof useTranslations>): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return "just now";
+  if (seconds < 60) return t("justNow");
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return t("minutesAgo", { count: minutes });
   const hours = Math.floor(minutes / 60);
-  return `${hours}h ago`;
+  return t("hoursAgo", { count: hours });
 }
 
 export function NotificationCenter() {
+  const t = useTranslations("ui");
+  const locale = useLocale();
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const events = useBotStore((s) => s.events);
@@ -66,7 +70,7 @@ export function NotificationCenter() {
         type="button"
         onClick={handleToggle}
         className="relative flex items-center justify-center size-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors"
-        aria-label="Notifications"
+        aria-label={t("notifications")}
       >
         <Bell className="size-4" />
         {unreadCount > 0 && (
@@ -80,17 +84,17 @@ export function NotificationCenter() {
         <div className="fixed left-4 bottom-36 w-72 sm:w-80 rounded-xl border border-border bg-card shadow-xl z-200 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 duration-150">
           <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
             <span className="text-xs font-semibold text-foreground">
-              Notifications
+              {t("notifications")}
             </span>
             <span className="text-[10px] text-muted-foreground">
-              {events.length} events
+              {t("eventsCount", { count: events.length })}
             </span>
           </div>
 
           <div className="max-h-64 overflow-y-auto">
             {displayEvents.length === 0 ? (
               <p className="text-xs text-muted-foreground text-center py-6">
-                No events yet
+                {t("noEventsYet")}
               </p>
             ) : (
               displayEvents.map((event: BotEvent, i: number) => {
@@ -106,10 +110,10 @@ export function NotificationCenter() {
                     <Icon className={cn("size-3.5 mt-0.5 shrink-0", color)} />
                     <div className="flex-1 min-w-0">
                       <p className="text-xs text-foreground truncate">
-                        {event.message}
+                        {translateServerText(event.message, locale)}
                       </p>
                       <p className="text-[10px] text-muted-foreground">
-                        {getTimeAgo(event.timestamp)}
+                        {getTimeAgo(event.timestamp, t)}
                       </p>
                     </div>
                   </div>

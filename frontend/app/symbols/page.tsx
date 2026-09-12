@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AxiosError } from "axios";
 import { CandlestickChart } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
 import { Badge } from "@/components/ui/badge";
@@ -31,15 +32,15 @@ import {
 } from "@/lib/api";
 import { SymbolForm } from "./SymbolForm";
 
-function errorMessage(err: unknown): string {
+function errorMessage(err: unknown, t: { validationError: string; unexpectedError: string }): string {
   if (err instanceof AxiosError) {
     const detail = err.response?.data?.detail;
     if (typeof detail === "string") return detail;
-    if (Array.isArray(detail) && detail.length) return detail[0].msg ?? "Validation error";
+    if (Array.isArray(detail) && detail.length) return detail[0].msg ?? t.validationError;
     return err.message;
   }
   if (err instanceof Error) return err.message;
-  return "Unexpected error";
+  return t.unexpectedError;
 }
 
 const ML_STATUS_STYLE: Record<string, string> = {
@@ -50,6 +51,7 @@ const ML_STATUS_STYLE: Record<string, string> = {
 };
 
 export default function SymbolsPage() {
+  const t = useTranslations("symbols");
   const [configs, setConfigs] = useState<SymbolConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -67,7 +69,14 @@ export default function SymbolsPage() {
         const resp = await listSymbolConfigs();
         if (active) setConfigs(resp.data);
       } catch (err) {
-        if (active) setBanner({ kind: "err", msg: errorMessage(err) });
+        if (active)
+          setBanner({
+            kind: "err",
+            msg: errorMessage(err, {
+              validationError: t("validationError"),
+              unexpectedError: t("unexpectedError"),
+            }),
+          });
       } finally {
         if (active) setLoading(false);
       }
@@ -75,6 +84,7 @@ export default function SymbolsPage() {
     return () => {
       active = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const upsertLocal = (cfg: SymbolConfig) =>
@@ -97,7 +107,12 @@ export default function SymbolsPage() {
       const resp = await getBrokerCatalog();
       setCatalog(resp.data.items);
     } catch (err) {
-      setCatalogError(errorMessage(err));
+      setCatalogError(
+        errorMessage(err, {
+          validationError: t("validationError"),
+          unexpectedError: t("unexpectedError"),
+        }),
+      );
     } finally {
       setCatalogLoading(false);
     }
@@ -122,15 +137,21 @@ export default function SymbolsPage() {
         void _omit;
         const resp = await updateSymbolConfig(editing.symbol, rest);
         upsertLocal(resp.data);
-        setBanner({ kind: "ok", msg: `Updated ${editing.symbol}` });
+        setBanner({ kind: "ok", msg: t("updated", { symbol: editing.symbol }) });
       } else {
         const resp = await createSymbolConfig(input);
         upsertLocal(resp.data);
-        setBanner({ kind: "ok", msg: `Created ${input.symbol}` });
+        setBanner({ kind: "ok", msg: t("created", { symbol: input.symbol }) });
       }
       setDialogOpen(false);
     } catch (err) {
-      setBanner({ kind: "err", msg: errorMessage(err) });
+      setBanner({
+        kind: "err",
+        msg: errorMessage(err, {
+          validationError: t("validationError"),
+          unexpectedError: t("unexpectedError"),
+        }),
+      });
     } finally {
       setSubmitting(false);
     }
@@ -141,24 +162,32 @@ export default function SymbolsPage() {
       const resp = await toggleSymbolConfig(cfg.symbol);
       upsertLocal(resp.data);
     } catch (err) {
-      setBanner({ kind: "err", msg: errorMessage(err) });
+      setBanner({
+        kind: "err",
+        msg: errorMessage(err, {
+          validationError: t("validationError"),
+          unexpectedError: t("unexpectedError"),
+        }),
+      });
     }
   };
 
   const handleDelete = async (cfg: SymbolConfig) => {
-    if (
-      !confirm(
-        `Delete ${cfg.symbol}? This disables the symbol and removes it from the active list.`,
-      )
-    ) {
+    if (!confirm(t("deleteConfirm", { symbol: cfg.symbol }))) {
       return;
     }
     try {
       await deleteSymbolConfig(cfg.symbol);
       removeLocal(cfg.symbol);
-      setBanner({ kind: "ok", msg: `Deleted ${cfg.symbol}` });
+      setBanner({ kind: "ok", msg: t("deleted", { symbol: cfg.symbol }) });
     } catch (err) {
-      setBanner({ kind: "err", msg: errorMessage(err) });
+      setBanner({
+        kind: "err",
+        msg: errorMessage(err, {
+          validationError: t("validationError"),
+          unexpectedError: t("unexpectedError"),
+        }),
+      });
     }
   };
 
@@ -166,9 +195,15 @@ export default function SymbolsPage() {
     try {
       await retrainSymbolConfig(cfg.symbol);
       upsertLocal({ ...cfg, ml_status: "training" });
-      setBanner({ kind: "ok", msg: `Queued retrain for ${cfg.symbol}` });
+      setBanner({ kind: "ok", msg: t("queuedRetrain", { symbol: cfg.symbol }) });
     } catch (err) {
-      setBanner({ kind: "err", msg: errorMessage(err) });
+      setBanner({
+        kind: "err",
+        msg: errorMessage(err, {
+          validationError: t("validationError"),
+          unexpectedError: t("unexpectedError"),
+        }),
+      });
     }
   };
 
@@ -178,31 +213,37 @@ export default function SymbolsPage() {
       if (resp.data.ok) {
         setBanner({
           kind: "ok",
-          msg: `${cfg.symbol}: broker spec OK (digits ${resp.data.spec?.digits}, min lot ${resp.data.spec?.volume_min})`,
+          msg: t("validateOk", {
+            symbol: cfg.symbol,
+            digits: resp.data.spec?.digits ?? "-",
+            minLot: resp.data.spec?.volume_min ?? "-",
+          }),
         });
       } else {
-        setBanner({ kind: "err", msg: `${cfg.symbol}: ${resp.data.message}` });
+        setBanner({
+          kind: "err",
+          msg: t("validateFailed", { symbol: cfg.symbol, message: resp.data.message }),
+        });
       }
     } catch (err) {
-      setBanner({ kind: "err", msg: errorMessage(err) });
+      setBanner({
+        kind: "err",
+        msg: errorMessage(err, {
+          validationError: t("validationError"),
+          unexpectedError: t("unexpectedError"),
+        }),
+      });
     }
   };
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader
-        title="Symbols"
-        subtitle="Manage tradable instruments, profiles, and broker aliases"
-      >
-        <Button onClick={openCreate}>Add Symbol</Button>
+      <PageHeader title={t("title")} subtitle={t("subtitle")}>
+        <Button onClick={openCreate}>{t("addSymbol")}</Button>
       </PageHeader>
 
       <PageInstructions
-        items={[
-          "Add, enable, or edit trading symbols. Edits hot-reload across BotManager without restart.",
-          "Validate the broker alias before enabling — the bot queries MT5 Bridge for lot limits, digits, and contract size.",
-          "New symbols need ML training before they can trade. Click Retrain to queue a training job.",
-        ]}
+        items={[t("instruction1"), t("instruction2"), t("instruction3")]}
       />
 
       {banner && (
@@ -219,13 +260,13 @@ export default function SymbolsPage() {
       )}
 
       {loading ? (
-        <div className="text-center text-muted-foreground py-12 text-sm">Loading symbols...</div>
+        <div className="text-center text-muted-foreground py-12 text-sm">{t("loading")}</div>
       ) : configs.length === 0 ? (
         <EmptyState
           icon={CandlestickChart}
-          heading="No symbols configured"
-          description='Click "Add Symbol" to create the first trading instrument.'
-          action={{ label: "Add Symbol", onClick: openCreate }}
+          heading={t("emptyHeading")}
+          description={t("emptyDescription")}
+          action={{ label: t("addSymbol"), onClick: openCreate }}
         />
       ) : (
         <div className="rounded-xl border border-border bg-card overflow-hidden">
@@ -233,16 +274,16 @@ export default function SymbolsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground bg-muted/30">
-                  <th className="px-4 py-3 font-medium">Symbol</th>
-                  <th className="px-4 py-3 font-medium">Display</th>
-                  <th className="px-4 py-3 font-medium">Broker alias</th>
-                  <th className="px-4 py-3 font-medium">Class</th>
-                  <th className="px-4 py-3 font-medium">TF</th>
-                  <th className="px-4 py-3 font-medium">Lot (def / max)</th>
-                  <th className="px-4 py-3 font-medium">SL / TP ATR</th>
-                  <th className="px-4 py-3 font-medium">ML</th>
-                  <th className="px-4 py-3 font-medium">Enabled</th>
-                  <th className="px-4 py-3 font-medium text-right">Actions</th>
+                  <th className="px-4 py-3 font-medium">{t("colSymbol")}</th>
+                  <th className="px-4 py-3 font-medium">{t("colDisplay")}</th>
+                  <th className="px-4 py-3 font-medium">{t("colBrokerAlias")}</th>
+                  <th className="px-4 py-3 font-medium">{t("colClass")}</th>
+                  <th className="px-4 py-3 font-medium">{t("colTf")}</th>
+                  <th className="px-4 py-3 font-medium">{t("colLot")}</th>
+                  <th className="px-4 py-3 font-medium">{t("colSlTp")}</th>
+                  <th className="px-4 py-3 font-medium">{t("colMl")}</th>
+                  <th className="px-4 py-3 font-medium">{t("colEnabled")}</th>
+                  <th className="px-4 py-3 font-medium text-right">{t("colActions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -257,7 +298,7 @@ export default function SymbolsPage() {
                       {cfg.broker_alias ?? "—"}
                     </td>
                     <td className="px-4 py-3 text-xs text-muted-foreground capitalize">
-                      {cfg.asset_class}
+                      {t(`assetClass.${cfg.asset_class}`)}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">{cfg.default_timeframe}</td>
                     <td className="px-4 py-3 tabular-nums">
@@ -274,7 +315,7 @@ export default function SymbolsPage() {
                           "bg-muted/40 text-muted-foreground border-border"
                         }
                       >
-                        {cfg.ml_status}
+                        {t(`mlStatus.${cfg.ml_status}`)}
                       </Badge>
                     </td>
                     <td className="px-4 py-3">
@@ -290,13 +331,13 @@ export default function SymbolsPage() {
                           size="sm"
                           onClick={() => void handleValidate(cfg)}
                         >
-                          Validate
+                          {t("validate")}
                         </Button>
                         <Button variant="ghost" size="sm" onClick={() => void handleRetrain(cfg)}>
-                          Retrain
+                          {t("retrain")}
                         </Button>
                         <Button variant="ghost" size="sm" onClick={() => openEdit(cfg)}>
-                          Edit
+                          {t("edit")}
                         </Button>
                         <Button
                           variant="ghost"
@@ -304,7 +345,7 @@ export default function SymbolsPage() {
                           className="text-destructive hover:text-destructive"
                           onClick={() => void handleDelete(cfg)}
                         >
-                          Delete
+                          {t("delete")}
                         </Button>
                       </div>
                     </td>
@@ -319,11 +360,11 @@ export default function SymbolsPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editing ? `Edit ${editing.symbol}` : "Add symbol"}</DialogTitle>
+            <DialogTitle>
+              {editing ? t("dialogEdit", { symbol: editing.symbol }) : t("dialogAdd")}
+            </DialogTitle>
             <DialogDescription>
-              {editing
-                ? "Update trading profile. Changes apply immediately via hot-reload."
-                : "Create a new symbol profile. Validate the broker alias before enabling."}
+              {editing ? t("dialogEditDesc") : t("dialogAddDesc")}
             </DialogDescription>
           </DialogHeader>
           <SymbolForm

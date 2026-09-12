@@ -1,0 +1,28 @@
+{
+  "title": "集成服务",
+  "subtitle": "连接外部服务以启用 Agent 能力",
+  "testAll": "测试全部",
+  "testing": "测试中…",
+  "instructions": {
+    "item1": "在此连接外部服务。点击「配置」添加 API 密钥，然后「测试连接」进行验证。",
+    "item2": "MT5 需要运行中的 MetaTrader 5 终端。Claude AI 使用 Max 订阅（OAuth）。Telegram 需要 @BotFather 提供的机器人令牌。"
+  },
+  "loading": "加载中…",
+  "connected": "已连接",
+  "notConfigured": "未配置",
+  "errorStatus": "错误",
+  "toolsCount": "{count} 个工具",
+  "connectionSuccessful": "连接成功",
+  "connectionFailed": "连接失败",
+  "allServicesConnected": "所有服务已连接",
+  "someServicesFailed": "部分服务连接失败",
+  "connectionTestFailed": "连接测试失败",
+  "configSaved": "配置已保存",
+  "configSaveFailed": "保存配置失败",
+  "notSet": "未设置",
+  "current": "当前：{value}",
+  "testConnection": "测试连接",
+  "save": "保存",
+  "saving": "保存中…",
+  "availableTools": "可用工具（{count}）"
+}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import { useTranslations } from "next-intl";
 import {
   Table,
   TableHeader,
@@ -36,8 +37,9 @@ export function DataTable<T extends Record<string, unknown>>({
   columns,
   pageSize = 10,
   className,
-  emptyMessage = "No data",
+  emptyMessage,
 }: DataTableProps<T>) {
+  const t = useTranslations("ui");
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<SortDirection>(null);
   const [page, setPage] = useState(0);
@@ -118,7 +120,7 @@ export function DataTable<T extends Record<string, unknown>>({
                 colSpan={columns.length}
                 className="text-center py-8 text-muted-foreground"
               >
-                {emptyMessage}
+                {emptyMessage ?? t("noData")}
               </TableCell>
             </TableRow>
           ) : (

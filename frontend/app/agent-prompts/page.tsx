@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -24,13 +25,13 @@ interface AgentPrompt {
 
 interface AgentConfig {
   character: string;
-  role: string;
+  roleKey: string;
   accent: string;
   accentBorder: string;
   accentBg: string;
   accentText: string;
   glow: string;
-  floorArea: string;
+  floorKey: string;
 }
 
 const MODEL_BADGE: Record<string, { label: string; color: string }> = {
@@ -41,95 +42,95 @@ const MODEL_BADGE: Record<string, { label: string; color: string }> = {
 const AGENT_CONFIG: Record<string, AgentConfig> = {
   orchestrator: {
     character: "/agent-characters/Orchestrator.png",
-    role: "Head Trader",
+    roleKey: "roles.headTrader",
     accent: "blue",
     accentBorder: "border-blue-500/50",
     accentBg: "bg-blue-500/5",
     accentText: "text-blue-400",
     glow: "hover:shadow-blue-500/30",
-    floorArea: "Head Office — Executive Suite",
+    floorKey: "roles.headOfficeSuite",
   },
   technical_analyst: {
     character: "/agent-characters/Technical Analyst.png",
-    role: "Chart Analyst",
+    roleKey: "roles.chartAnalyst",
     accent: "green",
     accentBorder: "border-green-500/50",
     accentBg: "bg-green-500/5",
     accentText: "text-green-400",
     glow: "hover:shadow-green-500/30",
-    floorArea: "Analysis Room — Desk 01",
+    floorKey: "roles.analysisDesk1",
   },
   fundamental_analyst: {
     character: "/agent-characters/Fundamental Analyst.png",
-    role: "Market Researcher",
+    roleKey: "roles.marketResearcher",
     accent: "purple",
     accentBorder: "border-purple-500/50",
     accentBg: "bg-purple-500/5",
     accentText: "text-purple-400",
     glow: "hover:shadow-purple-500/30",
-    floorArea: "Analysis Room — Desk 02",
+    floorKey: "roles.analysisDesk2",
   },
   risk_analyst: {
     character: "/agent-characters/Risk Analyst.png",
-    role: "Risk Manager",
+    roleKey: "roles.riskManager",
     accent: "red",
     accentBorder: "border-red-500/50",
     accentBg: "bg-red-500/5",
     accentText: "text-red-400",
     glow: "hover:shadow-red-500/30",
-    floorArea: "Analysis Room — Desk 03",
+    floorKey: "roles.analysisDesk3",
   },
   reflector: {
     character: "/agent-characters/Reflector.png",
-    role: "Trade Reviewer",
+    roleKey: "roles.tradeReviewer",
     accent: "amber",
     accentBorder: "border-amber-500/50",
     accentBg: "bg-amber-500/5",
     accentText: "text-amber-400",
     glow: "hover:shadow-amber-500/30",
-    floorArea: "Review Office",
+    floorKey: "roles.reviewOffice",
   },
   sentiment: {
     character: "/agent-characters/Sentiment Analyzer.png",
-    role: "Sentiment Analyzer",
+    roleKey: "roles.sentimentAnalyzer",
     accent: "pink",
     accentBorder: "border-pink-500/50",
     accentBg: "bg-pink-500/5",
     accentText: "text-pink-400",
     glow: "hover:shadow-pink-500/30",
-    floorArea: "News Desk",
+    floorKey: "roles.newsDesk",
   },
   optimization: {
     character: "/agent-characters/Strategy Optimizer.png",
-    role: "Strategy Optimizer",
+    roleKey: "roles.strategyOptimizer",
     accent: "cyan",
     accentBorder: "border-cyan-500/50",
     accentBg: "bg-cyan-500/5",
     accentText: "text-cyan-400",
     glow: "hover:shadow-cyan-500/30",
-    floorArea: "Lab — Optimization",
+    floorKey: "roles.optimizationLab",
   },
   single_agent: {
     character: "/agent-characters/Single Agent Agent.png",
-    role: "Solo Trader",
+    roleKey: "roles.soloTrader",
     accent: "zinc",
     accentBorder: "border-zinc-500/50",
     accentBg: "bg-zinc-500/5",
     accentText: "text-zinc-300",
     glow: "hover:shadow-zinc-500/30",
-    floorArea: "Backup Desk",
+    floorKey: "roles.backupDesk",
   },
 };
 
 const FALLBACK_CONFIG: AgentConfig = {
   character: "/agent-characters/Single Agent Agent.png",
-  role: "Agent",
+  roleKey: "roles.agent",
   accent: "zinc",
   accentBorder: "border-zinc-500/50",
   accentBg: "bg-zinc-500/5",
   accentText: "text-zinc-300",
   glow: "hover:shadow-zinc-500/30",
-  floorArea: "—",
+  floorKey: "roles.agent",
 };
 
 function TickerTape() {
@@ -159,6 +160,7 @@ interface AgentDeskProps {
 }
 
 function AgentDesk({ agent, onClick, isActive, size = "md" }: AgentDeskProps) {
+  const t = useTranslations("agentPrompts");
   const cfg = AGENT_CONFIG[agent.id] ?? FALLBACK_CONFIG;
   const badge = MODEL_BADGE[agent.model] ?? { label: agent.model, color: "text-muted-foreground border-border bg-muted" };
   const portraitClass = size === "lg" ? "size-44" : "size-36";
@@ -179,7 +181,7 @@ function AgentDesk({ agent, onClick, isActive, size = "md" }: AgentDeskProps) {
     >
       {/* Floor area label */}
       <p className={`text-[9px] font-mono uppercase tracking-widest mb-2 opacity-70 ${cfg.accentText}`}>
-        {cfg.floorArea}
+        {t(cfg.floorKey)}
       </p>
 
       <div className={`flex gap-4 ${size === "lg" ? "items-center" : "items-start"}`}>
@@ -210,12 +212,12 @@ function AgentDesk({ agent, onClick, isActive, size = "md" }: AgentDeskProps) {
             </Badge>
             {agent.is_customized && (
               <Badge variant="outline" className="text-[9px] px-1.5 py-0 bg-primary/10 text-primary border-primary/30">
-                ✎ Custom
+                {t("custom")}
               </Badge>
             )}
           </div>
           <p className={`text-xs font-mono ${cfg.accentText} opacity-90`}>
-            {cfg.role}
+            {t(cfg.roleKey)}
           </p>
           <p className={`text-[11px] text-muted-foreground ${size === "lg" ? "line-clamp-3" : "line-clamp-2"}`}>
             {agent.description}
@@ -224,9 +226,9 @@ function AgentDesk({ agent, onClick, isActive, size = "md" }: AgentDeskProps) {
           {/* Status bar */}
           <div className="mt-auto pt-2 flex items-center gap-2">
             <span className="size-1.5 rounded-full bg-green-400 animate-pulse" />
-            <span className="text-[10px] font-mono text-green-400">ONLINE</span>
+            <span className="text-[10px] font-mono text-green-400">{t("online")}</span>
             <span className="text-[10px] text-muted-foreground ml-auto group-hover:text-primary transition-colors">
-              Configure →
+              {t("configure")}
             </span>
           </div>
         </div>
@@ -236,6 +238,8 @@ function AgentDesk({ agent, onClick, isActive, size = "md" }: AgentDeskProps) {
 }
 
 export default function AgentPromptsPage() {
+  const t = useTranslations("agentPrompts");
+  const tc = useTranslations("common");
   const [agents, setAgents] = useState<AgentPrompt[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<AgentPrompt | null>(null);
@@ -248,7 +252,7 @@ export default function AgentPromptsPage() {
       const res = await getAgentPrompts();
       setAgents(res.data.agents || []);
     } catch {
-      showError("Failed to load agents");
+      showError(t("loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -267,23 +271,23 @@ export default function AgentPromptsPage() {
     try {
       await updateAgentPrompt(selected.id, editValue);
       await fetchData();
-      showSuccess("Prompt saved");
+      showSuccess(t("promptSaved"));
       setSelected(s => s ? { ...s, active_prompt: editValue, is_customized: true } : null);
-    } catch { showError("Failed to save prompt"); }
+    } catch { showError(t("promptSaveFailed")); }
     finally { setSaving(false); }
   };
 
   const handleReset = async () => {
     if (!selected) return;
-    if (!confirm("Reset to default prompt?")) return;
+    if (!confirm(t("resetConfirm"))) return;
     setResetting(true);
     try {
       await resetAgentPrompt(selected.id);
       await fetchData();
-      showSuccess("Prompt reset");
+      showSuccess(t("promptReset"));
       setSelected(s => s ? { ...s, active_prompt: s.default_prompt, is_customized: false } : null);
       setEditValue(selected.default_prompt);
-    } catch { showError("Failed to reset"); }
+    } catch { showError(t("resetFailed")); }
     finally { setResetting(false); }
   };
 
@@ -310,10 +314,10 @@ export default function AgentPromptsPage() {
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h1 className="text-lg font-bold tracking-tight font-mono">
-            🏢 AI Trading Floor
+            {t("title")}
           </h1>
           <p className="text-xs text-muted-foreground font-mono mt-0.5">
-            {agents.length} agents online — click desk to configure system prompt
+            {t("agentsOnline", { count: agents.length })}
           </p>
         </div>
         <Button
@@ -323,7 +327,7 @@ export default function AgentPromptsPage() {
           className="text-xs rounded-none font-mono gap-1.5"
         >
           <RefreshCw className="size-3" />
-          Refresh
+          {t("refresh")}
         </Button>
       </div>
 
@@ -332,14 +336,14 @@ export default function AgentPromptsPage() {
       {/* Trading floor grid */}
       <div className="border-2 border-border trading-floor-grid">
         <div className="border-b border-green-500/20 bg-green-500/5 px-4 py-1.5">
-          <p className="text-[10px] font-mono text-green-500/70 uppercase tracking-widest">◉ TRADING FLOOR — ACTIVE</p>
+          <p className="text-[10px] font-mono text-green-500/70 uppercase tracking-widest">{t("tradingFloorActive")}</p>
         </div>
 
         {/* Orchestrator — full width top */}
         {orchestrator.length > 0 && (
           <div className="border-b-2 border-border">
             <div className="px-3 py-1 bg-blue-500/5 border-b border-blue-500/20">
-              <p className="text-[9px] font-mono text-blue-400/70 uppercase tracking-widest">⬛ Head Office</p>
+              <p className="text-[9px] font-mono text-blue-400/70 uppercase tracking-widest">{t("headOffice")}</p>
             </div>
             <div className="p-2">
               {orchestrator.map(a => (
@@ -359,7 +363,7 @@ export default function AgentPromptsPage() {
         {analysts.length > 0 && (
           <div className="border-b-2 border-border">
             <div className="px-3 py-1 bg-muted/30 border-b border-border">
-              <p className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">⬛ Analysis Room</p>
+              <p className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">{t("analysisRoom")}</p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x-2 divide-border">
               {analysts.map(a => (
@@ -375,7 +379,7 @@ export default function AgentPromptsPage() {
         {others.length > 0 && (
           <div>
             <div className="px-3 py-1 bg-muted/20 border-b border-border">
-              <p className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">⬛ Support Desks</p>
+              <p className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">{t("supportDesks")}</p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 divide-y xl:divide-y-0 md:divide-x-2 xl:divide-x-2 divide-border">
               {others.map(a => (
@@ -390,13 +394,13 @@ export default function AgentPromptsPage() {
 
       {/* Bottom status bar */}
       <div className="border-2 border-t-0 border-border bg-black/60 px-4 py-2 flex items-center gap-4 font-mono text-[10px]">
-        <span className="text-green-400">● SYSTEM ONLINE</span>
+        <span className="text-green-400">{t("systemOnline")}</span>
         <span className="text-muted-foreground">|</span>
         <span className="text-muted-foreground">
-          {agents.filter(a => a.is_customized).length} custom prompts active
+          {t("customPromptsActive", { count: agents.filter(a => a.is_customized).length })}
         </span>
         <span className="text-muted-foreground ml-auto">
-          Changes apply on next agent invocation
+          {t("changesApplyNote")}
         </span>
       </div>
 
@@ -424,14 +428,14 @@ export default function AgentPromptsPage() {
                         <span>{selected.name}</span>
                         <Badge variant="outline" className={`text-[9px] ${badge.color}`}>{badge.label}</Badge>
                         {selected.is_customized && (
-                          <Badge variant="outline" className="text-[9px] bg-primary/10 text-primary border-primary/30">✎ Custom</Badge>
+                          <Badge variant="outline" className="text-[9px] bg-primary/10 text-primary border-primary/30">{t("custom")}</Badge>
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground font-normal mt-0.5">{selected.description}</p>
                     </div>
                   </DialogTitle>
                   <DialogDescription className={`text-[10px] font-mono ${cfg.accentText} opacity-80`}>
-                    {cfg.floorArea} · {cfg.role}
+                    {t(cfg.floorKey)} · {t(cfg.roleKey)}
                   </DialogDescription>
                 </DialogHeader>
 
@@ -440,24 +444,24 @@ export default function AgentPromptsPage() {
                   onChange={(e) => setEditValue(e.target.value)}
                   className="w-full h-72 border border-border bg-black/60 p-3 text-xs font-mono leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/50 rounded-none"
                   spellCheck={false}
-                  aria-label={`System prompt for ${selected.name}`}
+                  aria-label={t("systemPromptFor", { name: selected.name })}
                 />
 
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-mono text-muted-foreground">
-                    {editValue.length.toLocaleString()} chars
-                    {isDirty && <span className="text-amber-400 ml-2">● unsaved</span>}
+                    {t("chars", { count: editValue.length.toLocaleString() })}
+                    {isDirty && <span className="text-amber-400 ml-2">{t("unsaved")}</span>}
                   </span>
                   <div className="flex gap-2">
                     {selected.is_customized && (
                       <Button variant="outline" size="sm" onClick={handleReset} disabled={resetting} className="rounded-none text-xs font-mono">
                         <RotateCcw className="size-3 mr-1" />
-                        {resetting ? "Resetting..." : "Reset Default"}
+                        {resetting ? t("resetting") : t("resetDefault")}
                       </Button>
                     )}
                     <Button size="sm" onClick={handleSave} disabled={!isDirty || saving || editValue.length < 10} className="rounded-none text-xs font-mono">
                       <Save className="size-3 mr-1" />
-                      {saving ? "Saving..." : "Save Prompt"}
+                      {saving ? t("saving") : t("savePrompt")}
                     </Button>
                   </div>
                 </div>

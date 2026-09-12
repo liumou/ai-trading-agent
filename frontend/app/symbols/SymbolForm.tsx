@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -92,9 +93,11 @@ function toPayload(state: FormState): SymbolConfigInput {
   };
 }
 
-function validate(state: FormState): string | null {
-  if (!state.symbol.match(/^[A-Za-z0-9._-]{2,32}$/)) return "Symbol must be 2-32 alphanumeric chars";
-  if (!state.display_name) return "Display name required";
+type ValidateT = (key: "errSymbol" | "errDisplayName" | "errFieldGt0" | "errLotOrder", values?: Record<string, string>) => string;
+
+function validate(state: FormState, t: ValidateT): string | null {
+  if (!state.symbol.match(/^[A-Za-z0-9._-]{2,32}$/)) return t("errSymbol");
+  if (!state.display_name) return t("errDisplayName");
   const nums = [
     ["pip_value", state.pip_value],
     ["default_lot", state.default_lot],
@@ -105,10 +108,10 @@ function validate(state: FormState): string | null {
   ] as const;
   for (const [field, raw] of nums) {
     const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return `${field} must be > 0`;
+    if (!Number.isFinite(n) || n <= 0) return t("errFieldGt0", { field });
   }
   if (Number(state.default_lot) > Number(state.max_lot)) {
-    return "default_lot must be <= max_lot";
+    return t("errLotOrder");
   }
   return null;
 }
@@ -123,6 +126,8 @@ export function SymbolForm({
   catalogError,
   catalogLoading,
 }: SymbolFormProps) {
+  const t = useTranslations("symbols.form");
+  const tAssetClass = useTranslations("symbols.assetClass");
   const [state, setState] = useState<FormState>(toFormState(initial));
   const [error, setError] = useState<string | null>(null);
 
@@ -149,7 +154,7 @@ export function SymbolForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const err = validate(state);
+    const err = validate(state, t);
     if (err) {
       setError(err);
       return;
@@ -162,7 +167,7 @@ export function SymbolForm({
     if (!onValidateAlias) return;
     const alias = state.broker_alias.trim() || state.symbol.trim();
     if (!alias) {
-      setError("Enter a symbol or broker alias first");
+      setError(t("errAliasFirst"));
       return;
     }
     await onValidateAlias(alias);
@@ -179,36 +184,36 @@ export function SymbolForm({
         />
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field label="Symbol (canonical)" required>
+        <Field label={t("labelSymbol")} required>
           <Input
             value={state.symbol}
             onChange={(e) => update("symbol", e.target.value)}
             disabled={isEdit}
-            placeholder="EURUSD"
+            placeholder={t("phSymbol")}
           />
         </Field>
-        <Field label="Display name" required>
+        <Field label={t("labelDisplayName")} required>
           <Input
             value={state.display_name}
             onChange={(e) => update("display_name", e.target.value)}
-            placeholder="Euro/Dollar"
+            placeholder={t("phDisplay")}
           />
         </Field>
-        <Field label="Broker alias (e.g. EURUSDmicro)">
+        <Field label={t("labelBrokerAlias")}>
           <div className="flex gap-2">
             <Input
               value={state.broker_alias}
               onChange={(e) => update("broker_alias", e.target.value)}
-              placeholder="optional"
+              placeholder={t("phOptional")}
             />
             {onValidateAlias && (
               <Button type="button" variant="outline" size="sm" onClick={handleValidate}>
-                Validate
+                {t("validate")}
               </Button>
             )}
           </div>
         </Field>
-        <Field label="Default timeframe">
+        <Field label={t("labelDefaultTf")}>
           <Select
             value={state.default_timeframe}
             onValueChange={(v) => update("default_timeframe", v as string)}
@@ -225,7 +230,7 @@ export function SymbolForm({
             </SelectContent>
           </Select>
         </Field>
-        <Field label="Asset class" required>
+        <Field label={t("labelAssetClass")} required>
           <Select
             value={state.asset_class}
             onValueChange={(v) => update("asset_class", v as AssetClass)}
@@ -236,13 +241,13 @@ export function SymbolForm({
             <SelectContent>
               {ASSET_CLASSES.map((cls) => (
                 <SelectItem key={cls} value={cls}>
-                  {cls}
+                  {tAssetClass(cls)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </Field>
-        <Field label="Pip value" required>
+        <Field label={t("labelPipValue")} required>
           <Input
             type="number"
             step="any"
@@ -250,14 +255,14 @@ export function SymbolForm({
             onChange={(e) => update("pip_value", e.target.value)}
           />
         </Field>
-        <Field label="Price decimals">
+        <Field label={t("labelPriceDecimals")}>
           <Input
             type="number"
             value={state.price_decimals}
             onChange={(e) => update("price_decimals", e.target.value)}
           />
         </Field>
-        <Field label="Default lot" required>
+        <Field label={t("labelDefaultLot")} required>
           <Input
             type="number"
             step="any"
@@ -265,7 +270,7 @@ export function SymbolForm({
             onChange={(e) => update("default_lot", e.target.value)}
           />
         </Field>
-        <Field label="Max lot" required>
+        <Field label={t("labelMaxLot")} required>
           <Input
             type="number"
             step="any"
@@ -273,7 +278,7 @@ export function SymbolForm({
             onChange={(e) => update("max_lot", e.target.value)}
           />
         </Field>
-        <Field label="SL ATR multiplier">
+        <Field label={t("labelSlAtr")}>
           <Input
             type="number"
             step="any"
@@ -281,7 +286,7 @@ export function SymbolForm({
             onChange={(e) => update("sl_atr_mult", e.target.value)}
           />
         </Field>
-        <Field label="TP ATR multiplier">
+        <Field label={t("labelTpAtr")}>
           <Input
             type="number"
             step="any"
@@ -289,7 +294,7 @@ export function SymbolForm({
             onChange={(e) => update("tp_atr_mult", e.target.value)}
           />
         </Field>
-        <Field label="Contract size" required>
+        <Field label={t("labelContractSize")} required>
           <Input
             type="number"
             step="any"
@@ -297,7 +302,7 @@ export function SymbolForm({
             onChange={(e) => update("contract_size", e.target.value)}
           />
         </Field>
-        <Field label="ML timeframe">
+        <Field label={t("labelMlTf")}>
           <Select
             value={state.ml_timeframe}
             onValueChange={(v) => update("ml_timeframe", v as string)}
@@ -314,7 +319,7 @@ export function SymbolForm({
             </SelectContent>
           </Select>
         </Field>
-        <Field label="ML TP pips" required>
+        <Field label={t("labelMlTp")} required>
           <Input
             type="number"
             step="any"
@@ -322,7 +327,7 @@ export function SymbolForm({
             onChange={(e) => update("ml_tp_pips", e.target.value)}
           />
         </Field>
-        <Field label="ML SL pips" required>
+        <Field label={t("labelMlSl")} required>
           <Input
             type="number"
             step="any"
@@ -330,7 +335,7 @@ export function SymbolForm({
             onChange={(e) => update("ml_sl_pips", e.target.value)}
           />
         </Field>
-        <Field label="ML forward bars">
+        <Field label={t("labelMlForward")}>
           <Input
             type="number"
             value={state.ml_forward_bars}
@@ -343,10 +348,10 @@ export function SymbolForm({
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onCancel} disabled={submitting}>
-          Cancel
+          {t("cancel")}
         </Button>
         <Button type="submit" disabled={submitting}>
-          {submitting ? "Saving..." : isEdit ? "Save changes" : "Create symbol"}
+          {submitting ? t("saving") : isEdit ? t("saveChanges") : t("createSymbol")}
         </Button>
       </div>
     </form>
@@ -384,6 +389,8 @@ function BrokerCatalogPicker({
   error?: string | null;
   onSelect: (item: BrokerCatalogItem) => void;
 }) {
+  const t = useTranslations("symbols.form");
+  const tAssetClass = useTranslations("symbols.assetClass");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -404,7 +411,7 @@ function BrokerCatalogPicker({
   if (error || (!loading && (!items || items.length === 0))) {
     return (
       <div className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
-        Broker catalog unavailable{error ? `: ${error}` : ""}. Fill fields manually below.
+        {t("catalogUnavailable", { error: error ? `: ${error}` : "" })}
       </div>
     );
   }
@@ -412,11 +419,11 @@ function BrokerCatalogPicker({
   return (
     <div className="flex flex-col gap-1 text-sm" ref={containerRef}>
       <span className="text-xs font-medium text-muted-foreground">
-        Pick from XM broker (auto-fills fields)
+        {t("pickFromBroker")}
       </span>
       <div className="relative">
         <Input
-          placeholder={loading ? "Loading broker catalog..." : "Search symbol or description (e.g. ENJ, gold, Apple)"}
+          placeholder={loading ? t("loadingCatalog") : t("searchPh")}
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -442,7 +449,12 @@ function BrokerCatalogPicker({
                 >
                   <span className="font-mono font-semibold">{it.symbol}</span>
                   <span className="text-muted-foreground">
-                    {it.description || it.path} · {it.asset_class} · min {it.volume_min} / max {it.volume_max}
+                    {it.description || it.path} ·{" "}
+                    {t("itemMeta", {
+                      assetClass: tAssetClass(it.asset_class),
+                      min: String(it.volume_min),
+                      max: String(it.volume_max),
+                    })}
                   </span>
                 </button>
               </li>

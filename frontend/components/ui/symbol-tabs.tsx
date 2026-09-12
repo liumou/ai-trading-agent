@@ -1,6 +1,7 @@
 "use client";
 
 import { type ReactNode } from "react";
+import { useTranslations } from "next-intl";
 
 type SymbolInfo = {
   symbol: string;
@@ -17,7 +18,8 @@ type SymbolTabsProps = {
   children?: ReactNode;
 };
 
-export function SymbolTabs({ symbols, active, onSelect, showAll, allLabel = "All", children }: SymbolTabsProps) {
+export function SymbolTabs({ symbols, active, onSelect, showAll, allLabel, children }: SymbolTabsProps) {
+  const t = useTranslations("ui");
   if (symbols.length <= 1 && !showAll) return null;
 
   return (
@@ -32,7 +34,7 @@ export function SymbolTabs({ symbols, active, onSelect, showAll, allLabel = "All
               : "bg-card text-foreground border-border hover:border-primary/50"
           }`}
         >
-          {allLabel}
+          {allLabel ?? t("all")}
         </button>
       )}
       {symbols.map((s) => {

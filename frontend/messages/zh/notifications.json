@@ -1,0 +1,35 @@
+{
+  "title": "通知中心",
+  "subtitle": "机器人事件历史与告警",
+  "instructions": {
+    "item1": "机器人事件通知按时间顺序排列，并按类型着色。",
+    "item2": "交易事件为绿色，错误为红色，设置变更为紫色。可按时间范围和类型筛选。"
+  },
+  "last24h": "最近 24 小时",
+  "last3days": "最近 3 天",
+  "last7days": "最近 7 天",
+  "last14days": "最近 14 天",
+  "last30days": "最近 30 天",
+  "allTypes": "全部类型",
+  "eventsCount": "{visible} / {total} 条事件",
+  "loading": "加载中…",
+  "loadingMore": "加载更多…",
+  "noEvents": "暂无事件",
+  "noEventsDesc": "事件发生时通知将显示在这里",
+  "colTime": "时间",
+  "colType": "类型",
+  "colMessage": "消息",
+  "eventTypes": {
+    "STARTED": "启动",
+    "STOPPED": "停止",
+    "TRADE_OPENED": "开仓",
+    "TRADE_CLOSED": "平仓",
+    "SIGNAL_DETECTED": "信号检测",
+    "TRADE_BLOCKED": "交易拦截",
+    "ORDER_FAILED": "下单失败",
+    "ERROR": "错误",
+    "CIRCUIT_BREAKER": "熔断",
+    "SETTINGS_CHANGED": "设置变更",
+    "STRATEGY_CHANGED": "策略切换"
+  }
+}

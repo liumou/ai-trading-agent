@@ -1,0 +1,11 @@
+{
+  "title": "AI Trading Agent",
+  "subtitle": "Sign in to your dashboard",
+  "username": "Username",
+  "password": "Password",
+  "signIn": "Sign in",
+  "signingIn": "Signing in...",
+  "welcomeBack": "Welcome back!",
+  "loginFailed": "Login failed",
+  "connectionError": "Connection error"
+}

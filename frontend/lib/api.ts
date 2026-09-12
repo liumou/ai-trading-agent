@@ -5,13 +5,15 @@ const api = axios.create({
   timeout: 10000,
 });
 
-// Add Bearer token from localStorage
+// Add Bearer token from localStorage + locale for backend message translation
 api.interceptors.request.use((config) => {
   if (typeof window !== "undefined") {
     const token = localStorage.getItem("token");
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+    const locale = localStorage.getItem("NEXT_LOCALE") || "zh";
+    config.headers["Accept-Language"] = locale;
   }
   return config;
 });

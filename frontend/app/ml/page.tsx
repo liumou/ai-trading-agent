@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,6 +16,7 @@ import { trainModel, getModelStatus, mlPredict, getDataStatus, collectData, getS
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from "recharts";
 import { SymbolTabs } from "@/components/ui/symbol-tabs";
 import { TIMEFRAMES } from "@/components/ui/timeframe-selector";
+import { formatDate } from "@/lib/format";
 
 type SymbolInfo = {
   symbol: string; display_name: string; state: string; timeframe?: string;
@@ -22,6 +24,8 @@ type SymbolInfo = {
 };
 
 export default function MLPage() {
+  const t = useTranslations("ml");
+  const locale = useLocale();
   const [symbols, setSymbols] = useState<SymbolInfo[]>([]);
   const [activeSymbol, setActiveSymbol] = useState("GOLD");
   const [modelStatus, setModelStatus] = useState<Record<string, unknown> | null>(null);
@@ -113,11 +117,11 @@ export default function MLPage() {
     try {
       const res = await collectData({ symbol: activeSymbol, timeframe: collectTimeframe, from_date: collectFrom, to_date: collectTo });
       setCollectResult(res.data);
-      showSuccess("Data collected successfully");
+      showSuccess(t("toasts.dataCollected"));
       await fetchData();
     } catch (e) {
-      setCollectError((e as Error).message || "Collection failed");
-      showError("Data collection failed");
+      setCollectError((e as Error).message || t("collect.failed"));
+      showError(t("toasts.collectionFailed"));
     } finally { setCollecting(false); }
   };
 
@@ -127,19 +131,19 @@ export default function MLPage() {
     try {
       const res = await trainModel({ symbol: activeSymbol, timeframe: trainTimeframe, from_date: trainFrom, to_date: trainTo, forward_bars: forwardBars, tp_pips: tpPips, sl_pips: slPips });
       setTrainResult(res.data);
-      showSuccess("Model trained successfully");
+      showSuccess(t("toasts.modelTrained"));
       await fetchData();
     } catch (e: unknown) {
-      let msg = "Training failed";
+      let msg = t("toasts.trainingFailed");
       if (e && typeof e === "object" && "response" in e) {
         const resp = (e as { response: { data?: { detail?: unknown }; status?: number } }).response;
         const detail = resp?.data?.detail;
         if (typeof detail === "string") msg = detail;
         else if (Array.isArray(detail)) msg = detail.map((d: { msg?: string; loc?: string[] }) => `${d.loc?.join(".")}: ${d.msg}`).join("; ");
-        else msg = `Server error (${resp?.status || "unknown"})`;
+        else msg = t("toasts.serverError", { status: resp?.status || "unknown" });
       } else if (e instanceof Error) msg = e.message;
       setTrainResult({ error: msg });
-      showError("Training failed", msg);
+      showError(t("toasts.trainingFailed"), msg);
     } finally { setTraining(false); }
   };
 
@@ -148,8 +152,8 @@ export default function MLPage() {
     try {
       const res = await mlPredict(activeSymbol);
       setPrediction(res.data);
-      showSuccess("Prediction completed");
-    } catch { showError("Prediction failed"); }
+      showSuccess(t("toasts.predictionCompleted"));
+    } catch { showError(t("toasts.predictionFailed")); }
     finally { setPredicting(false); }
   };
 
@@ -190,14 +194,14 @@ export default function MLPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="ML Model" subtitle="Train and manage LightGBM signal model per symbol" />
+      <PageHeader title={t("title")} subtitle={t("subtitle")} />
 
       <PageInstructions
 
         items={[
-          "Step 1: Collect Data — Fetch historical bars from MT5 into the database for your chosen symbol and timeframe.",
-          "Step 2: Train Model — Train a LightGBM classifier on collected data. Adjust TP/SL pips and forward bars in Advanced Parameters.",
-          "Step 3: Predict — Run the trained model on latest market data to get a buy/sell/hold signal with confidence score.",
+          t("instructions.item1"),
+          t("instructions.item2"),
+          t("instructions.item3"),
         ]}
       />
 
@@ -207,10 +211,10 @@ export default function MLPage() {
       <section className="space-y-3">
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center size-7 rounded-full bg-primary/10 text-primary text-xs font-bold">1</div>
-          <h2 className="text-sm font-bold">Collect Data</h2>
+          <h2 className="text-sm font-bold">{t("steps.collect")}</h2>
           {totalBars > 0 && (
             <span className="text-xs text-muted-foreground ml-auto">
-              {totalBars.toLocaleString()} bars collected
+              {t("collect.barsCollected", { count: totalBars.toLocaleString() })}
             </span>
           )}
         </div>
@@ -221,7 +225,7 @@ export default function MLPage() {
             {dataStatus.map((d, i) => (
               <div key={i} className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs">
                 <span className="font-semibold">{d.timeframe as string}</span>
-                <span className="text-muted-foreground">{(d.bar_count as number).toLocaleString()} bars</span>
+                <span className="text-muted-foreground">{t("collect.bars", { count: (d.bar_count as number).toLocaleString() })}</span>
               </div>
             ))}
           </div>
@@ -230,15 +234,15 @@ export default function MLPage() {
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
             <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground font-medium">From</label>
+              <label className="text-[11px] text-muted-foreground font-medium">{t("collect.from")}</label>
               <Input type="date" value={collectFrom} onChange={(e) => setCollectFrom(e.target.value)} className="text-sm" />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground font-medium">To</label>
+              <label className="text-[11px] text-muted-foreground font-medium">{t("collect.to")}</label>
               <Input type="date" value={collectTo} onChange={(e) => setCollectTo(e.target.value)} className="text-sm" />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground font-medium">Timeframe</label>
+              <label className="text-[11px] text-muted-foreground font-medium">{t("collect.timeframe")}</label>
               <Select value={collectTimeframe} onValueChange={(v) => v && setCollectTimeframe(v)}>
                 <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -248,14 +252,14 @@ export default function MLPage() {
             </div>
             <Button onClick={handleCollect} disabled={collecting} className="rounded-lg font-medium">
               <Database className="size-4 mr-1.5" />
-              {collecting ? "Collecting..." : "Collect"}
+              {collecting ? t("collect.collecting") : t("collect.collect")}
             </Button>
           </div>
 
           {collectResult && (
             <div className="flex items-center gap-2 mt-3 text-xs text-green-400">
               <CheckCircle2 className="size-3.5" />
-              {collectResult.total_bars_fetched.toLocaleString()} fetched, {collectResult.new_bars_inserted.toLocaleString()} new
+              {t("collect.result", { fetched: collectResult.total_bars_fetched.toLocaleString(), inserted: collectResult.new_bars_inserted.toLocaleString() })}
             </div>
           )}
           {collectError && (
@@ -271,10 +275,10 @@ export default function MLPage() {
       <section className="space-y-3">
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center size-7 rounded-full bg-primary/10 text-primary text-xs font-bold">2</div>
-          <h2 className="text-sm font-bold">Train Model</h2>
+          <h2 className="text-sm font-bold">{t("steps.train")}</h2>
           {hasModel && (
             <Badge className="ml-auto bg-green-500/10 text-green-400 border-green-500/20 text-xs rounded-full">
-              Model Ready
+              {t("train.modelReady")}
             </Badge>
           )}
         </div>
@@ -282,15 +286,15 @@ export default function MLPage() {
         <div className="rounded-xl border border-border bg-card p-4 space-y-4">
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 items-end">
             <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground font-medium">Train From</label>
+              <label className="text-[11px] text-muted-foreground font-medium">{t("train.trainFrom")}</label>
               <Input type="date" value={trainFrom} onChange={(e) => setTrainFrom(e.target.value)} className="text-sm" />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground font-medium">Train To</label>
+              <label className="text-[11px] text-muted-foreground font-medium">{t("train.trainTo")}</label>
               <Input type="date" value={trainTo} onChange={(e) => setTrainTo(e.target.value)} className="text-sm" />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground font-medium">Timeframe</label>
+              <label className="text-[11px] text-muted-foreground font-medium">{t("train.timeframe")}</label>
               <Select value={trainTimeframe} onValueChange={(v) => v && setTrainTimeframe(v)}>
                 <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -307,21 +311,21 @@ export default function MLPage() {
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             {showAdvanced ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
-            Advanced Parameters
+            {t("train.advancedParameters")}
           </button>
 
           {showAdvanced && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground font-medium">Forward Bars</label>
+                <label className="text-[11px] text-muted-foreground font-medium">{t("train.forwardBars")}</label>
                 <Input type="number" value={forwardBars} onChange={(e) => setForwardBars(parseInt(e.target.value) || 10)} className="text-sm" />
               </div>
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground font-medium">TP (pips)</label>
+                <label className="text-[11px] text-muted-foreground font-medium">{t("train.tpPips")}</label>
                 <Input type="number" step="0.5" value={tpPips} onChange={(e) => setTpPips(parseFloat(e.target.value) || 5)} className="text-sm" />
               </div>
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground font-medium">SL (pips)</label>
+                <label className="text-[11px] text-muted-foreground font-medium">{t("train.slPips")}</label>
                 <Input type="number" step="0.5" value={slPips} onChange={(e) => setSlPips(parseFloat(e.target.value) || 5)} className="text-sm" />
               </div>
             </div>
@@ -329,10 +333,10 @@ export default function MLPage() {
 
           <Button onClick={handleTrain} disabled={training || dataStatus.length === 0} className="w-full rounded-lg font-medium">
             <Play className="size-4 mr-1.5" />
-            {training ? "Training..." : `Train ${activeSymbol} Model`}
+            {training ? t("train.training") : t("train.trainButton", { symbol: activeSymbol })}
           </Button>
           {dataStatus.length === 0 && (
-            <p className="text-xs text-muted-foreground text-center">Collect data first (Step 1)</p>
+            <p className="text-xs text-muted-foreground text-center">{t("train.collectFirst")}</p>
           )}
         </div>
 
@@ -340,10 +344,10 @@ export default function MLPage() {
         {trainResult && !("error" in trainResult) && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
-              { icon: Target, label: "Accuracy", value: `${((trainResult.accuracy as number) * 100).toFixed(1)}%`, color: (trainResult.accuracy as number) > 0.4 ? "text-green-400" : "text-amber-400" },
-              { icon: BarChart3, label: "Train Size", value: (trainResult.train_size as number).toLocaleString(), color: "text-blue-400" },
-              { icon: TrendingUp, label: "Test Size", value: (trainResult.test_size as number).toLocaleString(), color: "text-purple-400" },
-              { icon: Brain, label: "Top Feature", value: Object.keys((trainResult.feature_importance_top15 as Record<string, number>) || {})[0] || "N/A", color: "text-amber-400" },
+              { icon: Target, label: t("train.accuracy"), value: `${((trainResult.accuracy as number) * 100).toFixed(1)}%`, color: (trainResult.accuracy as number) > 0.4 ? "text-green-400" : "text-amber-400" },
+              { icon: BarChart3, label: t("train.trainSize"), value: (trainResult.train_size as number).toLocaleString(), color: "text-blue-400" },
+              { icon: TrendingUp, label: t("train.testSize"), value: (trainResult.test_size as number).toLocaleString(), color: "text-purple-400" },
+              { icon: Brain, label: t("train.topFeature"), value: Object.keys((trainResult.feature_importance_top15 as Record<string, number>) || {})[0] || t("train.na"), color: "text-amber-400" },
             ].map((s) => (
               <div key={s.label} className="rounded-xl border border-border bg-card p-3">
                 <div className="flex items-center gap-1.5 text-muted-foreground mb-1">
@@ -411,10 +415,10 @@ export default function MLPage() {
                     {prediction.signal as string}
                   </Badge>
                   <p className="text-sm text-muted-foreground">
-                    Confidence: <span className="font-bold text-foreground">{((prediction.confidence as number) * 100).toFixed(1)}%</span>
+                    {t("confidenceLabel")} <span className="font-bold text-foreground">{((prediction.confidence as number) * 100).toFixed(1)}%</span>
                   </p>
                   <p className="text-[11px] text-muted-foreground">
-                    {new Date(prediction.timestamp as string).toLocaleString("en-GB", { timeZone: "Asia/Bangkok" })}
+                    {formatDate(prediction.timestamp as string, locale)}
                   </p>
                 </div>
               )}
@@ -422,7 +426,7 @@ export default function MLPage() {
                 <p className="text-sm text-red-400">{String(prediction.error)}</p>
               )}
               {!prediction && (
-                <EmptyState icon={Cpu} heading="No prediction yet" description="Run a prediction to see the model's current signal" />
+                <EmptyState icon={Cpu} heading={t("noPredictionYet")} description={t("noPredictionYetDesc")} />
               )}
             </div>
           </div>

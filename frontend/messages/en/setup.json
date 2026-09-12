@@ -1,0 +1,19 @@
+{
+  "loading": "Loading...",
+  "subtitle": "Initial Setup",
+  "passkeyHint": "Register a passkey to secure your dashboard. You can use fingerprint, Face ID, or a security key.",
+  "waiting": "Waiting for passkey...",
+  "followPrompt": "Follow the prompt from your browser or device.",
+  "displayNameLabel": "Display Name",
+  "deviceNameLabel": "Device Name",
+  "optionalLabel": "(optional)",
+  "deviceNamePh": "e.g. MacBook Pro, iPhone 15",
+  "registering": "Registering...",
+  "registerPasskey": "Register Passkey",
+  "toastSuccess": "Passkey registered successfully!",
+  "toastFail": "Registration failed",
+  "errCancelled": "Passkey registration was cancelled or timed out.",
+  "errAlready": "This device is already registered.",
+  "errFail": "Registration failed",
+  "errConn": "Connection error"
+}

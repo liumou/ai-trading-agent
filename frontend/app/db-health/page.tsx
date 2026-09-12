@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import {
   Activity,
   AlertTriangle,
@@ -82,6 +83,7 @@ function utilizationVariant(u: number): Variant {
 }
 
 export default function DbHealthPage() {
+  const t = useTranslations("dbHealth");
   const [data, setData] = useState<PoolHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,12 +106,15 @@ export default function DbHealthPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="DB Health" subtitle="PostgreSQL pool + slow queries" />
+      <PageHeader title={t("title")} subtitle={t("subtitle")} />
       <PageInstructions
         items={[
-          "Live PostgreSQL connection-pool metrics, slow queries, and requests holding DB connections too long.",
-          "Refreshes every 10s when tab is visible.",
-          `Telegram alert fires when utilization ≥ ${data ? Math.round(data.thresholds.alert_utilization * 100) : 70}% sustained for ${data ? data.thresholds.alert_sustained_seconds : 60}s.`,
+          t("instructions.item1"),
+          t("instructions.item2"),
+          t("instructions.item3", {
+            pct: data ? Math.round(data.thresholds.alert_utilization * 100) : 70,
+            seconds: data ? data.thresholds.alert_sustained_seconds : 60,
+          }),
         ]}
       />
 
@@ -124,30 +129,30 @@ export default function DbHealthPage() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-5">
             <StatCard
               icon={Activity}
-              label="Utilization"
+              label={t("utilization")}
               value={`${Math.round(data.pool.utilization * 100)}%`}
               variant={utilizationVariant(data.pool.utilization)}
             />
             <StatCard
               icon={ArrowUpFromLine}
-              label="Checked out"
+              label={t("checkedOut")}
               value={`${data.pool.checked_out}/${data.pool.total_capacity}`}
             />
             <StatCard
               icon={ArrowDownToLine}
-              label="Checked in"
+              label={t("checkedIn")}
               value={String(data.pool.checked_in)}
               variant="success"
             />
             <StatCard
               icon={AlertTriangle}
-              label="Overflow"
+              label={t("overflow")}
               value={String(data.pool.overflow)}
               variant={data.pool.overflow > 0 ? "warning" : "default"}
             />
             <StatCard
               icon={Database}
-              label="Pool size"
+              label={t("poolSize")}
               value={String(data.pool.size)}
             />
           </div>
@@ -155,7 +160,7 @@ export default function DbHealthPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-sm font-bold">
-                Utilization (last {data.samples.length} samples × 10s)
+                {t("utilizationChart", { count: data.samples.length })}
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -169,21 +174,21 @@ export default function DbHealthPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-sm font-bold">
-                Top slow queries ({">"} {data.thresholds.slow_query_ms}ms)
+                {t("slowQueries", { ms: data.thresholds.slow_query_ms })}
               </CardTitle>
             </CardHeader>
             <CardContent>
               {data.slow_queries.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No slow queries recorded.
+                  {t("noSlowQueries")}
                 </p>
               ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="text-xs">Duration</TableHead>
-                      <TableHead className="text-xs">When</TableHead>
-                      <TableHead className="text-xs">SQL</TableHead>
+                      <TableHead className="text-xs">{t("colDuration")}</TableHead>
+                      <TableHead className="text-xs">{t("colWhen")}</TableHead>
+                      <TableHead className="text-xs">{t("colSql")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -209,23 +214,23 @@ export default function DbHealthPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-sm font-bold">
-                Long-hold requests ({">"} {data.thresholds.request_warn_ms}ms)
+                {t("longHolds", { ms: data.thresholds.request_warn_ms })}
               </CardTitle>
             </CardHeader>
             <CardContent>
               {data.long_holds.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No long-hold requests recorded.
+                  {t("noLongHolds")}
                 </p>
               ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="text-xs">Duration</TableHead>
-                      <TableHead className="text-xs">Method</TableHead>
-                      <TableHead className="text-xs">Path</TableHead>
-                      <TableHead className="text-xs text-right">Checkouts</TableHead>
-                      <TableHead className="text-xs">When</TableHead>
+                      <TableHead className="text-xs">{t("colDuration")}</TableHead>
+                      <TableHead className="text-xs">{t("colMethod")}</TableHead>
+                      <TableHead className="text-xs">{t("colPath")}</TableHead>
+                      <TableHead className="text-xs text-right">{t("colCheckouts")}</TableHead>
+                      <TableHead className="text-xs">{t("colWhen")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -260,8 +265,9 @@ function Sparkline({
   samples: PoolSample[];
   threshold: number;
 }) {
+  const t = useTranslations("dbHealth");
   if (samples.length === 0) {
-    return <p className="text-sm text-muted-foreground">No samples yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("noSamples")}</p>;
   }
   const width = 600;
   const height = 80;

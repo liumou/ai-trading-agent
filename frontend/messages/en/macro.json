@@ -1,0 +1,26 @@
+{
+  "title": "Macro Data",
+  "subtitle": "Economic indicators and gold correlations",
+  "refreshData": "Refresh FRED Data",
+  "collecting": "Collecting...",
+  "collected": "Macro data collected",
+  "collectFailed": "Failed to collect macro data",
+  "instructions": {
+    "item1": "Economic indicators (DXY, Treasury yields, VIX) and their correlation with gold prices.",
+    "item2": "Click Refresh FRED Data to fetch latest values. Upcoming economic events are listed with impact ratings."
+  },
+  "indicators": "Economic Indicators (Latest)",
+  "noMacroData": "No macro data",
+  "noMacroDataDesc": "Collect economic data to see indicators and correlations",
+  "correlations": "Gold Correlations (90 days)",
+  "strengthStrong": "Strong",
+  "strengthModerate": "Moderate",
+  "strengthWeak": "Weak",
+  "pts": "{count} pts",
+  "collectForCorrelations": "Collect macro data to see correlations",
+  "upcomingEvents": "Upcoming Economic Events",
+  "today": "Today",
+  "tomorrow": "Tomorrow",
+  "inDays": "{count}d",
+  "noUpcomingEvents": "No upcoming events"
+}

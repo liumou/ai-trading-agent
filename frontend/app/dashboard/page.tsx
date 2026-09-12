@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -56,25 +57,13 @@ import { SkeletonCard, SkeletonChart } from "@/components/ui/skeleton-compositio
 import { useBotStore } from "@/store/botStore";
 import { SymbolTabs } from "@/components/ui/symbol-tabs";
 import { TimeframeSelector, TIMEFRAMES } from "@/components/ui/timeframe-selector";
-
-const STRATEGY_TH: Record<string, string> = {
-  trend_following: "ตามเทรนด์",
-  momentum: "โมเมนตัม",
-  mean_reversion: "กลับตัว",
-  breakout: "ทะลุแนวรับ/ต้าน",
-  ai_autonomous: "AI อัตโนมัติ",
-  scalping: "สแคลป์ปิง",
-  ema_crossover: "EMA Crossover",
-  rsi_filter: "RSI Filter",
-  dca: "DCA ถัวเฉลี่ย",
-  grid: "Grid เทรด",
-  risk_parity: "Risk Parity",
-  momentum_rank: "Momentum Rank",
-  pair_spread: "Pair Spread",
-  ml_signal: "ML Signal",
-};
+import { formatDate } from "@/lib/format";
 
 export default function DashboardPage() {
+  const t = useTranslations("dashboard");
+  const tu = useTranslations("ui");
+  const tc = useTranslations("common");
+  const locale = useLocale();
   const activeSymbol = useBotStore((s) => s.activeSymbol);
   const symbols = useBotStore((s) => s.symbols);
   const status = useBotStore((s) => s.status);
@@ -223,11 +212,11 @@ export default function DashboardPage() {
         const pnl = d.profit != null ? (d.profit >= 0 ? `+$${d.profit.toFixed(2)}` : `-$${Math.abs(d.profit).toFixed(2)}`) : "";
         message = `#${d.ticket} closed @ ${d.close_price} ${pnl}`;
       } else if (d.type === "signal_detected") {
-        message = `${d.signal} signal on ${d.symbol}`;
+        message = t("signalOn", { signal: d.signal ?? "", symbol: d.symbol ?? "" });
       } else if (d.type === "trade_blocked") {
-        message = `${d.signal} blocked: ${d.reason}`;
+        message = t("blockedMsg", { signal: d.signal ?? "", reason: d.reason ?? "" });
       } else if (d.type === "order_failed") {
-        message = `${d.order} ${d.lot} ${d.symbol} failed: ${d.error}`;
+        message = t("orderFailedMsg", { order: d.order ?? "", lot: d.lot ?? "", symbol: d.symbol ?? "", error: d.error ?? "" });
       }
       addEvent({ type: d.type, message, timestamp: new Date().toISOString() });
       if (d.type === "trade_opened" || d.type === "trade_closed") fetchData();
@@ -235,15 +224,15 @@ export default function DashboardPage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const handleStart = async () => { setActionLoading("start"); try { await startBot(activeSymbol); showSuccess(`${activeSymbol} bot started`); await fetchData(); } catch (e) { showError(`Failed to start ${activeSymbol}`); } finally { setActionLoading(null); } };
-  const handleStop = async () => { setActionLoading("stop"); try { await stopBot(activeSymbol); showSuccess(`${activeSymbol} bot stopped`); await fetchData(); } catch (e) { showError(`Failed to stop ${activeSymbol}`); } finally { setActionLoading(null); } };
+  const handleStart = async () => { setActionLoading("start"); try { await startBot(activeSymbol); showSuccess(t("botStarted", { symbol: activeSymbol })); await fetchData(); } catch (e) { showError(t("startFailed", { symbol: activeSymbol })); } finally { setActionLoading(null); } };
+  const handleStop = async () => { setActionLoading("stop"); try { await stopBot(activeSymbol); showSuccess(t("botStopped", { symbol: activeSymbol })); await fetchData(); } catch (e) { showError(t("stopFailed", { symbol: activeSymbol })); } finally { setActionLoading(null); } };
   const handleEmergencyStop = async () => {
-    if (confirm("Are you sure? This will close ALL positions for " + activeSymbol + " immediately.")) {
-      try { await emergencyStop(activeSymbol); showSuccess(`Emergency stop executed for ${activeSymbol}`); await fetchData(); } catch { showError("Emergency stop failed"); }
+    if (confirm(t("emergencyConfirm", { symbol: activeSymbol }))) {
+      try { await emergencyStop(activeSymbol); showSuccess(t("emergencyDone", { symbol: activeSymbol })); await fetchData(); } catch { showError(t("emergencyFailed")); }
     }
   };
   const handleAIFilterToggle = async (enabled: boolean) => {
-    try { await updateSettings({ symbol: activeSymbol, use_ai_filter: enabled }); showSuccess(`AI filter ${enabled ? "enabled" : "disabled"}`); await fetchData(); } catch { showError("Failed to update AI filter"); }
+    try { await updateSettings({ symbol: activeSymbol, use_ai_filter: enabled }); showSuccess(enabled ? t("aiFilterEnabled") : t("aiFilterDisabled")); await fetchData(); } catch { showError(t("aiFilterFailed")); }
   };
 
   const [chartTimeframe, setChartTimeframe] = useState("M5");
@@ -288,7 +277,7 @@ export default function DashboardPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="Dashboard" subtitle="Real-time trading overview">
+      <PageHeader title={t("title")} subtitle={t("subtitle")}>
         {activeTick && (
           <div className="border border-border rounded-full px-3 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 sm:gap-3 bg-card">
             <span className="text-xs text-muted-foreground font-medium">{activeSymbol}</span>
@@ -300,7 +289,7 @@ export default function DashboardPage() {
               {activeTick.ask.toFixed(priceDecimals)}
             </span>
             <span className="hidden sm:inline text-xs text-muted-foreground font-medium">
-              spd: {activeTick.spread.toFixed(1)}
+              {t("spd")}: {activeTick.spread.toFixed(1)}
             </span>
           </div>
         )}
@@ -316,7 +305,7 @@ export default function DashboardPage() {
             <WifiOff className="size-3.5 text-destructive" />
           )}
           <span className="text-xs text-muted-foreground font-medium">
-            {isConnected ? "Live" : "Offline"}
+            {isConnected ? tu("live") : tu("offline")}
           </span>
         </div>
       </PageHeader>
@@ -324,8 +313,8 @@ export default function DashboardPage() {
       <PageInstructions
 
         items={[
-          "Start/Stop controls the trading bot. Emergency Stop closes all positions immediately.",
-          "The bot trades automatically based on the selected strategy. Monitor open positions, equity, and live events below.",
+          t("instructions.item1"),
+          t("instructions.item2"),
         ]}
       />
 
@@ -340,7 +329,7 @@ export default function DashboardPage() {
           onClick={() => setViewMode(viewMode === "single" ? "multi" : "single")}
           className="min-h-[44px] px-4 py-2.5 rounded-xl border border-border bg-card text-xs font-semibold hover:border-primary/50 transition-all"
         >
-          {viewMode === "single" ? "4-Grid" : "Single"}
+          {viewMode === "single" ? t("gridView") : t("singleView")}
         </button>
       </SymbolTabs>
 
@@ -371,7 +360,7 @@ export default function DashboardPage() {
             <div className="flex items-center gap-3">
               <img src="/coin.svg" alt="Balance" className="size-7" />
               <div>
-                <p className="text-xs text-muted-foreground font-medium">Balance</p>
+                <p className="text-xs text-muted-foreground font-medium">{t("balance")}</p>
                 <p className="text-sm font-bold font-mono"><AnimatedCounter value={account.balance} prefix="$" /></p>
               </div>
             </div>
@@ -383,33 +372,33 @@ export default function DashboardPage() {
       <div className="grid grid-cols-3 lg:grid-cols-6 gap-2">
         <StatCard
           icon={TrendingUp}
-          label="Unrealized P&L"
+          label={t("unrealizedPnl")}
           value={`${unrealizedPnL >= 0 ? "+" : ""}$${unrealizedPnL.toFixed(2)}`}
           variant={unrealizedPnL >= 0 ? "success" : "danger"}
         />
         <StatCard
           icon={DollarSign}
-          label="Daily P&L"
+          label={t("dailyPnl")}
           value={
             dailyPnl
               ? `${dailyPnl.daily_pnl >= 0 ? "+" : ""}$${dailyPnl.daily_pnl.toFixed(2)}`
               : "—"
           }
-          subtitle={dailyPnl ? `${dailyPnl.wins}W / ${dailyPnl.losses}L (${dailyPnl.trade_count} trades)` : undefined}
+          subtitle={dailyPnl ? t("dailyPnlSubtitle", { wins: dailyPnl.wins, losses: dailyPnl.losses, count: dailyPnl.trade_count }) : undefined}
           variant={!dailyPnl ? "default" : dailyPnl.daily_pnl >= 0 ? "success" : "danger"}
         />
-        <StatCard icon={Layers} label="Open Positions" value={positions.length} variant="default" />
+        <StatCard icon={Layers} label={t("openPositionsCard")} value={positions.length} variant="default" />
         <StatCard
           icon={Activity}
-          label="Bot Status"
+          label={t("botStatus")}
           value={status?.state || "UNKNOWN"}
           variant={isRunning ? "success" : "warning"}
         />
         <div
           className="cursor-pointer"
-          title="Click to reset peak balance"
+          title={t("resetPeakTitle")}
           onClick={async () => {
-            if (confirm("Reset peak balance to current balance?")) {
+            if (confirm(t("resetPeakConfirm"))) {
               try {
                 await resetPeakBalance();
                 window.location.reload();
@@ -421,9 +410,9 @@ export default function DashboardPage() {
         >
           <StatCard
             icon={ShieldAlert}
-            label="Drawdown"
+            label={t("drawdown")}
             value={account?.drawdown_pct != null ? `${(account.drawdown_pct * 100).toFixed(1)}%` : "—"}
-            subtitle={account?.peak_balance ? `Peak: $${account.peak_balance.toFixed(0)} (click reset)` : undefined}
+            subtitle={account?.peak_balance ? t("peakSubtitle", { peak: account.peak_balance.toFixed(0) }) : undefined}
             variant={
               !account?.drawdown_pct ? "default"
               : account.drawdown_pct < 0.05 ? "success"
@@ -438,7 +427,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 xl:gap-6">
         <Card className="order-1 lg:order-2">
           <CardHeader className="p-3 sm:p-6">
-            <CardTitle className="text-sm font-bold">Controls</CardTitle>
+            <CardTitle className="text-sm font-bold">{t("controls")}</CardTitle>
           </CardHeader>
           <CardContent className="p-3 pt-0 sm:p-6 sm:pt-0 space-y-3 sm:space-y-4">
             <div className="flex gap-2">
@@ -448,7 +437,7 @@ export default function DashboardPage() {
                 className="flex-1 rounded-full bg-primary text-primary-foreground font-semibold hover-scale"
               >
                 {actionLoading === "start" ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <Play className="size-4 mr-1.5" />}
-                {actionLoading === "start" ? "Starting..." : "Start"}
+                {actionLoading === "start" ? t("starting") : t("start")}
               </Button>
               <Button
                 onClick={handleStop}
@@ -457,7 +446,7 @@ export default function DashboardPage() {
                 className="flex-1 rounded-full"
               >
                 {actionLoading === "stop" ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <Square className="size-3.5 mr-1.5" />}
-                {actionLoading === "stop" ? "Stopping..." : "Stop"}
+                {actionLoading === "stop" ? t("stopping") : t("stop")}
               </Button>
             </div>
             <Button
@@ -466,52 +455,52 @@ export default function DashboardPage() {
               className="w-full rounded-full"
             >
               <ShieldAlert className="size-4 mr-1.5" />
-              Emergency Stop
+              {t("emergencyStop")}
             </Button>
 
             <Separator />
 
             {status?.paper_trade && (
               <p className="text-xs text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-400/10 rounded-xl px-3 py-1.5 font-medium">
-                Paper mode — no real orders
+                {t("paperMode")}
               </p>
             )}
 
             <div className="space-y-2 text-xs text-muted-foreground">
               <div className="flex justify-between">
-                <span className="font-medium">Mode</span>
-                <span className="font-semibold text-green-400">Strategy-First</span>
+                <span className="font-medium">{t("mode")}</span>
+                <span className="font-semibold text-green-400">{t("modeValue")}</span>
               </div>
               <div className="flex justify-between">
-                <span className="font-medium">Strategy</span>
+                <span className="font-medium">{t("strategy")}</span>
                 <span className="text-foreground font-semibold">{status?.strategy || "—"}</span>
               </div>
               <div className="flex justify-between">
-                <span className="font-medium">Symbol</span>
+                <span className="font-medium">{t("symbol")}</span>
                 <span className="text-foreground font-semibold">{activeSymbol}</span>
               </div>
               <div className="flex justify-between">
-                <span className="font-medium">Timeframe</span>
+                <span className="font-medium">{t("timeframe")}</span>
                 <span className="text-foreground font-semibold">{status?.timeframe || "M15"}</span>
               </div>
               <div className="flex justify-between">
-                <span className="font-medium">Lot</span>
-                <span className="text-foreground font-semibold">{status?.fixed_lot != null ? `Fixed ${status.fixed_lot}` : "Auto"}</span>
+                <span className="font-medium">{t("lot")}</span>
+                <span className="text-foreground font-semibold">{status?.fixed_lot != null ? t("lotFixed", { lot: status.fixed_lot }) : t("lotAuto")}</span>
               </div>
               {(status?.multi_tf_regime || status?.regime) && (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="font-medium">Regime</span>
+                    <span className="font-medium">{t("regime")}</span>
                     <Badge variant="outline" className={`text-[10px] ${
                       (status.multi_tf_regime?.composite || status.regime) === "trending_high_vol" ? "border-red-500/30 text-red-400" :
                       (status.multi_tf_regime?.composite || status.regime) === "ranging" ? "border-blue-500/30 text-blue-400" :
                       (status.multi_tf_regime?.composite || status.regime) === "trending_low_vol" ? "border-green-500/30 text-green-400" :
                       "border-border text-muted-foreground"
                     }`}>
-                      {(status.multi_tf_regime?.composite || status.regime) === "trending_high_vol" ? "🔥 Trend+HV" :
-                       (status.multi_tf_regime?.composite || status.regime) === "trending_low_vol" ? "📊 Trend+LV" :
-                       (status.multi_tf_regime?.composite || status.regime) === "ranging" ? "↔️ Ranging" :
-                       "⚖️ Normal"}
+                      {(status.multi_tf_regime?.composite || status.regime) === "trending_high_vol" ? t("regimeTrendHV") :
+                       (status.multi_tf_regime?.composite || status.regime) === "trending_low_vol" ? t("regimeTrendLV") :
+                       (status.multi_tf_regime?.composite || status.regime) === "ranging" ? t("regimeRanging") :
+                       t("regimeNormal")}
                       {status.multi_tf_regime?.style && ` · ${status.multi_tf_regime.style}`}
                     </Badge>
                   </div>
@@ -529,7 +518,7 @@ export default function DashboardPage() {
               )}
               <Separator />
               <a href="/settings" className="text-[11px] text-primary hover:underline">
-                Settings
+                {tc("settings")}
               </a>
             </div>
           </CardContent>
@@ -540,7 +529,7 @@ export default function DashboardPage() {
             <Card>
               <CardHeader className="p-3 sm:p-6">
                 <CardTitle className="text-sm font-bold flex items-center justify-between">
-                  <span>All Symbols</span>
+                  <span>{t("allSymbols")}</span>
                   <TimeframeSelector value={chartTimeframe} onChange={setChartTimeframe} />
                 </CardTitle>
               </CardHeader>
@@ -597,7 +586,7 @@ export default function DashboardPage() {
           {/* Open Positions — below chart */}
           <Card>
             <CardHeader className="p-3 sm:p-6">
-              <CardTitle className="text-sm font-bold">Open Positions</CardTitle>
+              <CardTitle className="text-sm font-bold">{t("openPositionsCard")}</CardTitle>
             </CardHeader>
             <CardContent className="p-3 pt-0 sm:p-6 sm:pt-0">
               {positions.length > 0 ? (
@@ -605,13 +594,13 @@ export default function DashboardPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Symbol</TableHead>
-                        <TableHead>Type</TableHead>
-                        <TableHead className="text-right">Lots</TableHead>
-                        <TableHead className="text-right">Entry</TableHead>
-                        <TableHead className="text-right">SL</TableHead>
-                        <TableHead className="text-right">TP</TableHead>
-                        <TableHead className="text-right">P&L</TableHead>
+                        <TableHead>{t("colSymbol")}</TableHead>
+                        <TableHead>{t("colType")}</TableHead>
+                        <TableHead className="text-right">{t("colLots")}</TableHead>
+                        <TableHead className="text-right">{t("colEntry")}</TableHead>
+                        <TableHead className="text-right">{t("colSl")}</TableHead>
+                        <TableHead className="text-right">{t("colTp")}</TableHead>
+                        <TableHead className="text-right">{t("colPnl")}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -644,7 +633,7 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground text-center py-8 font-medium">
-                  No open positions
+                  {t("noOpenPositions")}
                 </p>
               )}
             </CardContent>
@@ -662,7 +651,7 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Activity className="size-4 text-primary" />
-                    AI วิเคราะห์ล่าสุด
+                    {t("latestAIAnalysis")}
                     {(() => {
                       const d = (status.ai_decision.decision as string || "").toLowerCase();
                       const signal = d.includes("buy") && !d.includes("hold") ? "BUY" : d.includes("sell") && !d.includes("hold") ? "SELL" : "HOLD";
@@ -672,9 +661,9 @@ export default function DashboardPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3 text-[11px] font-normal text-muted-foreground">
-                  <span>{(status.ai_decision as Record<string, unknown>).timestamp ? new Date((status.ai_decision as Record<string, unknown>).timestamp as string).toLocaleString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" }) : "—"}</span>
-                  <span>{status.ai_decision.tool_calls} tools</span>
-                  <span>{status.ai_decision.turns} turns</span>
+                  <span>{(status.ai_decision as Record<string, unknown>).timestamp ? formatDate((status.ai_decision as Record<string, unknown>).timestamp as string, locale) : "—"}</span>
+                  <span>{t("toolsCount", { count: status.ai_decision.tool_calls })}</span>
+                  <span>{t("turnsCount", { count: status.ai_decision.turns })}</span>
                   <span>{status.ai_decision.duration_s}s</span>
                 </div>
               </CardTitle>
@@ -690,7 +679,7 @@ export default function DashboardPage() {
         {/* News Feed */}
         <Card>
           <CardHeader className="p-3 sm:p-6">
-            <CardTitle className="text-sm font-bold">News Feed</CardTitle>
+            <CardTitle className="text-sm font-bold">{t("newsFeed")}</CardTitle>
           </CardHeader>
           <CardContent className="p-3 pt-0 sm:p-6 sm:pt-0">
             <div>
@@ -707,7 +696,7 @@ export default function DashboardPage() {
                 ))
               ) : (
                 <p className="text-sm text-muted-foreground text-center py-8 font-medium">
-                  No recent news
+                  {t("noRecentNews")}
                 </p>
               )}
             </div>
@@ -717,7 +706,7 @@ export default function DashboardPage() {
         {/* Events */}
         <Card>
           <CardHeader className="p-3 sm:p-6">
-            <CardTitle className="text-sm font-bold">Events</CardTitle>
+            <CardTitle className="text-sm font-bold">{t("events")}</CardTitle>
           </CardHeader>
           <CardContent className="p-3 pt-0 sm:p-6 sm:pt-0">
             <EventFeed events={events} />
@@ -728,38 +717,38 @@ export default function DashboardPage() {
       {/* Performance Analytics */}
       {analytics && (analytics.total_trades as number) > 0 && (
         <div className="space-y-4">
-          <h3 className="text-sm font-bold text-foreground">Performance Analytics (30d)</h3>
+          <h3 className="text-sm font-bold text-foreground">{t("performanceAnalytics")}</h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
             <div className="border border-border rounded-xl p-4 text-center">
-              <p className="text-xs text-muted-foreground font-medium">Sharpe</p>
+              <p className="text-xs text-muted-foreground font-medium">{t("sharpe")}</p>
               <p className={`text-lg font-bold ${(analytics.sharpe_ratio as number) > 1 ? "text-success dark:text-green-400" : "text-foreground"}`}>
                 {(analytics.sharpe_ratio as number).toFixed(2)}
               </p>
             </div>
             <div className="border border-border rounded-xl p-4 text-center">
-              <p className="text-xs text-muted-foreground font-medium">Sortino</p>
+              <p className="text-xs text-muted-foreground font-medium">{t("sortino")}</p>
               <p className={`text-lg font-bold ${(analytics.sortino_ratio as number) > 1.5 ? "text-success dark:text-green-400" : "text-foreground"}`}>
                 {(analytics.sortino_ratio as number).toFixed(2)}
               </p>
             </div>
             <div className="border border-border rounded-xl p-4 text-center">
-              <p className="text-xs text-muted-foreground font-medium">Profit Factor</p>
+              <p className="text-xs text-muted-foreground font-medium">{t("profitFactor")}</p>
               <p className={`text-lg font-bold ${(analytics.profit_factor as number) > 1.5 ? "text-success dark:text-green-400" : "text-foreground"}`}>
                 {(analytics.profit_factor as number).toFixed(2)}
               </p>
             </div>
             <div className="border border-border rounded-xl p-4 text-center">
-              <p className="text-xs text-muted-foreground font-medium">Max Drawdown</p>
+              <p className="text-xs text-muted-foreground font-medium">{t("maxDrawdown")}</p>
               <p className="text-lg font-bold text-destructive">
                 {(analytics.max_drawdown_pct as number).toFixed(1)}%
               </p>
             </div>
             <div className="border border-border rounded-xl p-4 text-center">
-              <p className="text-xs text-muted-foreground font-medium">Win Streak</p>
+              <p className="text-xs text-muted-foreground font-medium">{t("winStreak")}</p>
               <p className="text-lg font-bold text-foreground">{analytics.consecutive_wins as number}</p>
             </div>
             <div className="border border-border rounded-xl p-4 text-center">
-              <p className="text-xs text-muted-foreground font-medium">Loss Streak</p>
+              <p className="text-xs text-muted-foreground font-medium">{t("lossStreak")}</p>
               <p className="text-lg font-bold text-foreground">{analytics.consecutive_losses as number}</p>
             </div>
           </div>
@@ -767,7 +756,7 @@ export default function DashboardPage() {
           {(analytics.equity_curve as {time: string; equity: number}[])?.length > 1 && (
             <Card>
               <CardHeader className="p-3 sm:p-6">
-                <CardTitle className="text-sm font-bold">Equity Curve</CardTitle>
+                <CardTitle className="text-sm font-bold">{t("equityCurve")}</CardTitle>
               </CardHeader>
               <CardContent className="h-48 p-3 pt-0 sm:p-6 sm:pt-0">
                 <LazyRecharts data={analytics.equity_curve as {time: string; equity: number}[]} />

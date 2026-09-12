@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,11 +21,11 @@ function extractDomain(source: string): string {
   }
 }
 
-function getTimeAgo(isoTime: string): string {
+function getTimeAgo(isoTime: string, justNow: string): string {
   const ts = isoTime.endsWith("Z") || isoTime.includes("+") ? isoTime : isoTime + "Z";
   const diff = Date.now() - new Date(ts).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
+  if (mins < 1) return justNow;
   if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h`;
@@ -38,7 +39,8 @@ const sentimentConfig = {
 } as const;
 
 export default function NewsCard({ headline, source, time, sentimentLabel, sentimentScore }: Props) {
-  const timeAgo = getTimeAgo(time);
+  const t = useTranslations("ai.news");
+  const timeAgo = getTimeAgo(time, t("justNow"));
   const config = sentimentConfig[sentimentLabel as keyof typeof sentimentConfig] || sentimentConfig.neutral;
   const Icon = config.icon;
 

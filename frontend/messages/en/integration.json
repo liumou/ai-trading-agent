@@ -1,0 +1,28 @@
+{
+  "title": "Integration",
+  "subtitle": "Connect external services to enable agent capabilities",
+  "testAll": "Test All",
+  "testing": "Testing...",
+  "instructions": {
+    "item1": "Connect external services here. Click Configure to add API keys, then Test Connection to verify.",
+    "item2": "MT5 requires a running MetaTrader 5 terminal. Claude AI uses Max Subscription (OAuth). Telegram needs a bot token from @BotFather."
+  },
+  "loading": "Loading...",
+  "connected": "Connected",
+  "notConfigured": "Not configured",
+  "errorStatus": "Error",
+  "toolsCount": "{count} tools",
+  "connectionSuccessful": "Connection successful",
+  "connectionFailed": "Connection failed",
+  "allServicesConnected": "All services connected",
+  "someServicesFailed": "Some services failed",
+  "connectionTestFailed": "Connection test failed",
+  "configSaved": "Configuration saved",
+  "configSaveFailed": "Failed to save configuration",
+  "notSet": "Not set",
+  "current": "Current: {value}",
+  "testConnection": "Test Connection",
+  "save": "Save",
+  "saving": "Saving...",
+  "availableTools": "Available Tools ({count})"
+}

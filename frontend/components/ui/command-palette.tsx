@@ -19,32 +19,35 @@ import {
   Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useTranslations } from "next-intl";
 
 interface CommandItem {
-  label: string;
+  labelKey: string;
   href: string;
   icon: typeof LayoutDashboard;
-  group: string;
+  group: "navigation" | "system";
 }
 
 const navItems: CommandItem[] = [
-  { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, group: "Navigation" },
-  { label: "Backtest", href: "/backtest", icon: BarChart3, group: "Navigation" },
-  { label: "History", href: "/history", icon: History, group: "Navigation" },
-  { label: "AI Insights", href: "/insights", icon: Brain, group: "Navigation" },
-  { label: "AI Activity", href: "/activity", icon: Activity, group: "Navigation" },
-  { label: "ML Model", href: "/ml", icon: Cpu, group: "Navigation" },
-  { label: "Macro Data", href: "/macro", icon: Globe, group: "Navigation" },
-  { label: "Quant", href: "/quant", icon: Shield, group: "Navigation" },
-  { label: "Agent Prompts", href: "/agent-prompts", icon: Settings2, group: "System" },
-  { label: "Integration", href: "/integration", icon: Plug, group: "System" },
-  { label: "Notifications", href: "/notifications", icon: Bell, group: "System" },
-  { label: "Settings", href: "/settings", icon: Settings, group: "System" },
+  { labelKey: "dashboard", href: "/dashboard", icon: LayoutDashboard, group: "navigation" },
+  { labelKey: "backtest", href: "/backtest", icon: BarChart3, group: "navigation" },
+  { labelKey: "history", href: "/history", icon: History, group: "navigation" },
+  { labelKey: "insights", href: "/insights", icon: Brain, group: "navigation" },
+  { labelKey: "activity", href: "/activity", icon: Activity, group: "navigation" },
+  { labelKey: "ml", href: "/ml", icon: Cpu, group: "navigation" },
+  { labelKey: "macro", href: "/macro", icon: Globe, group: "navigation" },
+  { labelKey: "quant", href: "/quant", icon: Shield, group: "navigation" },
+  { labelKey: "agentPrompts", href: "/agent-prompts", icon: Settings2, group: "system" },
+  { labelKey: "integration", href: "/integration", icon: Plug, group: "system" },
+  { labelKey: "notifications", href: "/notifications", icon: Bell, group: "system" },
+  { labelKey: "settings", href: "/settings", icon: Settings, group: "system" },
 ];
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const router = useRouter();
+  const tNav = useTranslations("nav");
+  const t = useTranslations("ui");
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -85,7 +88,7 @@ export function CommandPalette() {
           <div className="flex items-center gap-2 border-b border-border px-3">
             <Search className="size-4 text-muted-foreground shrink-0" />
             <Command.Input
-              placeholder="Search pages..."
+              placeholder={t("searchPages")}
               className="h-11 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               autoFocus
             />
@@ -96,13 +99,13 @@ export function CommandPalette() {
 
           <Command.List className="max-h-72 overflow-y-auto p-2">
             <Command.Empty className="py-6 text-center text-sm text-muted-foreground">
-              No results found.
+              {t("noResultsFound")}
             </Command.Empty>
 
-            {["Navigation", "System"].map((group) => (
+            {(["navigation", "system"] as const).map((group) => (
               <Command.Group
                 key={group}
-                heading={group}
+                heading={t(group)}
                 className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted-foreground/60"
               >
                 {navItems
@@ -112,12 +115,12 @@ export function CommandPalette() {
                     return (
                       <Command.Item
                         key={item.href}
-                        value={item.label}
+                        value={item.labelKey}
                         onSelect={() => handleSelect(item.href)}
                         className="flex items-center gap-3 rounded-lg px-2 py-2 text-sm cursor-pointer text-muted-foreground data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground transition-colors"
                       >
                         <Icon className="size-4" />
-                        <span>{item.label}</span>
+                        <span>{tNav(item.labelKey)}</span>
                       </Command.Item>
                     );
                   })}
@@ -127,11 +130,11 @@ export function CommandPalette() {
 
           <div className="border-t border-border px-3 py-2 flex items-center justify-between">
             <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-              <span>Navigate</span>
+              <span>{t("navigate")}</span>
               <kbd className="inline-flex h-4 items-center rounded border border-border bg-muted px-1 text-[10px]">
                 ↑↓
               </kbd>
-              <span>Select</span>
+              <span>{t("select")}</span>
               <kbd className="inline-flex h-4 items-center rounded border border-border bg-muted px-1 text-[10px]">
                 ↵
               </kbd>

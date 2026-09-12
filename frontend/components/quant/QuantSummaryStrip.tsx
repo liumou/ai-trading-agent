@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { Shield, Activity, TrendingUp, GitBranch, PieChart } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -22,16 +23,20 @@ export function QuantSummaryStrip({
   portfolioStatus,
   className,
 }: QuantSummaryStripProps) {
+  const t = useTranslations("quant");
+  const tVolLevel = useTranslations("quant.volLevel");
+  const tCorrStatus = useTranslations("quant.correlationStatus");
+  const tPortfolioStatus = useTranslations("quant.portfolioStatus");
   const items = [
     {
       icon: Shield,
-      label: "VaR",
+      label: t("summary.var"),
       value: var95 !== undefined ? `${(var95 * 100).toFixed(1)}%` : "--",
       color: var95 && var95 > 0.03 ? "text-red-400" : "text-green-400",
     },
     {
       icon: TrendingUp,
-      label: "Regime",
+      label: t("summary.regime"),
       value: regime
         ? `${regime.replace("trending_", "T-").replace("_vol", "")} ${regimeProb ? Math.round(regimeProb * 100) + "%" : ""}`
         : "--",
@@ -39,20 +44,20 @@ export function QuantSummaryStrip({
     },
     {
       icon: Activity,
-      label: "Vol",
-      value: volLevel || "--",
+      label: t("summary.vol"),
+      value: volLevel ? (tVolLevel.has(volLevel) ? tVolLevel(volLevel) : volLevel) : "--",
       color: volLevel === "high" ? "text-orange-400" : volLevel === "low" ? "text-cyan-400" : "text-muted-foreground",
     },
     {
       icon: GitBranch,
-      label: "Corr",
-      value: correlationStatus || "--",
+      label: t("summary.corr"),
+      value: correlationStatus ? (tCorrStatus.has(correlationStatus) ? tCorrStatus(correlationStatus) : correlationStatus) : "--",
       color: correlationStatus === "stable" ? "text-green-400" : correlationStatus === "breakdown" ? "text-red-400" : "text-yellow-400",
     },
     {
       icon: PieChart,
-      label: "Portfolio",
-      value: portfolioStatus || "--",
+      label: t("summary.portfolio"),
+      value: portfolioStatus ? (tPortfolioStatus.has(portfolioStatus) ? tPortfolioStatus(portfolioStatus) : portfolioStatus) : "--",
       color: portfolioStatus === "balanced" ? "text-green-400" : "text-yellow-400",
     },
   ];

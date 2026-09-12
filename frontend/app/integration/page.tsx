@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useTranslations } from "next-intl";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
 import { showSuccess, showError } from "@/lib/toast";
@@ -61,6 +62,7 @@ const LOGOS: Record<string, () => React.ReactElement> = {
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function IntegrationPage() {
+  const t = useTranslations("integration");
   const [integrations, setIntegrations] = useState<IntegrationConfig[]>([]);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [loading, setLoading] = useState(true);
@@ -84,11 +86,11 @@ export default function IntegrationPage() {
     try {
       const res = await api.get(`/api/integration/test/${id}`);
       setTestResults((prev) => ({ ...prev, [id]: res.data }));
-      if (res.data.status === "connected") showSuccess("Connection successful");
-      else showError("Connection failed", res.data.detail);
+      if (res.data.status === "connected") showSuccess(t("connectionSuccessful"));
+      else showError(t("connectionFailed"), res.data.detail);
     } catch {
       setTestResults((prev) => ({ ...prev, [id]: { name: id, status: "error", latency_ms: 0, detail: "Failed" } }));
-      showError("Connection failed");
+      showError(t("connectionFailed"));
     } finally { setTesting(null); }
   };
 
@@ -101,9 +103,9 @@ export default function IntegrationPage() {
       for (const s of res.data.services) results[keyMap[s.name] || s.name] = s;
       setTestResults(results);
       const allConnected = Object.values(results).every((r) => r.status === "connected");
-      if (allConnected) showSuccess("All services connected");
-      else showError("Some services failed");
-    } catch { showError("Connection test failed"); } finally { setTesting(null); }
+      if (allConnected) showSuccess(t("allServicesConnected"));
+      else showError(t("someServicesFailed"));
+    } catch { showError(t("connectionTestFailed")); } finally { setTesting(null); }
   };
 
   const openModal = (id: string) => {
@@ -120,9 +122,9 @@ export default function IntegrationPage() {
     try {
       await api.put("/api/integration/config", { integration_id: modalId, config: nonEmpty });
       setEditValues({});
-      showSuccess("Configuration saved");
+      showSuccess(t("configSaved"));
       await fetchConfig();
-    } catch { showError("Failed to save configuration"); } finally { setSaving(false); }
+    } catch { showError(t("configSaveFailed")); } finally { setSaving(false); }
   };
 
   const modalIntg = integrations.find((i) => i.id === modalId);
@@ -131,23 +133,23 @@ export default function IntegrationPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="Integration" subtitle="Connect external services to enable agent capabilities">
+      <PageHeader title={t("title")} subtitle={t("subtitle")}>
         <button type="button" onClick={testAll} disabled={testing === "all"}
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-          {testing === "all" ? "Testing..." : "Test All"}
+          {testing === "all" ? t("testing") : t("testAll")}
         </button>
       </PageHeader>
 
       <PageInstructions
 
         items={[
-          "Connect external services here. Click Configure to add API keys, then Test Connection to verify.",
-          "MT5 requires a running MetaTrader 5 terminal. Claude AI uses Max Subscription (OAuth). Telegram needs a bot token from @BotFather.",
+          t("instructions.item1"),
+          t("instructions.item2"),
         ]}
       />
 
       {loading ? (
-        <div className="text-center text-muted-foreground py-8">Loading...</div>
+        <div className="text-center text-muted-foreground py-8">{t("loading")}</div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {integrations.map((intg) => {
@@ -169,7 +171,7 @@ export default function IntegrationPage() {
                       {showConnected && (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-green-500 bg-green-500/10 border border-green-500/20 rounded-full px-2 py-0.5">
                           <span className="size-1.5 rounded-full bg-green-500" />
-                          Connected
+                          {t("connected")}
                         </span>
                       )}
                     </div>
@@ -182,11 +184,11 @@ export default function IntegrationPage() {
                       result?.status === "error" ? "bg-red-500/10 text-red-500" :
                       "bg-amber-500/10 text-amber-500"
                     }`}>
-                      {result?.status === "error" ? "Error" : "Not configured"}
+                      {result?.status === "error" ? t("errorStatus") : t("notConfigured")}
                     </span>
                   )}
                   {isTestedConnected && <span className="text-xs text-muted-foreground">{result.latency_ms}ms</span>}
-                  <span className="text-xs text-muted-foreground ml-auto">{intg.tools.length} tools</span>
+                  <span className="text-xs text-muted-foreground ml-auto">{t("toolsCount", { count: intg.tools.length })}</span>
                 </div>
               </button>
             );
@@ -219,13 +221,13 @@ export default function IntegrationPage() {
                     </label>
                     <input
                       type={isSecret ? "password" : "text"}
-                      placeholder={maskedValue || "Not set"}
+                      placeholder={maskedValue || t("notSet")}
                       value={editValues[key] || ""}
                       onChange={(e) => setEditValues((prev) => ({ ...prev, [key]: e.target.value }))}
                       className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary placeholder:text-muted-foreground/50"
                     />
                     {isSecret && maskedValue && !editValues[key] && (
-                      <p className="text-xs text-muted-foreground mt-1">Current: {maskedValue}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{t("current", { value: maskedValue })}</p>
                     )}
                   </div>
                 );
@@ -249,12 +251,12 @@ export default function IntegrationPage() {
             <div className="px-6 pt-4 flex gap-2">
               <button type="button" onClick={() => testService(modalIntg.id)} disabled={testing === modalIntg.id}
                 className="flex-1 rounded-lg border border-border px-4 py-2.5 text-sm font-medium hover:bg-accent disabled:opacity-50">
-                {testing === modalIntg.id ? "Testing..." : "Test Connection"}
+                {testing === modalIntg.id ? t("testing") : t("testConnection")}
               </button>
               {hasEdits && (
                 <button type="button" onClick={handleSave} disabled={saving}
                   className="flex-1 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-                  {saving ? "Saving..." : "Save"}
+                  {saving ? t("saving") : t("save")}
                 </button>
               )}
             </div>
@@ -264,7 +266,7 @@ export default function IntegrationPage() {
               <div className="px-6 pt-5 pb-6">
                 <button type="button" onClick={() => setShowTools(!showTools)}
                   className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase hover:text-foreground w-full">
-                  <span>Available Tools ({modalIntg.tools.length})</span>
+                  <span>{t("availableTools", { count: modalIntg.tools.length })}</span>
                   <span>{showTools ? "▴" : "▾"}</span>
                 </button>
                 {showTools && (

@@ -2,6 +2,7 @@
 
 import React from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 
 interface ErrorBoundaryProps {
@@ -12,6 +13,31 @@ interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
+}
+
+function ErrorBoundaryFallback({
+  error,
+  onReset,
+}: {
+  error: Error | null;
+  onReset: () => void;
+}) {
+  const t = useTranslations("ui");
+  return (
+    <div className="flex flex-col items-center justify-center py-8 px-4 text-center rounded-xl border border-destructive/20 bg-destructive/5">
+      <AlertTriangle className="size-8 text-destructive mb-3" />
+      <p className="text-sm font-semibold text-foreground mb-1">
+        {t("somethingWrong")}
+      </p>
+      <p className="text-xs text-muted-foreground mb-4 max-w-xs">
+        {error?.message || t("unexpectedError")}
+      </p>
+      <Button variant="outline" size="sm" onClick={onReset}>
+        <RotateCcw className="size-3.5" />
+        {t("tryAgain")}
+      </Button>
+    </div>
+  );
 }
 
 export class ErrorBoundary extends React.Component<
@@ -38,19 +64,10 @@ export class ErrorBoundary extends React.Component<
       }
 
       return (
-        <div className="flex flex-col items-center justify-center py-8 px-4 text-center rounded-xl border border-destructive/20 bg-destructive/5">
-          <AlertTriangle className="size-8 text-destructive mb-3" />
-          <p className="text-sm font-semibold text-foreground mb-1">
-            Something went wrong
-          </p>
-          <p className="text-xs text-muted-foreground mb-4 max-w-xs">
-            {this.state.error?.message || "An unexpected error occurred"}
-          </p>
-          <Button variant="outline" size="sm" onClick={this.handleReset}>
-            <RotateCcw className="size-3.5" />
-            Try Again
-          </Button>
-        </div>
+        <ErrorBoundaryFallback
+          error={this.state.error}
+          onReset={this.handleReset}
+        />
       );
     }
 

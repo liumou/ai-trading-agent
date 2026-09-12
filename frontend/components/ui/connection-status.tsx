@@ -1,9 +1,11 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useBotStore } from "@/store/botStore";
 import { cn } from "@/lib/utils";
 
 export function ConnectionStatus() {
+  const t = useTranslations("ui");
   const wsConnected = useBotStore((s) => s.wsConnected);
   const lastSyncAt = useBotStore((s) => s.lastSyncAt);
 
@@ -11,12 +13,12 @@ export function ConnectionStatus() {
     ? "bg-emerald-500"
     : "bg-destructive";
 
-  const statusLabel = wsConnected ? "Live" : "Offline";
+  const statusLabel = wsConnected ? t("live") : t("offline");
 
-  const timeAgo = lastSyncAt ? getTimeAgo(lastSyncAt) : null;
+  const timeAgo = lastSyncAt ? getTimeAgo(lastSyncAt, t) : null;
 
   return (
-    <div className="flex items-center gap-2 min-w-0" title={timeAgo ? `Last sync: ${timeAgo}` : statusLabel}>
+    <div className="flex items-center gap-2 min-w-0" title={timeAgo ? t("lastSync", { time: timeAgo }) : statusLabel}>
       <span className="relative flex size-2">
         <span
           className={cn(
@@ -41,12 +43,14 @@ export function ConnectionStatus() {
   );
 }
 
-function getTimeAgo(dateStr: string): string {
+type UITranslations = ReturnType<typeof useTranslations>;
+
+function getTimeAgo(dateStr: string, t: UITranslations): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 5) return "just now";
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 5) return t("justNow");
+  if (seconds < 60) return t("secondsAgo", { count: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.floor(minutes / 60)}h ago`;
+  if (minutes < 60) return t("minutesAgo", { count: minutes });
+  return t("hoursAgo", { count: Math.floor(minutes / 60) });
 }

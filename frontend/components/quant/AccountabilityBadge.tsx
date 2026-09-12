@@ -1,12 +1,13 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 
 const CLASSIFICATIONS = {
-  skilled_win: { label: "Skilled Win", color: "text-green-500", bg: "bg-green-500/10" },
-  correct_process: { label: "Correct Process", color: "text-blue-500", bg: "bg-blue-500/10" },
-  lucky_win: { label: "Lucky", color: "text-yellow-500", bg: "bg-yellow-500/10" },
-  real_mistake: { label: "Mistake", color: "text-red-500", bg: "bg-red-500/10" },
+  skilled_win: { key: "skilledWin", color: "text-green-500", bg: "bg-green-500/10" },
+  correct_process: { key: "correctProcess", color: "text-blue-500", bg: "bg-blue-500/10" },
+  lucky_win: { key: "luckyWin", color: "text-yellow-500", bg: "bg-yellow-500/10" },
+  real_mistake: { key: "realMistake", color: "text-red-500", bg: "bg-red-500/10" },
 } as const;
 
 interface AccountabilityBadgeProps {
@@ -15,6 +16,7 @@ interface AccountabilityBadgeProps {
 }
 
 export function AccountabilityBadge({ classification, className }: AccountabilityBadgeProps) {
+  const t = useTranslations("quant.accountability");
   const config = CLASSIFICATIONS[classification as keyof typeof CLASSIFICATIONS] || CLASSIFICATIONS.correct_process;
 
   return (
@@ -26,7 +28,7 @@ export function AccountabilityBadge({ classification, className }: Accountabilit
         className,
       )}
     >
-      {config.label}
+      {t.has(config.key) ? t(config.key) : classification}
     </span>
   );
 }

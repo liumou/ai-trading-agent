@@ -3,10 +3,12 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { startRegistration } from "@simplewebauthn/browser";
+import { useTranslations } from "next-intl";
 import api from "@/lib/api";
 import { showSuccess, showError } from "@/lib/toast";
 
 export default function SetupPage() {
+  const t = useTranslations("setup");
   const router = useRouter();
   const [displayName, setDisplayName] = useState("Admin");
   const [deviceName, setDeviceName] = useState("");
@@ -52,25 +54,25 @@ export default function SetupPage() {
       });
 
       // Success — redirect to login
-      showSuccess("Passkey registered successfully!");
+      showSuccess(t("toastSuccess"));
       router.push("/login");
     } catch (err: unknown) {
       setStep("form");
-      showError("Registration failed");
+      showError(t("toastFail"));
       if (err && typeof err === "object" && "name" in err) {
         const webauthnErr = err as { name: string; message?: string };
         if (webauthnErr.name === "NotAllowedError") {
-          setError("Passkey registration was cancelled or timed out.");
+          setError(t("errCancelled"));
         } else if (webauthnErr.name === "InvalidStateError") {
-          setError("This device is already registered.");
+          setError(t("errAlready"));
         } else {
-          setError(webauthnErr.message || "Registration failed");
+          setError(webauthnErr.message || t("errFail"));
         }
       } else if (err && typeof err === "object" && "response" in err) {
         const response = (err as { response: { data?: { detail?: string } } }).response;
-        setError(response?.data?.detail || "Registration failed");
+        setError(response?.data?.detail || t("errFail"));
       } else {
-        setError("Connection error");
+        setError(t("errConn"));
       }
     } finally {
       setLoading(false);
@@ -80,7 +82,7 @@ export default function SetupPage() {
   if (checking) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <p className="text-muted-foreground">Loading...</p>
+        <p className="text-muted-foreground">{t("loading")}</p>
       </div>
     );
   }
@@ -90,19 +92,17 @@ export default function SetupPage() {
       <div className="w-full max-w-sm space-y-6 p-8">
         <div className="text-center">
           <h1 className="text-2xl font-bold">AI Trading Agent</h1>
-          <p className="text-sm text-muted-foreground mt-1">Initial Setup</p>
+          <p className="text-sm text-muted-foreground mt-1">{t("subtitle")}</p>
         </div>
 
         <div className="rounded-md bg-blue-500/10 p-3 text-sm text-blue-400">
-          Register a passkey to secure your dashboard. You can use fingerprint, Face ID, or a security key.
+          {t("passkeyHint")}
         </div>
 
         {step === "registering" && (
           <div className="text-center py-4">
-            <div className="animate-pulse text-lg mb-2">Waiting for passkey...</div>
-            <p className="text-sm text-muted-foreground">
-              Follow the prompt from your browser or device.
-            </p>
+            <div className="animate-pulse text-lg mb-2">{t("waiting")}</div>
+            <p className="text-sm text-muted-foreground">{t("followPrompt")}</p>
           </div>
         )}
 
@@ -116,7 +116,7 @@ export default function SetupPage() {
 
             <div>
               <label htmlFor="displayName" className="block text-sm font-medium mb-1">
-                Display Name
+                {t("displayNameLabel")}
               </label>
               <input
                 id="displayName"
@@ -130,14 +130,15 @@ export default function SetupPage() {
 
             <div>
               <label htmlFor="deviceName" className="block text-sm font-medium mb-1">
-                Device Name <span className="text-muted-foreground">(optional)</span>
+                {t("deviceNameLabel")}{" "}
+                <span className="text-muted-foreground">{t("optionalLabel")}</span>
               </label>
               <input
                 id="deviceName"
                 type="text"
                 value={deviceName}
                 onChange={(e) => setDeviceName(e.target.value)}
-                placeholder="e.g. MacBook Pro, iPhone 15"
+                placeholder={t("deviceNamePh")}
                 className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
@@ -147,7 +148,7 @@ export default function SetupPage() {
               disabled={loading}
               className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              {loading ? "Registering..." : "Register Passkey"}
+              {loading ? t("registering") : t("registerPasskey")}
             </button>
           </form>
         )}

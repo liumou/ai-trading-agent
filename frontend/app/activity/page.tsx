@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import { Activity } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
 import { EmptyState } from "@/components/ui/empty-state";
 import { showSuccess, showError } from "@/lib/toast";
+import { translateServerText } from "@/lib/serverText";
 import api from "@/lib/api";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -30,14 +32,24 @@ interface Summary {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const CATEGORY_CONFIG: Record<string, { label: string; color: string; dot: string; bg: string }> = {
-  trade:        { label: "Trade",        color: "text-green-400",  dot: "bg-green-400",  bg: "bg-green-500/10" },
-  signal:       { label: "Signal",       color: "text-blue-400",   dot: "bg-blue-400",   bg: "bg-blue-500/10" },
-  sentiment:    { label: "Sentiment",    color: "text-amber-400",  dot: "bg-amber-400",  bg: "bg-amber-500/10" },
-  optimization: { label: "Optimization", color: "text-purple-400", dot: "bg-purple-400", bg: "bg-purple-500/10" },
-  risk:         { label: "Risk",         color: "text-red-400",    dot: "bg-red-400",    bg: "bg-red-500/10" },
-  error:        { label: "Error",        color: "text-red-400",    dot: "bg-red-400",    bg: "bg-red-500/10" },
-  system:       { label: "System",       color: "text-zinc-400",   dot: "bg-zinc-400",   bg: "bg-zinc-500/10" },
+const CATEGORY_CONFIG: Record<string, { color: string; dot: string; bg: string }> = {
+  trade:        { color: "text-green-400",  dot: "bg-green-400",  bg: "bg-green-500/10" },
+  signal:       { color: "text-blue-400",   dot: "bg-blue-400",   bg: "bg-blue-500/10" },
+  sentiment:    { color: "text-amber-400",  dot: "bg-amber-400",  bg: "bg-amber-500/10" },
+  optimization: { color: "text-purple-400", dot: "bg-purple-400", bg: "bg-purple-500/10" },
+  risk:         { color: "text-red-400",    dot: "bg-red-400",    bg: "bg-red-500/10" },
+  error:        { color: "text-red-400",    dot: "bg-red-400",    bg: "bg-red-500/10" },
+  system:       { color: "text-zinc-400",   dot: "bg-zinc-400",   bg: "bg-zinc-500/10" },
+};
+
+const CATEGORY_LABEL_KEY: Record<string, string> = {
+  trade:        "catTrade",
+  signal:       "catSignal",
+  sentiment:    "catSentiment",
+  optimization: "catOptimization",
+  risk:         "catRisk",
+  error:        "catError",
+  system:       "catSystem",
 };
 
 const CATEGORIES = ["", "trade", "signal", "sentiment", "optimization", "risk", "system"];
@@ -46,16 +58,16 @@ const CATEGORIES = ["", "trade", "signal", "sentiment", "optimization", "risk", 
 
 const TH_TZ = "Asia/Bangkok";
 
-function formatTimeTH(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
+function formatTimeTH(iso: string, locale: string): string {
+  return new Date(iso).toLocaleString(locale === "zh" ? "zh-CN" : "en-GB", {
     timeZone: TH_TZ,
     hour: "2-digit",
     minute: "2-digit",
   });
 }
 
-function formatDateTimeTH(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
+function formatDateTimeTH(iso: string, locale: string): string {
+  return new Date(iso).toLocaleString(locale === "zh" ? "zh-CN" : "en-GB", {
     timeZone: TH_TZ,
     day: "numeric",
     month: "short",
@@ -69,6 +81,9 @@ function formatDateTimeTH(iso: string): string {
 const PAGE_SIZE = 25;
 
 export default function ActivityPage() {
+  const t = useTranslations("activity");
+  const locale = useLocale();
+  const dateLocale = locale === "zh" ? "zh-CN" : "en-GB";
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -94,7 +109,7 @@ export default function ActivityPage() {
       setVisibleCount(PAGE_SIZE);
     } catch {
       setItems([]);
-      showError("Failed to load activity");
+      showError(t("loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -114,7 +129,7 @@ export default function ActivityPage() {
   const grouped = useMemo(() => {
     const g: Record<string, ActivityItem[]> = {};
     for (const item of visibleItems) {
-      const dateKey = new Date(item.timestamp).toLocaleDateString("en-GB", {
+      const dateKey = new Date(item.timestamp).toLocaleDateString(dateLocale, {
         timeZone: TH_TZ,
         weekday: "long",
         month: "long",
@@ -123,7 +138,7 @@ export default function ActivityPage() {
       (g[dateKey] ??= []).push(item);
     }
     return g;
-  }, [visibleItems]);
+  }, [visibleItems, dateLocale]);
 
   // IntersectionObserver — load next page when sentinel enters viewport.
   useEffect(() => {
@@ -144,10 +159,10 @@ export default function ActivityPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="AI Activity" subtitle="Timeline of AI decisions, analyses, and actions">
+      <PageHeader title={t("title")} subtitle={t("subtitle")}>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">
-            {lastRefresh.toLocaleTimeString("en-GB", { timeZone: TH_TZ })}
+            {lastRefresh.toLocaleTimeString(dateLocale, { timeZone: TH_TZ })}
           </span>
           <button
             type="button"
@@ -155,7 +170,7 @@ export default function ActivityPage() {
             disabled={loading}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {loading ? "Loading..." : "Refresh"}
+            {loading ? t("loading") : t("refresh")}
           </button>
         </div>
       </PageHeader>
@@ -163,8 +178,8 @@ export default function ActivityPage() {
       <PageInstructions
 
         items={[
-          "Timeline of all bot events: trades, signals, sentiment analyses, errors, and system events.",
-          "Filter by time range and category. Events are stored persistently in the database.",
+          t("instruction1"),
+          t("instruction2"),
         ]}
       />
 
@@ -172,10 +187,10 @@ export default function ActivityPage() {
       {summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { label: "Bot Events", value: summary.total_events, color: "text-blue-400" },
-            { label: "Sentiment Runs", value: summary.sentiment_analyses, color: "text-amber-400" },
-            { label: "AI Trades", value: summary.ai_trades, color: "text-green-400" },
-            { label: "Optimizations", value: summary.optimization_runs, color: "text-purple-400" },
+            { label: t("botEvents"), value: summary.total_events, color: "text-blue-400" },
+            { label: t("sentimentRuns"), value: summary.sentiment_analyses, color: "text-amber-400" },
+            { label: t("aiTrades"), value: summary.ai_trades, color: "text-green-400" },
+            { label: t("optimizations"), value: summary.optimization_runs, color: "text-purple-400" },
           ].map((s) => (
             <div key={s.label} className="rounded-xl border border-border bg-card p-4">
               <p className="text-xs text-muted-foreground">{s.label}</p>
@@ -188,42 +203,42 @@ export default function ActivityPage() {
       {/* Filters */}
       <div className="flex flex-wrap gap-3">
         <select
-          aria-label="Time range"
+          aria-label={t("timeRange")}
           value={days}
           onChange={(e) => setDays(Number(e.target.value))}
           className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
         >
-          <option value={1}>Last 24h</option>
-          <option value={3}>Last 3 days</option>
-          <option value={7}>Last 7 days</option>
-          <option value={14}>Last 14 days</option>
-          <option value={30}>Last 30 days</option>
+          <option value={1}>{t("last24h")}</option>
+          <option value={3}>{t("last3Days")}</option>
+          <option value={7}>{t("last7Days")}</option>
+          <option value={14}>{t("last14Days")}</option>
+          <option value={30}>{t("last30Days")}</option>
         </select>
 
         <select
-          aria-label="Category filter"
+          aria-label={t("categoryFilter")}
           value={category}
           onChange={(e) => setCategory(e.target.value)}
           className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
         >
-          <option value="">All categories</option>
+          <option value="">{t("allCategories")}</option>
           {CATEGORIES.filter(Boolean).map((c) => (
             <option key={c} value={c}>
-              {CATEGORY_CONFIG[c]?.label || c}
+              {CATEGORY_LABEL_KEY[c] ? t(CATEGORY_LABEL_KEY[c]) : c}
             </option>
           ))}
         </select>
 
         <span className="text-xs text-muted-foreground self-center ml-auto">
-          {visibleItems.length} / {items.length} events
+          {t("eventsCount", { visible: visibleItems.length, total: items.length })}
         </span>
       </div>
 
       {/* Timeline */}
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading...</div>
+        <div className="text-center py-12 text-muted-foreground">{t("loading")}</div>
       ) : items.length === 0 ? (
-        <EmptyState icon={Activity} heading="No AI activity" description="AI decisions will appear here when the bot is running" />
+        <EmptyState icon={Activity} heading={t("noActivityHeading")} description={t("noActivityDescription")} />
       ) : (
         <div className="space-y-8">
           {Object.entries(grouped).map(([date, dateItems]) => (
@@ -234,6 +249,7 @@ export default function ActivityPage() {
               <div className="relative pl-6 border-l border-border/40 space-y-1">
                 {dateItems.map((item) => {
                   const cfg = CATEGORY_CONFIG[item.category] || CATEGORY_CONFIG.system;
+                  const categoryLabel = CATEGORY_LABEL_KEY[item.category] ? t(CATEGORY_LABEL_KEY[item.category]) : t("catSystem");
                   return (
                     <div key={item.id} className="relative group">
                       {/* Timeline dot */}
@@ -244,19 +260,19 @@ export default function ActivityPage() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.color}`}>
-                                {cfg.label}
+                                {categoryLabel}
                               </span>
                               <span className="text-sm font-medium text-foreground">
-                                {item.title}
+                                {translateServerText(item.title, locale)}
                               </span>
                             </div>
                             <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                              {item.message}
+                              {translateServerText(item.message, locale)}
                             </p>
                           </div>
                           <div className="text-right shrink-0">
-                            <p className="text-xs text-muted-foreground">{formatTimeTH(item.timestamp)}</p>
-                            <p className="text-[10px] text-muted-foreground/50 mt-0.5">{formatDateTimeTH(item.timestamp)}</p>
+                            <p className="text-xs text-muted-foreground">{formatTimeTH(item.timestamp, dateLocale)}</p>
+                            <p className="text-[10px] text-muted-foreground/50 mt-0.5">{formatDateTimeTH(item.timestamp, dateLocale)}</p>
                           </div>
                         </div>
                       </div>
@@ -271,7 +287,7 @@ export default function ActivityPage() {
               ref={sentinelRef}
               className="flex items-center justify-center py-4 text-xs text-muted-foreground"
             >
-              Loading more...
+              {t("loadingMore")}
             </div>
           )}
         </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import Image from "next/image";
 import { Zap, Activity, DollarSign, Database, TrendingUp, Cpu } from "lucide-react";
 import {
@@ -114,8 +115,8 @@ function formatCost(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
+function formatTime(iso: string, locale: string): string {
+  return new Date(iso).toLocaleString(locale === "zh" ? "zh-CN" : "en-GB", {
     timeZone: "Asia/Bangkok",
     day: "2-digit",
     month: "2-digit",
@@ -126,6 +127,9 @@ function formatTime(iso: string): string {
 }
 
 export default function AIUsagePage() {
+  const t = useTranslations("aiUsage");
+  const locale = useLocale();
+  const dateLocale = locale === "zh" ? "zh-CN" : "en-GB";
   const [days, setDays] = useState(7);
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -147,7 +151,7 @@ export default function AIUsagePage() {
       setBreakdown(bdRes.data.items || []);
       setRecent(rcRes.data.items || []);
     } catch {
-      showError("Failed to load AI usage data");
+      showError(t("loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -159,7 +163,7 @@ export default function AIUsagePage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="AI Usage" subtitle="Token consumption and equivalent API cost per agent">
+      <PageHeader title={t("title")} subtitle={t("subtitle")}>
         <div className="flex gap-1">
           {DAYS_OPTIONS.map((d) => (
             <Button
@@ -169,7 +173,7 @@ export default function AIUsagePage() {
               onClick={() => setDays(d)}
               className="text-xs"
             >
-              {d === 1 ? "24h" : `${d}d`}
+              {d === 1 ? t("hours24") : t("dayOption", { days: d })}
             </Button>
           ))}
         </div>
@@ -177,9 +181,9 @@ export default function AIUsagePage() {
 
       <PageInstructions
         items={[
-          "Cost shown is the equivalent Anthropic API cost — actual billing uses the Max subscription flat rate.",
-          "Agents using Sonnet cost 3x more than Haiku for the same tokens. Heavy agents are candidates for Haiku.",
-          "Logs older than 90 days are auto-deleted daily at 03:00 UTC.",
+          t("instruction1"),
+          t("instruction2"),
+          t("instruction3"),
         ]}
       />
 
@@ -194,28 +198,33 @@ export default function AIUsagePage() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <StatCard
             icon={Activity}
-            label="Total Calls"
+            label={t("totalCalls")}
             value={summary?.total_calls.toLocaleString() ?? "0"}
-            subtitle={`${Math.round((summary?.success_rate ?? 0) * 100)}% success`}
+            subtitle={t("successSubtitle", { percent: Math.round((summary?.success_rate ?? 0) * 100) })}
           />
           <StatCard
             icon={Database}
-            label="Total Tokens"
+            label={t("totalTokens")}
             value={formatNumber(summary?.total_tokens ?? 0)}
-            subtitle={`I:${formatNumber(summary?.input_tokens ?? 0)} O:${formatNumber(summary?.output_tokens ?? 0)} CR:${formatNumber(summary?.cache_read ?? 0)} CW:${formatNumber(summary?.cache_write ?? 0)}`}
+            subtitle={t("tokensBreakdown", {
+              input: formatNumber(summary?.input_tokens ?? 0),
+              output: formatNumber(summary?.output_tokens ?? 0),
+              cacheRead: formatNumber(summary?.cache_read ?? 0),
+              cacheWrite: formatNumber(summary?.cache_write ?? 0),
+            })}
           />
           <StatCard
             icon={DollarSign}
-            label="Total Cost (USD)"
+            label={t("totalCost")}
             value={formatCost(summary?.total_cost_usd ?? 0)}
-            subtitle={`${days}d equivalent API cost`}
+            subtitle={t("costSubtitle", { days })}
             variant="gold"
           />
           <StatCard
             icon={TrendingUp}
-            label="Avg Cost / Call"
+            label={t("avgCostPerCall")}
             value={formatCost(summary?.avg_cost_per_call ?? 0)}
-            subtitle={`${summary?.total_calls ?? 0} calls`}
+            subtitle={t("callsSubtitle", { count: summary?.total_calls ?? 0 })}
           />
         </div>
       )}
@@ -230,14 +239,14 @@ export default function AIUsagePage() {
         <div className="rounded-xl border border-border bg-card p-4">
           <EmptyState
             icon={Zap}
-            heading="No AI activity yet"
-            description="Agent calls will appear here after the next analysis."
+            heading={t("noActivityHeading")}
+            description={t("noActivityDescription")}
           />
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold mb-3">Tokens by day</h3>
+            <h3 className="text-sm font-semibold mb-3">{t("tokensByDay")}</h3>
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={series}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
@@ -253,16 +262,16 @@ export default function AIUsagePage() {
                   formatter={(v) => formatNumber(Number(v))}
                 />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="input_tokens" stackId="a" fill="#3b82f6" name="Input" />
-                <Bar dataKey="output_tokens" stackId="a" fill="#9fe870" name="Output" />
-                <Bar dataKey="cache_read" stackId="a" fill="#f59e0b" name="Cache Read" />
-                <Bar dataKey="cache_write" stackId="a" fill="#a855f7" name="Cache Write" />
+                <Bar dataKey="input_tokens" stackId="a" fill="#3b82f6" name={t("input")} />
+                <Bar dataKey="output_tokens" stackId="a" fill="#9fe870" name={t("output")} />
+                <Bar dataKey="cache_read" stackId="a" fill="#f59e0b" name={t("cacheRead")} />
+                <Bar dataKey="cache_write" stackId="a" fill="#a855f7" name={t("cacheWrite")} />
               </BarChart>
             </ResponsiveContainer>
           </div>
 
           <div className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold mb-3">Cost by day (USD)</h3>
+            <h3 className="text-sm font-semibold mb-3">{t("costByDay")}</h3>
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={series}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
@@ -277,7 +286,7 @@ export default function AIUsagePage() {
                   }}
                   formatter={(v) => formatCost(Number(v))}
                 />
-                <Line type="monotone" dataKey="cost_usd" stroke="#9fe870" strokeWidth={2} dot={{ r: 3 }} name="Cost" />
+                <Line type="monotone" dataKey="cost_usd" stroke="#9fe870" strokeWidth={2} dot={{ r: 3 }} name={t("cost")} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -288,26 +297,26 @@ export default function AIUsagePage() {
       <div className="rounded-xl border border-border bg-card p-4">
         <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
           <Cpu className="size-4" />
-          Breakdown by agent
+          {t("breakdownByAgent")}
         </h3>
         {loading ? (
           <Skeleton className="h-40" />
         ) : breakdown.length === 0 ? (
-          <p className="text-xs text-muted-foreground py-4 text-center">No agent activity yet.</p>
+          <p className="text-xs text-muted-foreground py-4 text-center">{t("noAgentActivity")}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border text-muted-foreground">
-                  <th className="text-left py-2 px-2 font-medium">Agent</th>
-                  <th className="text-left py-2 px-2 font-medium">Model</th>
-                  <th className="text-right py-2 px-2 font-medium">Calls</th>
-                  <th className="text-right py-2 px-2 font-medium">Input</th>
-                  <th className="text-right py-2 px-2 font-medium">Output</th>
-                  <th className="text-right py-2 px-2 font-medium">Cache R/W</th>
-                  <th className="text-right py-2 px-2 font-medium">Tools</th>
-                  <th className="text-right py-2 px-2 font-medium">Avg ms</th>
-                  <th className="text-right py-2 px-2 font-medium">Cost (USD)</th>
+                  <th className="text-left py-2 px-2 font-medium">{t("thAgent")}</th>
+                  <th className="text-left py-2 px-2 font-medium">{t("thModel")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thCalls")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thInput")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thOutput")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thCacheRW")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thTools")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thAvgMs")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thCost")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -355,30 +364,30 @@ export default function AIUsagePage() {
 
       {/* Recent calls */}
       <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold mb-3">Recent calls (latest 50)</h3>
+        <h3 className="text-sm font-semibold mb-3">{t("recentCalls")}</h3>
         {loading ? (
           <Skeleton className="h-40" />
         ) : recent.length === 0 ? (
-          <p className="text-xs text-muted-foreground py-4 text-center">No recent calls.</p>
+          <p className="text-xs text-muted-foreground py-4 text-center">{t("noRecentCalls")}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border text-muted-foreground">
-                  <th className="text-left py-2 px-2 font-medium">Time</th>
-                  <th className="text-left py-2 px-2 font-medium">Agent</th>
-                  <th className="text-left py-2 px-2 font-medium">Model</th>
-                  <th className="text-right py-2 px-2 font-medium">Tokens</th>
-                  <th className="text-right py-2 px-2 font-medium">Turns</th>
-                  <th className="text-right py-2 px-2 font-medium">ms</th>
-                  <th className="text-right py-2 px-2 font-medium">Cost</th>
-                  <th className="text-center py-2 px-2 font-medium">OK</th>
+                  <th className="text-left py-2 px-2 font-medium">{t("thTime")}</th>
+                  <th className="text-left py-2 px-2 font-medium">{t("thAgent")}</th>
+                  <th className="text-left py-2 px-2 font-medium">{t("thModel")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thTokens")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thTurns")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thMs")}</th>
+                  <th className="text-right py-2 px-2 font-medium">{t("thCost")}</th>
+                  <th className="text-center py-2 px-2 font-medium">{t("thOk")}</th>
                 </tr>
               </thead>
               <tbody>
                 {recent.map((r) => (
                   <tr key={r.id} className="border-b border-border/50 hover:bg-muted/20">
-                    <td className="py-2 px-2 font-mono text-muted-foreground">{formatTime(r.timestamp)}</td>
+                    <td className="py-2 px-2 font-mono text-muted-foreground">{formatTime(r.timestamp, dateLocale)}</td>
                     <td className="py-2 px-2 font-mono">{r.agent_id}</td>
                     <td className="py-2 px-2">
                       <Badge variant="outline" className={`text-[9px] ${MODEL_COLOR[r.model] ?? ""}`}>

@@ -1,3 +1,6 @@
+"use client";
+
+import { useTranslations } from "next-intl";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -6,6 +9,7 @@ interface ChartLoadingProps {
 }
 
 export function ChartLoading({ className }: ChartLoadingProps) {
+  const t = useTranslations("charts");
   return (
     <div
       className={cn(
@@ -15,7 +19,7 @@ export function ChartLoading({ className }: ChartLoadingProps) {
     >
       <Skeleton className="absolute inset-0 rounded-xl" />
       <p className="relative text-xs text-muted-foreground font-medium z-10">
-        Loading chart...
+        {t("loading")}
       </p>
     </div>
   );

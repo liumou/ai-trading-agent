@@ -1,12 +1,13 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 
-const REGIME_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  trending_high_vol: { label: "Trending", color: "text-orange-500", bg: "bg-orange-500/10" },
-  trending_low_vol: { label: "Trending", color: "text-blue-500", bg: "bg-blue-500/10" },
-  ranging: { label: "Ranging", color: "text-yellow-500", bg: "bg-yellow-500/10" },
-  normal: { label: "Normal", color: "text-muted-foreground", bg: "bg-muted" },
+const REGIME_CONFIG: Record<string, { key: string; color: string; bg: string }> = {
+  trending_high_vol: { key: "trending", color: "text-orange-500", bg: "bg-orange-500/10" },
+  trending_low_vol: { key: "trending", color: "text-blue-500", bg: "bg-blue-500/10" },
+  ranging: { key: "ranging", color: "text-yellow-500", bg: "bg-yellow-500/10" },
+  normal: { key: "normal", color: "text-muted-foreground", bg: "bg-muted" },
 };
 
 interface RegimeBadgeProps {
@@ -17,6 +18,7 @@ interface RegimeBadgeProps {
 }
 
 export function RegimeBadge({ regime, probability, size = "sm", className }: RegimeBadgeProps) {
+  const t = useTranslations("quant.regime");
   const config = REGIME_CONFIG[regime] || REGIME_CONFIG.normal;
   const isSmall = size === "sm";
 
@@ -31,7 +33,7 @@ export function RegimeBadge({ regime, probability, size = "sm", className }: Reg
       )}
     >
       <span className={cn("size-1.5 rounded-full", config.color.replace("text-", "bg-"))} />
-      {config.label}
+      {t.has(config.key) ? t(config.key) : regime}
       {probability !== undefined && (
         <span className="opacity-70">{Math.round(probability * 100)}%</span>
       )}

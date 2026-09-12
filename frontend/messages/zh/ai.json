@@ -1,0 +1,20 @@
+{
+  "sentiment": {
+    "bullish": "看涨",
+    "bearish": "看跌",
+    "neutral": "中性"
+  },
+  "news": {
+    "justNow": "刚刚"
+  },
+  "optimization": {
+    "title": "策略优化",
+    "parameter": "参数",
+    "current": "当前值",
+    "suggested": "建议值",
+    "confidence": "置信度",
+    "stopBotToApply": "请先停止机器人再应用",
+    "applySuggestions": "应用建议",
+    "appliedSuccessfully": "应用成功"
+  }
+}

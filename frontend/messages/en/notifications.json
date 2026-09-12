@@ -1,0 +1,35 @@
+{
+  "title": "Notifications",
+  "subtitle": "Bot event history and alerts",
+  "instructions": {
+    "item1": "Bot event notifications in chronological order, color-coded by type.",
+    "item2": "Trade events in green, errors in red, settings changes in purple. Filter by time range and type."
+  },
+  "last24h": "Last 24h",
+  "last3days": "Last 3 days",
+  "last7days": "Last 7 days",
+  "last14days": "Last 14 days",
+  "last30days": "Last 30 days",
+  "allTypes": "All types",
+  "eventsCount": "{visible} / {total} events",
+  "loading": "Loading...",
+  "loadingMore": "Loading more...",
+  "noEvents": "No events found",
+  "noEventsDesc": "Notifications will appear here when events occur",
+  "colTime": "Time",
+  "colType": "Type",
+  "colMessage": "Message",
+  "eventTypes": {
+    "STARTED": "Started",
+    "STOPPED": "Stopped",
+    "TRADE_OPENED": "Trade Opened",
+    "TRADE_CLOSED": "Trade Closed",
+    "SIGNAL_DETECTED": "Signal Detected",
+    "TRADE_BLOCKED": "Trade Blocked",
+    "ORDER_FAILED": "Order Failed",
+    "ERROR": "Error",
+    "CIRCUIT_BREAKER": "Circuit Breaker",
+    "SETTINGS_CHANGED": "Settings Changed",
+    "STRATEGY_CHANGED": "Strategy Changed"
+  }
+}

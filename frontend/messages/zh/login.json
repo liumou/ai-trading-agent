@@ -1,0 +1,11 @@
+{
+  "title": "AI Trading Agent",
+  "subtitle": "登录您的控制台",
+  "username": "用户名",
+  "password": "密码",
+  "signIn": "登录",
+  "signingIn": "登录中…",
+  "welcomeBack": "欢迎回来！",
+  "loginFailed": "登录失败",
+  "connectionError": "连接错误"
+}

@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import { getBotEvents } from "@/lib/api";
 import { Bell } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
 import { EmptyState } from "@/components/ui/empty-state";
+import { formatDate } from "@/lib/format";
+import { translateServerText } from "@/lib/serverText";
 
 interface BotEvent {
   id: number;
@@ -31,6 +34,8 @@ const EVENT_COLORS: Record<string, string> = {
 const PAGE_SIZE = 30;
 
 export default function NotificationsPage() {
+  const t = useTranslations("notifications");
+  const locale = useLocale();
   const [events, setEvents] = useState<BotEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(7);
@@ -84,12 +89,12 @@ export default function NotificationsPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="Notifications" subtitle="Bot event history and alerts" />
+      <PageHeader title={t("title")} subtitle={t("subtitle")} />
 
       <PageInstructions
         items={[
-          "Bot event notifications in chronological order, color-coded by type.",
-          "Trade events in green, errors in red, settings changes in purple. Filter by time range and type.",
+          t("instructions.item1"),
+          t("instructions.item2"),
         ]}
       />
 
@@ -99,11 +104,11 @@ export default function NotificationsPage() {
           onChange={(e) => setDays(Number(e.target.value))}
           className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
         >
-          <option value={1}>Last 24h</option>
-          <option value={3}>Last 3 days</option>
-          <option value={7}>Last 7 days</option>
-          <option value={14}>Last 14 days</option>
-          <option value={30}>Last 30 days</option>
+          <option value={1}>{t("last24h")}</option>
+          <option value={3}>{t("last3days")}</option>
+          <option value={7}>{t("last7days")}</option>
+          <option value={14}>{t("last14days")}</option>
+          <option value={30}>{t("last30days")}</option>
         </select>
 
         <select
@@ -111,47 +116,47 @@ export default function NotificationsPage() {
           onChange={(e) => setTypeFilter(e.target.value)}
           className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
         >
-          <option value="">All types</option>
-          {eventTypes.filter(Boolean).map((t) => (
-            <option key={t} value={t}>{t.replace(/_/g, " ")}</option>
+          <option value="">{t("allTypes")}</option>
+          {eventTypes.filter(Boolean).map((type) => (
+            <option key={type} value={type}>{t.has(`eventTypes.${type}`) ? t(`eventTypes.${type}`) : type.replace(/_/g, " ")}</option>
           ))}
         </select>
 
         <span className="text-xs text-muted-foreground self-center ml-auto">
-          {visibleEvents.length} / {events.length} events
+          {t("eventsCount", { visible: visibleEvents.length, total: events.length })}
         </span>
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading...</div>
+        <div className="text-center py-12 text-muted-foreground">{t("loading")}</div>
       ) : events.length === 0 ? (
-        <EmptyState icon={Bell} heading="No events found" description="Notifications will appear here when events occur" />
+        <EmptyState icon={Bell} heading={t("noEvents")} description={t("noEventsDesc")} />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-left text-muted-foreground">
-                <th className="pb-2 pr-4 font-medium">Time</th>
-                <th className="pb-2 pr-4 font-medium">Type</th>
-                <th className="pb-2 font-medium">Message</th>
+                <th className="pb-2 pr-4 font-medium">{t("colTime")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("colType")}</th>
+                <th className="pb-2 font-medium">{t("colMessage")}</th>
               </tr>
             </thead>
             <tbody>
               {visibleEvents.map((e) => (
                 <tr key={e.id} className="border-b border-border/50">
                   <td className="py-2 pr-4 whitespace-nowrap text-muted-foreground">
-                    {new Date(e.created_at).toLocaleString("en-GB", { timeZone: "Asia/Bangkok" })}
+                    {formatDate(e.created_at, locale)}
                   </td>
                   <td className={`py-2 pr-4 whitespace-nowrap font-medium ${EVENT_COLORS[e.type] || ""}`}>
-                    {e.type.replace(/_/g, " ")}
+                    {t.has(`eventTypes.${e.type}`) ? t(`eventTypes.${e.type}`) : e.type.replace(/_/g, " ")}
                   </td>
-                  <td className="py-2">{e.message}</td>
+                  <td className="py-2">{translateServerText(e.message, locale)}</td>
                 </tr>
               ))}
               {hasMore && (
                 <tr ref={sentinelRef}>
                   <td colSpan={3} className="py-4 text-center text-xs text-muted-foreground">
-                    Loading more...
+                    {t("loadingMore")}
                   </td>
                 </tr>
               )}

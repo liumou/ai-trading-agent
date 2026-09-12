@@ -1,0 +1,26 @@
+{
+  "title": "宏观数据",
+  "subtitle": "经济指标与黄金相关性",
+  "refreshData": "刷新 FRED 数据",
+  "collecting": "采集中…",
+  "collected": "宏观数据已采集",
+  "collectFailed": "采集宏观数据失败",
+  "instructions": {
+    "item1": "经济指标（美元指数、美债收益率、VIX）及其与金价的关联。",
+    "item2": "点击「刷新 FRED 数据」获取最新数值。即将公布的经济事件会按影响程度列出。"
+  },
+  "indicators": "经济指标（最新）",
+  "noMacroData": "暂无宏观数据",
+  "noMacroDataDesc": "采集经济数据后即可查看指标与相关性",
+  "correlations": "黄金相关性（90 天）",
+  "strengthStrong": "强",
+  "strengthModerate": "中",
+  "strengthWeak": "弱",
+  "pts": "{count} 个数据点",
+  "collectForCorrelations": "采集宏观数据后即可查看相关性",
+  "upcomingEvents": "即将公布的经济事件",
+  "today": "今天",
+  "tomorrow": "明天",
+  "inDays": "{count} 天后",
+  "noUpcomingEvents": "暂无即将公布的事件"
+}

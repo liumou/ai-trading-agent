@@ -1,0 +1,80 @@
+{
+  "title": "ML 模型",
+  "subtitle": "按品种训练和管理 LightGBM 信号模型",
+  "instructions": {
+    "item1": "第 1 步：采集数据 — 从 MT5 拉取所选品种和时间周期的历史 K 线并存入数据库。",
+    "item2": "第 2 步：训练模型 — 使用已采集的数据训练 LightGBM 分类器。可在高级参数中调整 TP/SL 点数和前推 K 线数。",
+    "item3": "第 3 步：预测 — 在最新行情数据上运行已训练的模型，获得带置信度的买入/卖出/观望信号。"
+  },
+  "steps": {
+    "collect": "采集数据",
+    "train": "训练模型",
+    "predict": "模型与预测",
+    "health": "模型健康"
+  },
+  "collect": {
+    "barsCollected": "已采集 {count} 根K线",
+    "bars": "{count} 根K线",
+    "from": "开始",
+    "to": "结束",
+    "timeframe": "时间周期",
+    "collecting": "采集中...",
+    "collect": "采集",
+    "result": "获取 {fetched} 根，新增 {inserted} 根",
+    "failed": "采集失败"
+  },
+  "train": {
+    "modelReady": "模型就绪",
+    "trainFrom": "训练开始",
+    "trainTo": "训练结束",
+    "timeframe": "时间周期",
+    "advancedParameters": "高级参数",
+    "forwardBars": "前推 K 线数",
+    "tpPips": "止盈（点）",
+    "slPips": "止损（点）",
+    "training": "训练中...",
+    "trainButton": "训练 {symbol} 模型",
+    "collectFirst": "请先采集数据（第 1 步）",
+    "accuracy": "准确率",
+    "trainSize": "训练集大小",
+    "testSize": "测试集大小",
+    "topFeature": "最重要特征",
+    "na": "N/A"
+  },
+  "predict": {
+    "topFeatures": "重要特征",
+    "livePrediction": "实时预测",
+    "predicting": "预测中...",
+    "runPrediction": "运行预测",
+    "confidence": "置信度:",
+    "emptyHeading": "暂无预测结果",
+    "emptyDescription": "运行一次预测以查看模型当前信号"
+  },
+  "health": {
+    "featureDrift": "特征漂移（PSI）",
+    "checking": "检测中...",
+    "checkDrift": "检测漂移",
+    "predictionDrift": "预测漂移",
+    "driftPrompt": "检测漂移以对比实时特征与训练分布",
+    "calibration": "置信度校准",
+    "loading": "加载中...",
+    "load": "加载",
+    "predictedPct": "预测 %",
+    "actualWinPct": "实际胜率 %",
+    "calibrationSummary": "{count} 次预测 | 蓝色=预测置信度，绿色=实际胜率",
+    "calibrationEmpty": "预测数据不足。请先运行预测以积累校准历史。",
+    "calibrationPrompt": "加载校准数据以对比预测置信度与实际结果"
+  },
+  "toasts": {
+    "dataCollected": "数据采集成功",
+    "collectionFailed": "数据采集失败",
+    "modelTrained": "模型训练成功",
+    "trainingFailed": "训练失败",
+    "serverError": "服务器错误（{status}）",
+    "predictionCompleted": "预测完成",
+    "predictionFailed": "预测失败"
+  },
+  "noPredictionYet": "暂无预测",
+  "noPredictionYetDesc": "运行预测后即可查看模型当前信号",
+  "confidenceLabel": "置信度"
+}

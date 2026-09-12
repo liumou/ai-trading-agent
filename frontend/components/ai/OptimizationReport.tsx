@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { ArrowRight, Check, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +25,7 @@ type Props = {
 export default function OptimizationReport({
   assessment, currentParams, suggestedParams, confidence, reasoning, logId, applied, botRunning, onApply,
 }: Props) {
+  const t = useTranslations("ai.optimization");
   const paramKeys = Array.from(
     new Set([...Object.keys(currentParams), ...Object.keys(suggestedParams)])
   );
@@ -33,7 +35,7 @@ export default function OptimizationReport({
       <CardHeader>
         <CardTitle className="text-lg flex items-center gap-2">
           <Sparkles className="size-5 text-primary-foreground dark:text-primary" />
-          Strategy Optimization
+          {t("title")}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -42,10 +44,10 @@ export default function OptimizationReport({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Parameter</TableHead>
-              <TableHead className="text-right">Current</TableHead>
+              <TableHead>{t("parameter")}</TableHead>
+              <TableHead className="text-right">{t("current")}</TableHead>
               <TableHead className="text-center w-10"></TableHead>
-              <TableHead className="text-right">Suggested</TableHead>
+              <TableHead className="text-right">{t("suggested")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -76,7 +78,7 @@ export default function OptimizationReport({
 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground font-medium">Confidence</span>
+            <span className="text-xs text-muted-foreground font-medium">{t("confidence")}</span>
             <span className="text-xs font-mono text-foreground font-bold">
               {(confidence * 100).toFixed(0)}%
             </span>
@@ -92,13 +94,13 @@ export default function OptimizationReport({
             disabled={botRunning}
             className="w-full rounded-full bg-primary text-primary-foreground font-semibold hover-scale"
           >
-            {botRunning ? "Stop bot to apply" : "Apply Suggestions"}
+            {botRunning ? t("stopBotToApply") : t("applySuggestions")}
           </Button>
         )}
         {applied && (
           <div className="flex items-center justify-center gap-2 py-2 text-sm text-success dark:text-green-400 font-semibold">
             <Check className="size-4" />
-            <span>Applied successfully</span>
+            <span>{t("appliedSuccessfully")}</span>
           </div>
         )}
       </CardContent>

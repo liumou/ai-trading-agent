@@ -1,0 +1,27 @@
+{
+  "title": "DB Health",
+  "subtitle": "PostgreSQL pool + slow queries",
+  "instructions": {
+    "item1": "Live PostgreSQL connection-pool metrics, slow queries, and requests holding DB connections too long.",
+    "item2": "Refreshes every 10s when tab is visible.",
+    "item3": "Telegram alert fires when utilization ≥ {pct}% sustained for {seconds}s."
+  },
+  "failedToLoad": "Failed to load",
+  "utilization": "Utilization",
+  "checkedOut": "Checked out",
+  "checkedIn": "Checked in",
+  "overflow": "Overflow",
+  "poolSize": "Pool size",
+  "utilizationChart": "Utilization (last {count} samples × 10s)",
+  "slowQueries": "Top slow queries (> {ms}ms)",
+  "noSlowQueries": "No slow queries recorded.",
+  "longHolds": "Long-hold requests (> {ms}ms)",
+  "noLongHolds": "No long-hold requests recorded.",
+  "colDuration": "Duration",
+  "colWhen": "When",
+  "colSql": "SQL",
+  "colMethod": "Method",
+  "colPath": "Path",
+  "colCheckouts": "Checkouts",
+  "noSamples": "No samples yet."
+}

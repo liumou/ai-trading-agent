@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -34,6 +35,9 @@ type Trade = {
 };
 
 export default function HistoryPage() {
+  const t = useTranslations("history");
+  const locale = useLocale();
+  const dateLocale = locale === "zh" ? "zh-CN" : "en-GB";
   const [trades, setTrades] = useState<Trade[]>([]);
   const [performance, setPerformance] = useState<Record<string, unknown> | null>(null);
   const [days, setDays] = useState(30);
@@ -59,21 +63,21 @@ export default function HistoryPage() {
       ]);
       setTrades(tradeRes.data.trades || []);
       setPerformance(perfRes.data);
-    } catch (e) { console.error(e); showError("Failed to load trade history"); } finally { setLoading(false); }
+    } catch (e) { console.error(e); showError(t("loadFailed")); } finally { setLoading(false); }
   }, [days, symbolFilter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const handleArchiveDemoTrades = async () => {
-    const date = prompt("Archive trades before date (YYYY-MM-DD):", new Date().toISOString().slice(0, 10));
+    const date = prompt(t("archivePrompt"), new Date().toISOString().slice(0, 10));
     if (!date) return;
-    if (!confirm(`Archive all trades before ${date}? They will be excluded from stats (can be undone).`)) return;
+    if (!confirm(t("archiveConfirm", { date }))) return;
     setArchiving(true);
     try {
       const res = await archiveTrades(date);
-      showSuccess("Archived", `${res.data.archived} demo trades archived`);
+      showSuccess(t("archivedTitle"), t("archivedMessage", { count: res.data.archived }));
       await fetchData();
-    } catch { showError("Archive failed"); } finally { setArchiving(false); }
+    } catch { showError(t("archiveFailed")); } finally { setArchiving(false); }
   };
 
   const handleExportCSV = () => {
@@ -88,12 +92,12 @@ export default function HistoryPage() {
     a.href = URL.createObjectURL(blob);
     a.download = `trades_${days}d.csv`;
     a.click();
-    showSuccess("CSV exported", `${trades.length} trades exported`);
+    showSuccess(t("csvExported"), t("tradesExported", { count: trades.length }));
   };
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="Trade History" subtitle="Review past trades and performance">
+      <PageHeader title={t("title")} subtitle={t("subtitle")}>
         <SymbolTabs
           symbols={symbols}
           active={symbolFilter}
@@ -109,7 +113,7 @@ export default function HistoryPage() {
               onClick={() => setDays(d)}
               className={`rounded-xl ${days === d ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
             >
-              {d}d
+              {t("dayOption", { days: d })}
             </Button>
           ))}
         </div>
@@ -119,36 +123,36 @@ export default function HistoryPage() {
           onClick={handleArchiveDemoTrades}
           disabled={archiving}
           className="rounded-xl text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
-          title="Archive demo trades — excluded from stats"
+          title={t("archiveButtonTitle")}
         >
           <Archive className="size-3.5 mr-1.5" />
-          {archiving ? "Archiving..." : "Archive Demo"}
+          {archiving ? t("archiving") : t("archiveDemo")}
         </Button>
       </PageHeader>
 
       <PageInstructions
 
         items={[
-          "View all closed trades with P&L breakdown. Switch between table and equity chart views.",
-          "Trades with AI sentiment data show the label and confidence score. Use the download button to export CSV.",
+          t("instruction1"),
+          t("instruction2"),
         ]}
       />
 
       <Tabs defaultValue="trades">
         <TabsList>
-          <TabsTrigger value="trades">Trades</TabsTrigger>
-          <TabsTrigger value="performance">Performance</TabsTrigger>
+          <TabsTrigger value="trades">{t("tradesTab")}</TabsTrigger>
+          <TabsTrigger value="performance">{t("performanceTab")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="trades" className="mt-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle className="text-sm font-bold">
-                Trades <span className="text-muted-foreground font-medium">({trades.length})</span>
+                {t("tradesCount", { count: trades.length })}
               </CardTitle>
               <Button variant="outline" size="sm" onClick={handleExportCSV} className="rounded-full">
                 <Download className="size-3.5 mr-1.5" />
-                Export CSV
+                {t("exportCsv")}
               </Button>
             </CardHeader>
             <CardContent>
@@ -175,23 +179,23 @@ export default function HistoryPage() {
                           <Table>
                             <TableHeader>
                               <TableRow>
-                                <TableHead className="text-xs">Time</TableHead>
-                                <TableHead className="text-xs">Symbol</TableHead>
-                                <TableHead className="text-xs">Type</TableHead>
-                                <TableHead className="text-xs text-right">Lot</TableHead>
-                                <TableHead className="text-xs text-right">Open</TableHead>
-                                <TableHead className="text-xs text-right">Close</TableHead>
-                                <TableHead className="text-xs text-right">P&L</TableHead>
-                                <TableHead className="text-xs">Strategy</TableHead>
-                                {hasReason && <TableHead className="text-xs">Reason</TableHead>}
-                                {hasSentiment && <TableHead className="text-xs text-center">AI</TableHead>}
+                                <TableHead className="text-xs">{t("thTime")}</TableHead>
+                                <TableHead className="text-xs">{t("thSymbol")}</TableHead>
+                                <TableHead className="text-xs">{t("thType")}</TableHead>
+                                <TableHead className="text-xs text-right">{t("thLot")}</TableHead>
+                                <TableHead className="text-xs text-right">{t("thOpen")}</TableHead>
+                                <TableHead className="text-xs text-right">{t("thClose")}</TableHead>
+                                <TableHead className="text-xs text-right">{t("thPnl")}</TableHead>
+                                <TableHead className="text-xs">{t("thStrategy")}</TableHead>
+                                {hasReason && <TableHead className="text-xs">{t("thReason")}</TableHead>}
+                                {hasSentiment && <TableHead className="text-xs text-center">{t("thAi")}</TableHead>}
                               </TableRow>
                             </TableHeader>
                             <TableBody>
                               {trades.map((t) => (
                                 <TableRow key={t.id} className="hover:bg-muted/30 transition-colors">
                                   <TableCell className="text-muted-foreground text-xs">
-                                    {new Date(t.open_time).toLocaleDateString("en-GB", { timeZone: "Asia/Bangkok" })}
+                                    {new Date(t.open_time).toLocaleDateString(dateLocale, { timeZone: "Asia/Bangkok" })}
                                   </TableCell>
                                   <TableCell className="text-xs font-medium">{t.symbol}</TableCell>
                                   <TableCell className={`text-xs font-semibold ${t.type === "BUY" ? "text-success dark:text-green-400" : "text-destructive"}`}>
@@ -226,7 +230,7 @@ export default function HistoryPage() {
                         {/* Summary bar at bottom */}
                         <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-muted/20 rounded-b-xl">
                           <span className="text-xs text-muted-foreground font-medium">
-                            {trades.length} trades · {wins}W / {losses}L · Win rate {trades.length > 0 ? ((wins / trades.length) * 100).toFixed(0) : 0}%
+                            {t("summaryStats", { total: trades.length, wins, losses, rate: trades.length > 0 ? ((wins / trades.length) * 100).toFixed(0) : 0 })}
                           </span>
                           <span className={`text-sm font-bold font-mono ${total >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}>
                             {total >= 0 ? "+" : ""}${Math.abs(total).toFixed(2)}
@@ -237,7 +241,7 @@ export default function HistoryPage() {
                   })()}
                 </>
               ) : (
-                <EmptyState icon={History} heading="No trades found" description="Start trading to see your history here" action={{ label: "Go to Dashboard", href: "/dashboard" }} />
+                <EmptyState icon={History} heading={t("noTradesHeading")} description={t("noTradesDescription")} action={{ label: t("goToDashboard"), href: "/dashboard" }} />
               )}
             </CardContent>
           </Card>
@@ -245,14 +249,14 @@ export default function HistoryPage() {
 
         <TabsContent value="performance" className="mt-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard icon={BarChart3} label="Total Trades" value={(performance?.total_trades as number) ?? 0} />
-            <StatCard icon={TrendingUp} label="Win Rate"
+            <StatCard icon={BarChart3} label={t("totalTrades")} value={(performance?.total_trades as number) ?? 0} />
+            <StatCard icon={TrendingUp} label={t("winRate")}
               value={`${(((performance?.win_rate as number) ?? 0) * 100).toFixed(1)}%`}
               variant={((performance?.win_rate as number) ?? 0) > 0.5 ? "success" : "danger"} />
-            <StatCard icon={DollarSign} label="Total Profit"
+            <StatCard icon={DollarSign} label={t("totalProfit")}
               value={`$${((performance?.total_profit as number) ?? 0).toFixed(2)}`}
               variant={((performance?.total_profit as number) ?? 0) > 0 ? "success" : "danger"} />
-            <StatCard icon={Target} label="Avg Profit"
+            <StatCard icon={Target} label={t("avgProfit")}
               value={`$${((performance?.avg_profit as number) ?? 0).toFixed(2)}`}
               variant={((performance?.avg_profit as number) ?? 0) > 0 ? "success" : "danger"} />
           </div>
@@ -260,7 +264,7 @@ export default function HistoryPage() {
           {trades.filter((t) => t.profit !== null).length > 0 && (
             <Card className="mt-4">
               <CardHeader>
-                <CardTitle className="text-sm font-bold">Cumulative P&L</CardTitle>
+                <CardTitle className="text-sm font-bold">{t("cumulativePnl")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <ErrorBoundary>
@@ -271,7 +275,7 @@ export default function HistoryPage() {
                       .sort((a, b) => new Date(a.close_time!).getTime() - new Date(b.close_time!).getTime())
                       .reduce<{ date: string; pnl: number }[]>((acc, t) => {
                         const prev = acc.length > 0 ? acc[acc.length - 1].pnl : 0;
-                        acc.push({ date: new Date(t.close_time!).toLocaleDateString("en-GB", { timeZone: "Asia/Bangkok" }), pnl: prev + (t.profit ?? 0) });
+                        acc.push({ date: new Date(t.close_time!).toLocaleDateString(dateLocale, { timeZone: "Asia/Bangkok" }), pnl: prev + (t.profit ?? 0) });
                         return acc;
                       }, [])}
                   >
@@ -291,7 +295,7 @@ export default function HistoryPage() {
                         borderRadius: "12px",
                         color: "var(--foreground)",
                       }}
-                      formatter={(value) => [`$${Number(value).toFixed(2)}`, "P&L"]}
+                      formatter={(value) => [`$${Number(value).toFixed(2)}`, t("pnl")]}
                     />
                     <ReferenceLine y={0} className="stroke-muted-foreground" strokeDasharray="3 3" strokeOpacity={0.5} />
                     <Area type="monotone" dataKey="pnl" stroke="#9fe870" strokeWidth={2} fill="url(#pnlGradient)" />

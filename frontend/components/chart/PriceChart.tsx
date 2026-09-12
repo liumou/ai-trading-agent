@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
+import { useTranslations } from "next-intl";
 import { createChart, IChartApi, ISeriesApi, IPriceLine, CandlestickData, ColorType, CandlestickSeries, LineSeries, SeriesMarker, Time, createSeriesMarkers, ISeriesMarkersPluginApi } from "lightweight-charts";
 import { getOHLCV, getTradeHistory, getPositions } from "@/lib/api";
 
@@ -30,6 +31,7 @@ function calcEMA(data: { time: number; close: number }[], period: number) {
 }
 
 export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaSlow = 50 }: Props) {
+  const t = useTranslations("charts");
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -212,7 +214,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
                     position: p.type === "BUY" ? "belowBar" : "aboveBar",
                     color: p.type === "BUY" ? "#3b82f6" : "#f59e0b",
                     shape: p.type === "BUY" ? "arrowUp" : "arrowDown",
-                    text: `${p.type} ${p.lot} (open)`,
+                    text: `${p.type} ${p.lot} (${t("positionOpen")})`,
                   });
                 }
 
@@ -224,7 +226,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
                     lineWidth: 1,
                     lineStyle: 2, // dashed
                     axisLabelVisible: true,
-                    title: "TP",
+                    title: t("tp"),
                   });
                   priceLinesRef.current.push(tpLine);
                 }
@@ -237,7 +239,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
                     lineWidth: 1,
                     lineStyle: 2, // dashed
                     axisLabelVisible: true,
-                    title: "SL",
+                    title: t("sl"),
                   });
                   priceLinesRef.current.push(slLine);
                 }
@@ -250,7 +252,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
                     lineWidth: 1,
                     lineStyle: 1, // dotted
                     axisLabelVisible: true,
-                    title: "Entry",
+                    title: t("entry"),
                   });
                   priceLinesRef.current.push(entryLine);
                 }

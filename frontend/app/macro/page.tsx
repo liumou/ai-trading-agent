@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useTranslations } from "next-intl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +14,7 @@ import { showSuccess, showError } from "@/lib/toast";
 import { EmptyState } from "@/components/ui/empty-state";
 
 export default function MacroPage() {
+  const t = useTranslations("macro");
   const [snapshot, setSnapshot] = useState<Record<string, { name: string; value: number; date: string }>>({});
   const [correlations, setCorrelations] = useState<Record<string, { name: string; correlation: number; data_points: number }>>({});
   const [events, setEvents] = useState<{ type: string; name: string; date: string; impact: string; note: string }[]>([]);
@@ -40,10 +42,10 @@ export default function MacroPage() {
     try {
       await collectMacro();
       await fetchData();
-      showSuccess("Macro data collected");
+      showSuccess(t("collected"));
     } catch (e) {
       console.error(e);
-      showError("Failed to collect macro data");
+      showError(t("collectFailed"));
     }
     finally { setCollecting(false); }
   };
@@ -65,18 +67,18 @@ export default function MacroPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="Macro Data" subtitle="Economic indicators and gold correlations">
+      <PageHeader title={t("title")} subtitle={t("subtitle")}>
         <Button onClick={handleCollect} disabled={collecting} variant="outline" size="sm" className="rounded-full">
           <RefreshCw className={`size-4 mr-1.5 ${collecting ? "animate-spin" : ""}`} />
-          {collecting ? "Collecting..." : "Refresh FRED Data"}
+          {collecting ? t("collecting") : t("refreshData")}
         </Button>
       </PageHeader>
 
       <PageInstructions
 
         items={[
-          "Economic indicators (DXY, Treasury yields, VIX) and their correlation with gold prices.",
-          "Click Refresh FRED Data to fetch latest values. Upcoming economic events are listed with impact ratings.",
+          t("instructions.item1"),
+          t("instructions.item2"),
         ]}
       />
 
@@ -85,7 +87,7 @@ export default function MacroPage() {
         <CardHeader>
           <CardTitle className="text-sm font-bold flex items-center gap-2">
             <Globe className="size-4 text-primary-foreground dark:text-primary" />
-            Economic Indicators (Latest)
+            {t("indicators")}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -100,7 +102,7 @@ export default function MacroPage() {
               ))}
             </div>
           ) : (
-            <EmptyState icon={Globe} heading="No macro data" description="Collect economic data to see indicators and correlations" />
+            <EmptyState icon={Globe} heading={t("noMacroData")} description={t("noMacroDataDesc")} />
           )}
         </CardContent>
       </Card>
@@ -111,7 +113,7 @@ export default function MacroPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <ArrowRightLeft className="size-4 text-primary-foreground dark:text-primary" />
-              Gold Correlations (90 days)
+              {t("correlations")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -121,13 +123,13 @@ export default function MacroPage() {
                   const corr = data.correlation;
                   const isNeg = corr < 0;
                   const absCorr = Math.abs(corr);
-                  const strength = absCorr > 0.7 ? "Strong" : absCorr > 0.4 ? "Moderate" : "Weak";
+                  const strength = absCorr > 0.7 ? t("strengthStrong") : absCorr > 0.4 ? t("strengthModerate") : t("strengthWeak");
                   return (
                     <div key={id} className="space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-semibold">{data.name}</span>
                         <div className="flex items-center gap-2">
-                          <Badge variant="outline" className="text-xs rounded-full">{data.data_points} pts</Badge>
+                          <Badge variant="outline" className="text-xs rounded-full">{t("pts", { count: data.data_points })}</Badge>
                           <span className={`text-sm font-mono font-bold ${isNeg ? "text-destructive" : "text-success dark:text-green-400"}`}>
                             {corr > 0 ? "+" : ""}{corr.toFixed(3)}
                           </span>
@@ -147,7 +149,7 @@ export default function MacroPage() {
                 })}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground text-center py-8 font-medium">Collect macro data to see correlations</p>
+              <p className="text-sm text-muted-foreground text-center py-8 font-medium">{t("collectForCorrelations")}</p>
             )}
           </CardContent>
         </Card>
@@ -157,7 +159,7 @@ export default function MacroPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <Calendar className="size-4 text-primary-foreground dark:text-primary" />
-              Upcoming Economic Events
+              {t("upcomingEvents")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -181,7 +183,7 @@ export default function MacroPage() {
                           <span className="text-sm font-semibold">{event.name}</span>
                         </div>
                         <span className="text-xs text-muted-foreground font-medium">
-                          {daysUntil <= 0 ? "Today" : daysUntil === 1 ? "Tomorrow" : `${daysUntil}d`}
+                          {daysUntil <= 0 ? t("today") : daysUntil === 1 ? t("tomorrow") : t("inDays", { count: daysUntil })}
                         </span>
                       </div>
                       <p className="text-[11px] text-muted-foreground font-medium">{event.note}</p>
@@ -191,7 +193,7 @@ export default function MacroPage() {
                 })}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground text-center py-8 font-medium">No upcoming events</p>
+              <p className="text-sm text-muted-foreground text-center py-8 font-medium">{t("noUpcomingEvents")}</p>
             )}
           </CardContent>
         </Card>

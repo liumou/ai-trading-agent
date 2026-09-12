@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useTranslations } from "next-intl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -25,17 +26,19 @@ import {
 } from "lucide-react";
 
 function MultiTFDisplay({ data }: { data: Record<string, string | number> }) {
+  const t = useTranslations("quant");
   return (
     <div className="space-y-1 text-xs text-muted-foreground">
       <p>M15: {String(data.m15)}</p>
       <p>H1: {String(data.h1)}</p>
       <p>H4: {String(data.h4)}</p>
-      <p className="font-semibold">Agreement: {String(data.agreement)}</p>
+      <p className="font-semibold">{t("agreement")}: {String(data.agreement)}</p>
     </div>
   );
 }
 
 export default function QuantPage() {
+  const t = useTranslations("quant");
   const { symbols } = useBotStore();
   const [activeSymbol, setActiveSymbol] = useState("GOLD");
 
@@ -85,15 +88,15 @@ export default function QuantPage() {
       const res = await runStressTest("all");
       const results = res.data.results || [];
       if (results.length === 0) {
-        setStressError("No results — bot must be running with market data available");
+        setStressError(t("stressNoResults"));
       } else {
-        showSuccess("Stress test completed");
+        showSuccess(t("stressCompleted"));
       }
       setStressResults(results.length > 0 ? results : null);
     } catch (e) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setStressError(msg || "Stress test failed — check backend logs");
-      showError("Stress test failed");
+      setStressError(msg || t("stressFailedMessage"));
+      showError(t("stressFailedToast"));
       setStressResults(null);
     } finally {
       setStressLoading(false);
@@ -120,13 +123,13 @@ export default function QuantPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="Quant Analytics" subtitle="Quantitative risk, signals, and portfolio analysis" />
+      <PageHeader title={t("title")} subtitle={t("subtitle")} />
 
       <PageInstructions
         items={[
-          "VaR/CVaR shows potential loss at 95% and 99% confidence levels.",
-          "Regime detection uses HMM to identify trending vs ranging markets.",
-          "Correlation monitor tracks cross-symbol relationships in real-time.",
+          t("instructions.item1"),
+          t("instructions.item2"),
+          t("instructions.item3"),
         ]}
       />
 
@@ -134,12 +137,12 @@ export default function QuantPage() {
 
       {/* Row 1: Risk Overview */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <StatCard icon={Shield} label="VaR 95%" value={symVar.var_95 ? `${((symVar.var_95 as number) * 100).toFixed(2)}%` : "--"} variant={symVar.var_95 && (symVar.var_95 as number) > 0.03 ? "danger" : "success"} />
-        <StatCard icon={Shield} label="CVaR 95%" value={symVar.cvar_95 ? `${((symVar.cvar_95 as number) * 100).toFixed(2)}%` : "--"} variant="warning" />
-        <StatCard icon={Activity} label="Ann. Vol" value={symVar.annualized_vol ? `${((symVar.annualized_vol as number) * 100).toFixed(1)}%` : "--"} />
-        <StatCard icon={TrendingUp} label="GARCH Vol" value={symVol.current_vol ? `${((symVol.current_vol as number) * 100).toFixed(1)}%` : "--"} variant="gold" />
-        <StatCard icon={TrendingUp} label="Forecast 1-step" value={symVol.forecast_1 ? `${((symVol.forecast_1 as number) * 100).toFixed(1)}%` : "--"} />
-        <StatCard icon={Activity} label="GARCH Method" value={(symVol.method as string) || "--"} />
+        <StatCard icon={Shield} label={t("var95")} value={symVar.var_95 ? `${((symVar.var_95 as number) * 100).toFixed(2)}%` : "--"} variant={symVar.var_95 && (symVar.var_95 as number) > 0.03 ? "danger" : "success"} />
+        <StatCard icon={Shield} label={t("cvar95")} value={symVar.cvar_95 ? `${((symVar.cvar_95 as number) * 100).toFixed(2)}%` : "--"} variant="warning" />
+        <StatCard icon={Activity} label={t("annVol")} value={symVar.annualized_vol ? `${((symVar.annualized_vol as number) * 100).toFixed(1)}%` : "--"} />
+        <StatCard icon={TrendingUp} label={t("garchVol")} value={symVol.current_vol ? `${((symVol.current_vol as number) * 100).toFixed(1)}%` : "--"} variant="gold" />
+        <StatCard icon={TrendingUp} label={t("forecast1")} value={symVol.forecast_1 ? `${((symVol.forecast_1 as number) * 100).toFixed(1)}%` : "--"} />
+        <StatCard icon={Activity} label={t("garchMethod")} value={(symVol.method as string) || "--"} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -148,7 +151,7 @@ export default function QuantPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <TrendingUp className="size-4 text-primary-foreground dark:text-primary" />
-              Market Regime
+              {t("marketRegime")}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -166,7 +169,7 @@ export default function QuantPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <GitBranch className="size-4 text-primary-foreground dark:text-primary" />
-              Correlation Matrix
+              {t("correlationMatrix")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -179,16 +182,16 @@ export default function QuantPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <Zap className="size-4 text-primary-foreground dark:text-primary" />
-              {activeSymbol} Signals
+              {t("signalsTitle", { symbol: activeSymbol })}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {[
-              { label: "Z-Score", value: symSignals.z_score, fmt: (v: number) => v?.toFixed(2) },
-              { label: "Hurst", value: symSignals.hurst, fmt: (v: number) => `${v?.toFixed(3)} (${v > 0.55 ? "trending" : v < 0.45 ? "mean-rev" : "neutral"})` },
-              { label: "Rolling Sharpe", value: symSignals.rolling_sharpe, fmt: (v: number) => v?.toFixed(2) },
-              { label: "Momentum", value: symSignals.momentum_factor, fmt: (v: number) => v?.toFixed(3) },
-              { label: "Half-life", value: symSignals.half_life, fmt: (v: number) => v === Infinity ? "∞" : `${v?.toFixed(0)} bars` },
+              { label: t("signals.zScore"), value: symSignals.z_score, fmt: (v: number) => v?.toFixed(2) },
+              { label: t("signals.hurst"), value: symSignals.hurst, fmt: (v: number) => `${v?.toFixed(3)} (${v > 0.55 ? t("hurstState.trending") : v < 0.45 ? t("hurstState.meanRev") : t("hurstState.neutral")})` },
+              { label: t("signals.rollingSharpe"), value: symSignals.rolling_sharpe, fmt: (v: number) => v?.toFixed(2) },
+              { label: t("signals.momentum"), value: symSignals.momentum_factor, fmt: (v: number) => v?.toFixed(3) },
+              { label: t("signals.halfLife"), value: symSignals.half_life, fmt: (v: number) => v === Infinity ? "∞" : t("signals.bars", { value: v?.toFixed(0) }) },
             ].map(({ label, value, fmt }) => (
               <div key={label} className="flex justify-between text-xs">
                 <span className="text-muted-foreground">{label}</span>
@@ -206,13 +209,13 @@ export default function QuantPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <PieChart className="size-4 text-primary-foreground dark:text-primary" />
-              Portfolio Allocation
+              {t("portfolioAllocation")}
             </CardTitle>
           </CardHeader>
           <CardContent>
             {sharpeAlloc.weights ? (
               <div className="space-y-3">
-                <p className="text-xs text-muted-foreground font-medium">Max Sharpe ({((sharpeAlloc.sharpe_ratio as number) || 0).toFixed(2)})</p>
+                <p className="text-xs text-muted-foreground font-medium">{t("maxSharpe", { value: ((sharpeAlloc.sharpe_ratio as number) || 0).toFixed(2) })}</p>
                 {Object.entries(sharpeAlloc.weights as Record<string, number>).map(([sym, w]) => (
                   <div key={sym} className="space-y-1">
                     <div className="flex justify-between text-xs">
@@ -227,7 +230,7 @@ export default function QuantPage() {
                 {parityAlloc.weights != null && (
                   <>
                     <hr className="border-border" />
-                    <p className="text-xs text-muted-foreground font-medium">Risk Parity</p>
+                    <p className="text-xs text-muted-foreground font-medium">{t("riskParity")}</p>
                     {Object.entries(parityAlloc.weights as Record<string, number>).map(([sym, w]) => (
                       <div key={sym} className="flex justify-between text-xs">
                         <span>{sym}</span>
@@ -238,7 +241,7 @@ export default function QuantPage() {
                 )}
               </div>
             ) : (
-              <EmptyState icon={PieChart} heading="No portfolio data" description="Portfolio allocation will appear when data is available" />
+              <EmptyState icon={PieChart} heading={t("noPortfolioHeading")} description={t("noPortfolioDescription")} />
             )}
           </CardContent>
         </Card>
@@ -248,7 +251,7 @@ export default function QuantPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <AlertTriangle className="size-4 text-primary-foreground dark:text-primary" />
-              Stress Testing
+              {t("stressTitle")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -258,13 +261,13 @@ export default function QuantPage() {
                   <div key={i} className="flex justify-between items-center text-xs border-b border-border pb-2 last:border-0">
                     <div>
                       <p className="font-medium">{String(r.scenario)}</p>
-                      <p className="text-muted-foreground">Worst: {String(r.worst_symbol)}</p>
+                      <p className="text-muted-foreground">{t("worstSymbol", { symbol: String(r.worst_symbol) })}</p>
                     </div>
                     <div className="text-right">
                       <p className={`font-mono font-bold ${(r.portfolio_impact as number) < 0 ? "text-red-400" : "text-green-400"}`}>
                         {((r.portfolio_impact as number) * 100).toFixed(1)}%
                       </p>
-                      {Boolean(r.var_breach) && <span className="text-[10px] text-red-400 font-semibold">VaR BREACH</span>}
+                      {Boolean(r.var_breach) && <span className="text-[10px] text-red-400 font-semibold">{t("varBreach")}</span>}
                     </div>
                   </div>
                 ))}
@@ -272,14 +275,14 @@ export default function QuantPage() {
             ) : (
               <div className="flex flex-col items-center gap-3 py-8">
                 <BarChart3 className="size-8 text-muted-foreground/40" />
-                <p className="text-sm text-muted-foreground">Run stress scenarios to evaluate portfolio resilience</p>
+                <p className="text-sm text-muted-foreground">{t("stressPrompt")}</p>
                 <Button
                   onClick={handleStressTest}
                   disabled={stressLoading}
                   className="rounded-full bg-primary text-primary-foreground font-semibold"
                 >
                   {stressLoading ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <AlertTriangle className="size-4 mr-1.5" />}
-                  {stressLoading ? "Running..." : "Run Stress Tests"}
+                  {stressLoading ? t("running") : t("runStressTests")}
                 </Button>
                 {stressError && (
                   <p className="text-xs text-red-400 font-medium">{stressError}</p>

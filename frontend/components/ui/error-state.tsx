@@ -1,3 +1,6 @@
+"use client";
+
+import { useTranslations } from "next-intl";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -9,10 +12,11 @@ interface ErrorStateProps {
 }
 
 export function ErrorState({
-  message = "Failed to load data",
+  message,
   onRetry,
   className,
 }: ErrorStateProps) {
+  const t = useTranslations("ui");
   return (
     <div
       className={cn(
@@ -23,12 +27,12 @@ export function ErrorState({
       <div className="size-10 rounded-xl bg-destructive/10 flex items-center justify-center mb-3">
         <AlertTriangle className="size-5 text-destructive" />
       </div>
-      <p className="text-sm font-semibold text-foreground mb-1">Error</p>
-      <p className="text-xs text-muted-foreground max-w-xs mb-4">{message}</p>
+      <p className="text-sm font-semibold text-foreground mb-1">{t("error")}</p>
+      <p className="text-xs text-muted-foreground max-w-xs mb-4">{message ?? t("failedToLoad")}</p>
       {onRetry && (
         <Button variant="outline" size="sm" onClick={onRetry}>
           <RotateCcw className="size-3.5" />
-          Retry
+          {t("retry")}
         </Button>
       )}
     </div>

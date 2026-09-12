@@ -1,0 +1,27 @@
+{
+  "title": "数据库健康",
+  "subtitle": "PostgreSQL 连接池与慢查询",
+  "instructions": {
+    "item1": "实时 PostgreSQL 连接池指标、慢查询以及长时间占用数据库连接的请求。",
+    "item2": "页面可见时每 10 秒自动刷新。",
+    "item3": "利用率 ≥ {pct}% 且持续 {seconds} 秒时触发 Telegram 告警。"
+  },
+  "failedToLoad": "加载失败",
+  "utilization": "利用率",
+  "checkedOut": "已借出",
+  "checkedIn": "已归还",
+  "overflow": "溢出",
+  "poolSize": "连接池大小",
+  "utilizationChart": "利用率（最近 {count} 个采样点 × 10 秒）",
+  "slowQueries": "慢查询 Top（> {ms}ms）",
+  "noSlowQueries": "暂无慢查询记录。",
+  "longHolds": "长持有请求（> {ms}ms）",
+  "noLongHolds": "暂无长持有请求记录。",
+  "colDuration": "耗时",
+  "colWhen": "时间",
+  "colSql": "SQL",
+  "colMethod": "方法",
+  "colPath": "路径",
+  "colCheckouts": "借出次数",
+  "noSamples": "暂无采样数据。"
+}

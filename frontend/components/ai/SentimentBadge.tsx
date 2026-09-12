@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -22,12 +23,6 @@ const iconMap: Record<string, typeof TrendingUp> = {
   neutral: Minus,
 };
 
-const labelTH: Record<string, string> = {
-  bullish: "ขาขึ้น",
-  bearish: "ขาลง",
-  neutral: "ทรงตัว",
-};
-
 const sizeMap = {
   sm: { badge: "text-[11px] px-2 py-0.5 gap-1", icon: "size-3" },
   md: { badge: "text-xs px-2.5 py-1 gap-1.5", icon: "size-3.5" },
@@ -35,6 +30,7 @@ const sizeMap = {
 };
 
 export default function SentimentBadge({ label, score, confidence, size = "md" }: Props) {
+  const t = useTranslations("ai.sentiment");
   const color = colorMap[label] || colorMap.neutral;
   const Icon = iconMap[label] || iconMap.neutral;
   const s = sizeMap[size];
@@ -42,7 +38,7 @@ export default function SentimentBadge({ label, score, confidence, size = "md" }
   return (
     <span className={cn("inline-flex items-center rounded-full border font-semibold", color, s.badge)}>
       <Icon className={s.icon} />
-      <span>{labelTH[label] || label}</span>
+      <span>{t.has(label) ? t(label) : label}</span>
       <span className="opacity-60">
         {score > 0 ? "+" : ""}
         {score.toFixed(2)}

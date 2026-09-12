@@ -1,0 +1,87 @@
+{
+  "title": "量化分析",
+  "subtitle": "量化风险、信号与投资组合分析",
+  "instructions": {
+    "item1": "VaR/CVaR 展示 95% 和 99% 置信水平下的潜在损失。",
+    "item2": "市场状态检测使用 HMM 识别趋势与震荡市场。",
+    "item3": "相关性监控实时跟踪跨品种之间的关系。"
+  },
+  "var95": "VaR 95%",
+  "cvar95": "CVaR 95%",
+  "annVol": "年化波动率",
+  "garchVol": "GARCH 波动率",
+  "forecast1": "下一步预测",
+  "garchMethod": "GARCH 方法",
+  "marketRegime": "市场状态",
+  "correlationMatrix": "相关性矩阵",
+  "signalsTitle": "{symbol} 信号",
+  "agreement": "一致性",
+  "signals": {
+    "zScore": "Z-Score",
+    "hurst": "Hurst",
+    "rollingSharpe": "滚动夏普",
+    "momentum": "动量",
+    "halfLife": "半衰期",
+    "bars": "{value} 根K线"
+  },
+  "hurstState": {
+    "trending": "趋势",
+    "meanRev": "均值回复",
+    "neutral": "中性"
+  },
+  "regime": {
+    "trending": "趋势",
+    "ranging": "震荡",
+    "normal": "正常"
+  },
+  "maxSharpe": "最大夏普 ({value})",
+  "portfolioAllocation": "投资组合配置",
+  "riskParity": "风险平价",
+  "noPortfolioHeading": "暂无投资组合数据",
+  "noPortfolioDescription": "数据可用后将显示投资组合配置",
+  "stressTitle": "压力测试",
+  "worstSymbol": "最差: {symbol}",
+  "varBreach": "VaR 突破",
+  "stressPrompt": "运行压力情景以评估投资组合的韧性",
+  "running": "运行中...",
+  "runStressTests": "运行压力测试",
+  "stressNoResults": "无结果 — 机器人必须处于运行状态且市场数据可用",
+  "stressFailedMessage": "压力测试失败 — 请检查后端日志",
+  "stressFailedToast": "压力测试失败",
+  "stressCompleted": "压力测试完成",
+  "accountability": {
+    "skilledWin": "技术性盈利",
+    "correctProcess": "流程正确",
+    "luckyWin": "侥幸",
+    "realMistake": "失误"
+  },
+  "summary": {
+    "var": "VaR",
+    "regime": "市场状态",
+    "vol": "波动率",
+    "corr": "相关性",
+    "portfolio": "投资组合"
+  },
+  "volLevel": {
+    "low": "低",
+    "normal": "正常",
+    "high": "高"
+  },
+  "correlationStatus": {
+    "stable": "稳定",
+    "shifting": "漂移",
+    "breakdown": "失效"
+  },
+  "portfolioStatus": {
+    "balanced": "均衡",
+    "concentrated": "集中",
+    "unknown": "未知"
+  },
+  "confirmations": "确认条件",
+  "confirmationCount": "{passed}/{total}（需要 {required}）",
+  "confirmationTooltip": "{name}: {status}（{pct}%）",
+  "confirmationStatus": {
+    "pass": "通过",
+    "fail": "未通过"
+  }
+}

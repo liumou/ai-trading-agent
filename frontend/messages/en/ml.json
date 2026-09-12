@@ -1,0 +1,80 @@
+{
+  "title": "ML Model",
+  "subtitle": "Train and manage LightGBM signal model per symbol",
+  "instructions": {
+    "item1": "Step 1: Collect Data — Fetch historical bars from MT5 into the database for your chosen symbol and timeframe.",
+    "item2": "Step 2: Train Model — Train a LightGBM classifier on collected data. Adjust TP/SL pips and forward bars in Advanced Parameters.",
+    "item3": "Step 3: Predict — Run the trained model on latest market data to get a buy/sell/hold signal with confidence score."
+  },
+  "steps": {
+    "collect": "Collect Data",
+    "train": "Train Model",
+    "predict": "Model & Predict",
+    "health": "Model Health"
+  },
+  "collect": {
+    "barsCollected": "{count} bars collected",
+    "bars": "{count} bars",
+    "from": "From",
+    "to": "To",
+    "timeframe": "Timeframe",
+    "collecting": "Collecting...",
+    "collect": "Collect",
+    "result": "{fetched} fetched, {inserted} new",
+    "failed": "Collection failed"
+  },
+  "train": {
+    "modelReady": "Model Ready",
+    "trainFrom": "Train From",
+    "trainTo": "Train To",
+    "timeframe": "Timeframe",
+    "advancedParameters": "Advanced Parameters",
+    "forwardBars": "Forward Bars",
+    "tpPips": "TP (pips)",
+    "slPips": "SL (pips)",
+    "training": "Training...",
+    "trainButton": "Train {symbol} Model",
+    "collectFirst": "Collect data first (Step 1)",
+    "accuracy": "Accuracy",
+    "trainSize": "Train Size",
+    "testSize": "Test Size",
+    "topFeature": "Top Feature",
+    "na": "N/A"
+  },
+  "predict": {
+    "topFeatures": "Top Features",
+    "livePrediction": "Live Prediction",
+    "predicting": "Predicting...",
+    "runPrediction": "Run Prediction",
+    "confidence": "Confidence:",
+    "emptyHeading": "No prediction yet",
+    "emptyDescription": "Run a prediction to see the model's current signal"
+  },
+  "health": {
+    "featureDrift": "Feature Drift (PSI)",
+    "checking": "Checking...",
+    "checkDrift": "Check Drift",
+    "predictionDrift": "Prediction Drift",
+    "driftPrompt": "Check drift to compare live features against training distribution",
+    "calibration": "Confidence Calibration",
+    "loading": "Loading...",
+    "load": "Load",
+    "predictedPct": "Predicted %",
+    "actualWinPct": "Actual Win %",
+    "calibrationSummary": "{count} predictions | Blue=predicted confidence, Green=actual win rate",
+    "calibrationEmpty": "Not enough prediction data yet. Run predictions to build calibration history.",
+    "calibrationPrompt": "Load calibration to compare predicted confidence vs actual outcomes"
+  },
+  "toasts": {
+    "dataCollected": "Data collected successfully",
+    "collectionFailed": "Data collection failed",
+    "modelTrained": "Model trained successfully",
+    "trainingFailed": "Training failed",
+    "serverError": "Server error ({status})",
+    "predictionCompleted": "Prediction completed",
+    "predictionFailed": "Prediction failed"
+  },
+  "noPredictionYet": "No prediction yet",
+  "noPredictionYetDesc": "Run a prediction to see the model's current signal",
+  "confidenceLabel": "Confidence:"
+}

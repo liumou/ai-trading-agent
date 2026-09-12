@@ -407,6 +407,20 @@ app = FastAPI(
 )
 
 
+# i18n: translate error details per Accept-Language
+from fastapi import HTTPException, Request  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+from app.i18n import pick_language, translate_detail  # noqa: E402
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_i18n_handler(request: Request, exc: HTTPException):
+    lang = pick_language(request.headers.get("accept-language"))
+    detail = translate_detail(str(exc.detail), lang) if isinstance(exc.detail, str) else exc.detail
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
+
+
 # Security headers middleware
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):

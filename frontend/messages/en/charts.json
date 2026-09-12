@@ -1,0 +1,14 @@
+{
+  "loading": "Loading chart...",
+  "price": "Price",
+  "time": "Time",
+  "open": "Open",
+  "high": "High",
+  "low": "Low",
+  "close": "Close",
+  "volume": "Volume",
+  "tp": "TP",
+  "sl": "SL",
+  "entry": "Entry",
+  "positionOpen": "open"
+}

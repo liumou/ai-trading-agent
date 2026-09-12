@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -24,6 +25,9 @@ import {
 } from "recharts";
 
 export default function InsightsPage() {
+  const t = useTranslations("insights");
+  const locale = useLocale();
+  const dateLocale = locale === "zh" ? "zh-CN" : "en-GB";
   const { symbols } = useBotStore();
   const [activeSymbol, setActiveSymbol] = useState("GOLD");
 
@@ -63,24 +67,24 @@ export default function InsightsPage() {
     try {
       const res = await runOptimization();
       setOptimization(res.data);
-      showSuccess("Optimization complete");
+      showSuccess(t("optimizationComplete"));
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Optimization failed";
+      const msg = e instanceof Error ? e.message : t("optimizationFailed");
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setOptimizeError(detail || msg);
-      showError("Optimization failed", detail || msg);
+      showError(t("optimizationFailed"), detail || msg);
     } finally {
       setOptimizing(false);
     }
   };
   const handleApply = async (logId: number) => {
-    if (confirm("Apply suggested parameters?")) {
-      try { await applyOptimization(logId); await fetchData(); showSuccess("Optimization applied"); } catch { showError("Failed to apply optimization"); }
+    if (confirm(t("applyConfirm"))) {
+      try { await applyOptimization(logId); await fetchData(); showSuccess(t("optimizationApplied")); } catch { showError(t("applyFailed")); }
     }
   };
 
   const chartData = [...history].reverse().map((h) => ({
-    time: new Date(h.created_at).toLocaleDateString("en-GB", { timeZone: "Asia/Bangkok", month: "short", day: "numeric", hour: "2-digit" }),
+    time: new Date(h.created_at).toLocaleDateString(dateLocale, { timeZone: "Asia/Bangkok", month: "short", day: "numeric", hour: "2-digit" }),
     score: h.sentiment_score,
   }));
 
@@ -98,12 +102,12 @@ export default function InsightsPage() {
 
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
-      <PageHeader title="AI Insights" subtitle="Sentiment analysis and strategy optimization" />
+      <PageHeader title={t("title")} subtitle={t("subtitle")} />
 
       <PageInstructions
         items={[
-          "Select a symbol to view its AI sentiment analysis — from bearish to bullish with confidence score.",
-          "Run Optimization lets AI suggest strategy parameter improvements based on recent trade performance.",
+          t("instruction1"),
+          t("instruction2"),
         ]}
       />
 
@@ -115,7 +119,7 @@ export default function InsightsPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <Brain className="size-4 text-primary-foreground dark:text-primary" />
-              {activeSymbol} Sentiment
+              {t("symbolSentiment", { symbol: activeSymbol })}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
@@ -131,7 +135,7 @@ export default function InsightsPage() {
 
                 {sentiment.key_factors.length > 0 && (
                   <div className="space-y-2">
-                    <p className="text-xs text-muted-foreground font-semibold">Key Factors</p>
+                    <p className="text-xs text-muted-foreground font-semibold">{t("keyFactors")}</p>
                     <div className="flex flex-wrap gap-2">
                       {sentiment.key_factors.map((f, i) => (
                         <span key={i} className="text-xs border border-border bg-card px-3 py-1.5 rounded-full text-foreground font-medium">
@@ -143,11 +147,11 @@ export default function InsightsPage() {
                 )}
 
                 <p className="text-[11px] text-muted-foreground/60 text-center font-medium">
-                  Updated: {new Date(sentiment.analyzed_at).toLocaleString("en-GB", { timeZone: "Asia/Bangkok" })}
+                  {t("updated", { time: new Date(sentiment.analyzed_at).toLocaleString(dateLocale, { timeZone: "Asia/Bangkok" }) })}
                 </p>
               </>
             ) : (
-              <EmptyState icon={Brain} heading="No sentiment data" description="AI sentiment analysis will appear after the bot runs its first analysis cycle" />
+              <EmptyState icon={Brain} heading={t("noSentimentHeading")} description={t("noSentimentDescription")} />
             )}
           </CardContent>
         </Card>
@@ -155,7 +159,7 @@ export default function InsightsPage() {
         {/* History Chart */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm font-bold">Sentiment History (7 days)</CardTitle>
+            <CardTitle className="text-sm font-bold">{t("sentimentHistory")}</CardTitle>
           </CardHeader>
           <CardContent>
             {chartData.length > 0 ? (
@@ -187,7 +191,7 @@ export default function InsightsPage() {
               </ResponsiveContainer>
               </ErrorBoundary>
             ) : (
-              <EmptyState icon={BarChart3} heading="No history data" description="Sentiment history will build up over time as the bot analyzes market conditions" />
+              <EmptyState icon={BarChart3} heading={t("noHistoryHeading")} description={t("noHistoryDescription")} />
             )}
           </CardContent>
         </Card>
@@ -213,7 +217,7 @@ export default function InsightsPage() {
               <CardContent className="py-12 text-center space-y-4">
                 <Sparkles className="size-10 text-muted-foreground/40 mx-auto" />
                 <p className="text-sm text-muted-foreground font-medium">
-                  {optimizing ? "AI is analyzing your recent trades..." : "No optimization runs yet"}
+                  {optimizing ? t("analyzingTrades") : t("noOptimizationRuns")}
                 </p>
                 <Button
                   onClick={handleRunOptimization}
@@ -225,7 +229,7 @@ export default function InsightsPage() {
                   ) : (
                     <Sparkles className="size-4 mr-1.5" />
                   )}
-                  {optimizing ? "Optimizing..." : "Run Optimization"}
+                  {optimizing ? t("optimizing") : t("runOptimization")}
                 </Button>
                 {optimizeError && (
                   <p className="text-xs text-red-400 font-medium">{optimizeError}</p>
@@ -239,14 +243,14 @@ export default function InsightsPage() {
           <CardHeader>
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <BarChart3 className="size-4 text-primary-foreground dark:text-primary" />
-              AI Performance Attribution
+              {t("performanceAttribution")}
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col items-center justify-center py-12 space-y-3">
               <BarChart3 className="size-10 text-muted-foreground/20" />
               <p className="text-sm text-muted-foreground text-center max-w-xs font-medium">
-                Performance attribution will appear after enough trades with AI filter enabled
+                {t("attributionPlaceholder")}
               </p>
             </div>
           </CardContent>
