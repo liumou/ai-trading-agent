@@ -50,11 +50,71 @@ class TrainingResult:
         return d
 
 
+def _barrier_diagnosis(
+    df: pd.DataFrame,
+    tp_delta: float,
+    sl_delta: float,
+    class_counts: dict,
+) -> str:
+    """把"某类缺失"从谜题变成可操作诊断。
+
+    绝大多数缺类并非数据不足，而是障碍尺度与真实波动不匹配：
+
+      - 障碍 ≪ 单根波幅 → 每根必触屏，HOLD 恒为 0（BUY/SELL 独占）；
+      - 障碍 ≫ 单根波幅 → 几乎触不到屏，BUY/SELL 恒为 0（HOLD 独占）。
+
+    因此给出该品种实测的 mean/median bar range、当前障碍相对它的倍数，以及
+    一个"让三类都出现"的建议区间 —— 而不是含糊地建议"扩大日期范围"（对阈值
+    配置导致的零类永远无效）。
+    """
+    if df is None or df.empty or "high" not in df or "low" not in df:
+        return "Adjust TP/SL barriers so all 3 outcomes appear."
+
+    bar_range = (df["high"] - df["low"]).dropna()
+    if bar_range.empty:
+        return "Adjust TP/SL barriers so all 3 outcomes appear."
+
+    mean_range = float(bar_range.mean())
+    median_range = float(bar_range.median())
+    barrier = max(tp_delta, sl_delta) if tp_delta > 0 else sl_delta
+    ratio = barrier / mean_range if mean_range > 0 else float("inf")
+
+    # [0.5, 1.5]× mean bar range 实测能稳定产出三类（BTCUSD H1 复核：
+    # 500 ≈ 0.96× → BUY 34% / HOLD 29% / SELL 37%）。
+    lo, hi = 0.5 * mean_range, 1.5 * mean_range
+
+    if ratio < 0.3:
+        cause = (
+            f"the barrier ({barrier:g}) is only {ratio:.3g}× the symbol's mean bar range "
+            f"({mean_range:.4g}) — price touches it almost every window, so HOLD collapses to 0"
+        )
+    elif ratio > 4.0:
+        cause = (
+            f"the barrier ({barrier:g}) is {ratio:.3g}× the symbol's mean bar range "
+            f"({mean_range:.4g}) — it is rarely reached, so BUY/SELL collapse to 0"
+        )
+    else:
+        cause = (
+            f"the barrier ({barrier:g}) is {ratio:.3g}× the symbol's mean bar range "
+            f"({mean_range:.4g})"
+        )
+
+    return (
+        f"Diagnosis: {cause}. "
+        f"Bar range stats (this dataset): mean={mean_range:.4g}, median={median_range:.4g}, "
+        f"bars={len(df)}, tp_delta={tp_delta:g}, sl_delta={sl_delta:g}, "
+        f"class_counts={{SELL: {class_counts.get(-1, 0)}, HOLD: {class_counts.get(0, 0)}, "
+        f"BUY: {class_counts.get(1, 0)}}}. "
+        f"Suggestions: set ml_tp_pips/ml_sl_pips so tp_delta ≈ [{lo:.4g}, {hi:.4g}] "
+        f"(0.5–1.5× mean bar range); widen the date range only if a class is merely "
+        f"rare, not structurally absent."
+    )
+
+
 class ModelTrainer:
     def __init__(self):
         self.model = None
         self.feature_columns = FEATURE_COLUMNS
-
     def prepare_dataset(
         self,
         df: pd.DataFrame,
@@ -86,7 +146,7 @@ class ModelTrainer:
             missing_names = [labels[c] for c in missing_classes]
             raise ValueError(
                 f"Training data is missing classes: {missing_names}. "
-                "Try a wider date range or adjust TP/SL pips so all 3 outcomes appear."
+                + _barrier_diagnosis(df, tp_pips, sl_pips, class_counts)
             )
 
         return X, y

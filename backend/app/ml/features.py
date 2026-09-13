@@ -186,18 +186,38 @@ def build_labels(
     df: pd.DataFrame,
     forward_bars: int = 10,
     tp_pips: float = 5.0,
-    sl_pips: float = 5.0,
+    sl_pips: float | None = None,
 ) -> pd.Series:
     """
-    Triple Barrier Labeling:
-    - Barrier 1 (UP):   highest high in next forward_bars >= entry + tp_pips → BUY (1)
-    - Barrier 2 (DOWN): lowest low in next forward_bars <= entry - sl_pips   → SELL (-1)
-    - Barrier 3 (TIME): neither hit within forward_bars                       → HOLD (0)
+    Triple-barrier labeling — direction classification.
 
-    When both barriers could be hit, whichever is hit FIRST wins.
-    Last forward_bars rows are dropped (NaN) since they can't be labeled.
-    tp_pips is the long TP; sl_pips is the long SL. For short signals the barriers swap.
+    For each bar, look ahead ``forward_bars`` bars and compare the path to a
+    barrier of ``tp_pips`` price units placed on both sides of the entry close:
+
+    - UP   barrier: any ``high >= entry + tp_pips``  → BUY  (1)
+    - DOWN barrier: any ``low  <= entry - tp_pips``  → SELL (-1)
+    - TIME barrier: neither touched within the window → HOLD (0)
+
+    Barriers are deliberately **symmetric** (both ``tp_pips``) because the label
+    is meant to be a *direction* target, not the P&L outcome of one specific
+    long trade. Asymmetric barriers (up ``tp``, down ``sl``) would turn the label
+    into a function of the tp:sl ratio — a driftless random walk would be
+    labeled BUY about ``sl / (tp + sl)`` of the time — injecting a
+    labeler-defined prior instead of market direction.
+
+    ``sl_pips`` is accepted for API/back-compat and reserved for a future
+    meta-labeling pass; it intentionally does **not** widen the barriers. (It was
+    previously dead code: two bare expressions ``entry - sl_pips`` /
+    ``entry + sl_pips`` were never read, so only ``tp_pips`` ever took effect.)
+
+    Ties — the UP and DOWN barrier both first touched within the **same** bar —
+    are labeled HOLD: intrabar order is unknowable from OHLC, and defaulting such
+    a coin flip to BUY (the old behaviour) fabricated a bullish bias that blows
+    up whenever the barrier is small relative to bar volatility.
+
+    The last ``forward_bars`` rows cannot be labeled and are left as NaN.
     """
+    _ = sl_pips  # reserved for meta-labeling — barriers stay symmetric on purpose
     labels = pd.Series(np.nan, index=df.index, dtype=float)
     closes = df["close"].values
     highs = df["high"].values
@@ -206,18 +226,16 @@ def build_labels(
 
     for i in range(n - forward_bars):
         entry = closes[i]
-        tp_long = entry + tp_pips  # long TP
-        entry - sl_pips  # long SL (= short TP)
-        tp_short = entry - tp_pips  # short TP
-        entry + sl_pips  # short SL (= long SL for short)
+        up = entry + tp_pips
+        down = entry - tp_pips
 
         long_hit = None
         short_hit = None
 
         for j in range(i + 1, min(i + forward_bars + 1, n)):
-            if long_hit is None and highs[j] >= tp_long:
+            if long_hit is None and highs[j] >= up:
                 long_hit = j
-            if short_hit is None and lows[j] <= tp_short:
+            if short_hit is None and lows[j] <= down:
                 short_hit = j
 
             # Once both hit or first one hit, no need to continue
@@ -230,9 +248,13 @@ def build_labels(
             labels.iloc[i] = 1  # BUY
         elif short_hit is not None and long_hit is None:
             labels.iloc[i] = -1  # SELL
+        elif long_hit == short_hit:
+            # Both barriers first touched inside the same bar — intrabar order
+            # is unknowable from OHLC, so do not fabricate a direction.
+            labels.iloc[i] = 0  # HOLD
         else:
-            # Both hit — whichever came first wins
-            labels.iloc[i] = 1 if long_hit <= short_hit else -1
+            # Both hit in different bars — whichever came first wins
+            labels.iloc[i] = 1 if long_hit < short_hit else -1
 
     return labels
 

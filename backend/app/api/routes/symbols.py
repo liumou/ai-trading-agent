@@ -10,12 +10,12 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import log_audit
 from app.auth import require_auth
-from app.db.models import SymbolConfig
+from app.db.models import OHLCVData, SymbolConfig
 from app.db.session import async_session, get_db
 from app.services import symbol_config_service as svc
 from app.services.symbol_validation import check_broker_symbol
@@ -97,10 +97,11 @@ class SymbolBase(BaseModel):
 
     @model_validator(mode="after")
     def _check_ml_barrier_sane(self) -> SymbolBase:
-        """当 ml_tp_pips × pip_value 超过价格 50% 幅度时告警。
+        """请求级最低限度的障碍量级校验（无 DB，故只能挡明显录入错误）。
 
-        三重障碍标注需要训练集中同时出现 BUY 与 SELL 标签。若障碍大于典型
-        价格的一半，标注器将只会产出 HOLD。
+        真正的合理性判定需要该品种的实际波动率，由路由层用近期 OHLCV 的
+        ``mean(high-low)`` 完成（见 ``_symbol_mean_bar_range``）；请求级只拦截
+        ``pip_value`` 与障碍的乘积荒谬至此的情形。
         """
         if self.pip_value is None:
             return self
@@ -318,16 +319,90 @@ def _ensure_pip_value_sane(pip_value: float, price_decimals: int) -> None:
         )
 
 
-def _ensure_ml_barriers_sane(ml_tp_pips: float, ml_sl_pips: float, pip_value: float) -> None:
-    """障碍超过 50 个价格单位时几乎必然只会产出 HOLD 标签。"""
-    tp_frac = ml_tp_pips * pip_value
-    sl_frac = ml_sl_pips * pip_value
-    if tp_frac > 50 or sl_frac > 50:
-        raise ValueError(
-            f"ml_tp_pips × pip_value = {tp_frac} and ml_sl_pips × pip_value = {sl_frac}. "
-            f"Barriers above 50 price units almost always produce HOLD-only labels. "
-            f"Lower ml_tp_pips / ml_sl_pips or correct pip_value."
-        )
+# 障碍是否合理，取决于它相对"单根 K 线实际波动"的大小，而不是它的绝对
+# 价格数值。实测 BTCUSD H1（mean(high-low)≈521，均价≈88 990）：
+#   出厂默认 500 ≈ 0.96× 单根波幅 → 三类分布健康；
+#   被改坏的 15 ≈ 0.03× 单根波幅 → 前向窗口必触屏，HOLD 坍缩为 0。
+# 旧的"绝对 50 价格单位"上限同时犯两个错：放行了 15，却拒绝了 500。
+_BARRIER_RATIO_REJECT = (0.15, 6.0)  # 结构性地产不出三类标签
+_BARRIER_RATIO_WARN = (0.3, 3.0)  # 可疑但允许（例如刻意的宽/窄屏障策略）
+
+
+def _ensure_ml_barriers_sane(
+    ml_tp_pips: float,
+    ml_sl_pips: float,
+    pip_value: float,
+    mean_bar_range: float | None = None,
+    enforce: bool = True,
+) -> None:
+    """校验 ML 障碍相对单根 K 线波动是否合理。
+
+    ``mean_bar_range`` 为该品种近期 ``mean(high - low)``（同训练所用 timeframe）：
+
+      - **有行情数据**：按 ``barrier / mean_bar_range`` 判定 —— 这才是与价格量级
+        无关的正确尺度。落在 [0.15, 6] 之外结构性地产不出 BUY/SELL/HOLD 三类
+        标签（拒绝）；落在 [0.3, 3] 之外仅告警（可疑但允许）。
+      - **无行情数据**：退化为宽松的量级校验，只拦截明显的录入错误（如 0 或
+        1e6 量级的胖手指），避免数据尚未回填时阻塞品种配置。
+
+    ``enforce=False`` 用于"编辑与本参数无关的字段"的场景：此时历史遗留的坏配置
+    只告警、不拒绝，避免操作员被无法一次性修好的旧数据锁死。
+    """
+    tp_delta = ml_tp_pips * pip_value
+    sl_delta = ml_sl_pips * pip_value
+
+    if mean_bar_range and mean_bar_range > 0:
+        lo_rej, hi_rej = _BARRIER_RATIO_REJECT
+        lo_warn, hi_warn = _BARRIER_RATIO_WARN
+        for name, delta in (("ml_tp_pips", tp_delta), ("ml_sl_pips", sl_delta)):
+            ratio = delta / mean_bar_range
+            if ratio < lo_rej or ratio > hi_rej:
+                message = (
+                    f"{name} × pip_value = {delta:g} is {ratio:.3g}× the symbol's "
+                    f"mean bar range ({mean_bar_range:g}). Barriers this far from typical "
+                    f"bar volatility cannot produce a 3-class (BUY/SELL/HOLD) training set. "
+                    f"Keep the barrier within roughly [{lo_rej}, {hi_rej}]× mean bar range."
+                )
+                if enforce:
+                    raise ValueError(message)
+                logger.warning(f"{message} (unchanged parameter — allowed for now)")
+                continue
+            if ratio < lo_warn or ratio > hi_warn:
+                logger.warning(
+                    f"{name} × pip_value = {delta:g} is {ratio:.3g}× mean bar range "
+                    f"({mean_bar_range:g}) — outside the recommended [{lo_warn}, {hi_warn}]× "
+                    f"band; ML labeling may be skewed."
+                )
+        return
+
+    # 尚无行情数据 —— 只拦截明显的录入错误。
+    for name, delta in (("ml_tp_pips", tp_delta), ("ml_sl_pips", sl_delta)):
+        if delta <= 0 or delta > 1_000_000:
+            message = (
+                f"{name} × pip_value = {delta:g} is implausible. "
+                f"Check ml_tp_pips / ml_sl_pips and pip_value."
+            )
+            if enforce:
+                raise ValueError(message)
+            logger.warning(f"{message} (unchanged parameter — allowed for now)")
+
+
+async def _symbol_mean_bar_range(
+    db: AsyncSession, symbol: str, timeframe: str, bars: int = 500
+) -> float | None:
+    """近期 mean(high - low)，用于把 ML 障碍尺度与真实波动率对齐。
+
+    无行情数据时返回 None（调用方据此走宽松校验，不阻塞配置）。
+    """
+    recent = (
+        select((OHLCVData.high - OHLCVData.low).label("rng"))
+        .where(OHLCVData.symbol == symbol, OHLCVData.timeframe == timeframe)
+        .order_by(OHLCVData.time.desc())
+        .limit(bars)
+        .subquery()
+    )
+    value = (await db.execute(select(func.avg(recent.c.rng)))).scalar_one_or_none()
+    return float(value) if value is not None else None
 
 
 _CANONICAL_INVALID_CHARS = re.compile(r"[^A-Za-z0-9]")
@@ -587,10 +662,21 @@ async def create_symbol(
     contract_size = float(spec.get("trade_contract_size") or req.contract_size or 1.0)
 
     # 用解析后的值做最终合理性检查（请求级校验器只见过原始请求，
-    # 无法预知回填后的小数位）。
+    # 无法预知回填后的小数位）。障碍按该品种已有行情的真实波动做相对判定；
+    # 新品种通常尚无 OHLCV，此时自动退化为量级校验。
     try:
         _ensure_pip_value_sane(pip_value, price_decimals)
-        _ensure_ml_barriers_sane(req.ml_tp_pips, req.ml_sl_pips, pip_value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    mean_range = await _symbol_mean_bar_range(db, canonical, req.ml_timeframe)
+    try:
+        _ensure_ml_barriers_sane(
+            req.ml_tp_pips,
+            req.ml_sl_pips,
+            pip_value,
+            mean_bar_range=mean_range,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -719,13 +805,33 @@ async def update_symbol(
 
         try:
             _ensure_pip_value_sane(values["pip_value"], digits)
-            _ensure_ml_barriers_sane(
-                values.get("ml_tp_pips") or cfg.ml_tp_pips,
-                values.get("ml_sl_pips") or cfg.ml_sl_pips,
-                values["pip_value"],
-            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # 障碍合理性检查必须**无条件**执行（含 spec_class_touched=False 的纯 ML 参数
+    # 编辑）：此前它被包在上面分支内，于是"只改 ml_tp_pips / ml_sl_pips"时完全
+    # 绕过校验 —— BTCUSD 被写成 ml_tp_pips=15（≈0.03× 单根波幅）致 HOLD 坍缩
+    # 正是这条路径。现在按该品种近期真实波动做相对判定；无行情数据时退化为量级校验。
+    #
+    # 仅当本次请求确实要改动障碍参数时才严格拒绝：否则历史遗留的坏配置会让
+    # "编辑 display_name" 之类的无关操作也无端 400，把操作员锁死。
+    eff_pip_value = values.get("pip_value") or cfg.pip_value
+    eff_tf = values.get("ml_timeframe") or cfg.ml_timeframe
+    mean_range = await _symbol_mean_bar_range(db, cfg.symbol, eff_tf)
+    barriers_touched = any(
+        values.get(f) is not None and values.get(f) != getattr(cfg, f)
+        for f in ("ml_tp_pips", "ml_sl_pips", "pip_value")
+    )
+    try:
+        _ensure_ml_barriers_sane(
+            values.get("ml_tp_pips") or cfg.ml_tp_pips,
+            values.get("ml_sl_pips") or cfg.ml_sl_pips,
+            eff_pip_value,
+            mean_bar_range=mean_range,
+            enforce=barriers_touched,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     # 可选字段传 None 表示"不修改"（对券商回填字段采用部分更新语义；
     # 其余字段仍按整表单 PUT）。

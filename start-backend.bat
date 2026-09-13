@@ -22,4 +22,10 @@ if not defined DATABASE_URL_SYNC (
     exit /b 1
 )
 
+REM 启动前自动应用数据库迁移，避免模型与 schema 漂移导致运行期 500
+REM （与 backend/Dockerfile CMD 的 alembic upgrade head 行为一致）；失败仅告警，不阻断启动。
+echo [migration] alembic upgrade head
+"%BACKEND_DIR%\.venv\Scripts\alembic.exe" upgrade head
+if errorlevel 1 echo [WARN] alembic upgrade head 失败 - 若模型与数据库不一致，接口可能报 500
+
 "%BACKEND_DIR%\.venv\Scripts\uvicorn.exe" app.main:app --host 0.0.0.0 --port 8002

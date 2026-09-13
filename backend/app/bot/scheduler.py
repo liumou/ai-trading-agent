@@ -886,10 +886,20 @@ class BotScheduler:
 
                 from_date = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
                 collector = HistoricalDataCollector(engine.market_data, session)
-                df = await collector.load_from_db(symbol, engine.timeframe, from_date=from_date)
+                # 必须用 ml_timeframe 训练，与预测端同源（ml.py 的 /predict 读
+                # ml_timeframe，回退时才用其他 tf）。此前用 engine.timeframe
+                # （= default_timeframe，BTCUSD 为 M15）训练，模型学的是 M15 的
+                # 特征尺度，却被拿来对 H1 做预测 —— 训练/服务特征分布不一致。
+                train_tf = (
+                    SYMBOL_PROFILES.get(symbol, {}).get("ml_timeframe") or engine.timeframe
+                )
+                df = await collector.load_from_db(symbol, train_tf, from_date=from_date)
 
                 if df.empty or len(df) < 500:
-                    logger.warning(f"ML retrain [{symbol}] skipped: insufficient data ({len(df)} bars)")
+                    logger.warning(
+                        f"ML retrain [{symbol}] skipped: insufficient data "
+                        f"({len(df)} bars on {train_tf})"
+                    )
                     await self._set_symbol_ml_status(symbol, "failed")
                     return
 
