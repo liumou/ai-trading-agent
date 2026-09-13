@@ -227,9 +227,9 @@ async def run_comparison(req: CompareRequest):
 
 async def _load_data(symbol: str, source: str, timeframe: str, count: int, from_date: str | None, to_date: str | None):
     """Load OHLCV data from MT5 (live) or DB (historical)."""
-    from app.config import resolve_broker_symbol
+    from app.config import resolve_canonical_symbol
 
-    actual_symbol = resolve_broker_symbol(symbol)
+    actual_symbol = resolve_canonical_symbol(symbol)
     if source == "db":
         if _collector is None:
             raise HTTPException(status_code=503, detail="Data collector not initialized")

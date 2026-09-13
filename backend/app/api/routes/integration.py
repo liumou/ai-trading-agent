@@ -108,24 +108,6 @@ async def _test_mt5() -> dict:
         return {"name": "MT5 Bridge", "status": "error", "latency_ms": 0, "detail": str(e)}
 
 
-async def _test_binance() -> dict:
-    """Test Binance API connectivity."""
-    start = time.time()
-    try:
-        base_url = settings.binance_base_url if hasattr(settings, "binance_base_url") else ""
-        if not base_url:
-            return {"name": "Binance", "status": "disabled", "latency_ms": 0, "detail": "Not configured"}
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{base_url}/api/v3/ping")
-        latency = int((time.time() - start) * 1000)
-        if resp.status_code == 200:
-            label = "Testnet" if "testnet" in base_url else "Production"
-            return {"name": "Binance", "status": "connected", "latency_ms": latency, "detail": f"{label}: {base_url}"}
-        return {"name": "Binance", "status": "error", "latency_ms": latency, "detail": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"name": "Binance", "status": "error", "latency_ms": 0, "detail": str(e)}
-
-
 async def _test_telegram() -> dict:
     """Test Telegram bot connectivity."""
     start = time.time()

@@ -72,9 +72,11 @@ function toFormState(cfg?: SymbolConfig): FormState {
   };
 }
 
-function toPayload(state: FormState): SymbolConfigInput {
+function toPayload(state: FormState, picked: BrokerCatalogItem | null): SymbolConfigInput {
   return {
-    symbol: state.symbol.trim(),
+    // 目录驱动的创建流程：省略规范名 —— 由服务端从券商品种名派生
+    // （仅保留字母数字）并校验唯一性。
+    symbol: picked ? null : state.symbol.trim(),
     display_name: state.display_name.trim(),
     broker_alias: state.broker_alias.trim() || null,
     asset_class: state.asset_class,
@@ -95,8 +97,9 @@ function toPayload(state: FormState): SymbolConfigInput {
 
 type ValidateT = (key: "errSymbol" | "errDisplayName" | "errFieldGt0" | "errLotOrder", values?: Record<string, string>) => string;
 
-function validate(state: FormState, t: ValidateT): string | null {
-  if (!state.symbol.match(/^[A-Za-z0-9._-]{2,32}$/)) return t("errSymbol");
+function validate(state: FormState, t: ValidateT, picked: BrokerCatalogItem | null): string | null {
+  // 选中目录项后规范名由服务端派生，本地正则校验不再适用。
+  if (!picked && !state.symbol.match(/^[A-Za-z0-9._-]{2,32}$/)) return t("errSymbol");
   if (!state.display_name) return t("errDisplayName");
   const nums = [
     ["pip_value", state.pip_value],
@@ -130,6 +133,7 @@ export function SymbolForm({
   const tAssetClass = useTranslations("symbols.assetClass");
   const [state, setState] = useState<FormState>(toFormState(initial));
   const [error, setError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<BrokerCatalogItem | null>(null);
 
   const isEdit = Boolean(initial);
 
@@ -137,9 +141,10 @@ export function SymbolForm({
     setState((prev) => ({ ...prev, [key]: value }));
 
   const applyCatalogItem = (item: BrokerCatalogItem) => {
+    setPicked(item);
     setState((prev) => ({
       ...prev,
-      symbol: prev.symbol || item.symbol.replace(/[#.]/g, ""),
+      symbol: prev.symbol || item.symbol.replace(/[^A-Za-z0-9]/g, ""),
       display_name: prev.display_name || item.description || item.symbol,
       broker_alias: item.symbol,
       asset_class: item.asset_class,
@@ -154,13 +159,13 @@ export function SymbolForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const err = validate(state, t);
+    const err = validate(state, t, picked);
     if (err) {
       setError(err);
       return;
     }
     setError(null);
-    await onSubmit(toPayload(state));
+    await onSubmit(toPayload(state, picked));
   };
 
   const handleValidate = async () => {
@@ -183,14 +188,22 @@ export function SymbolForm({
           onSelect={applyCatalogItem}
         />
       )}
+      {!isEdit && picked && (
+        <p className="text-xs text-emerald-600 dark:text-emerald-400">{t("brokerValidated")}</p>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label={t("labelSymbol")} required>
           <Input
             value={state.symbol}
             onChange={(e) => update("symbol", e.target.value)}
-            disabled={isEdit}
+            disabled={isEdit || picked !== null}
             placeholder={t("phSymbol")}
           />
+          {picked && (
+            <span className="text-xs text-muted-foreground">
+              {t("symbolAutoDerived", { broker: picked.symbol })}
+            </span>
+          )}
         </Field>
         <Field label={t("labelDisplayName")} required>
           <Input

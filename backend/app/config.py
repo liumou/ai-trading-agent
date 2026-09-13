@@ -71,79 +71,65 @@ SYMBOL_PROFILES: dict[str, dict] = {
     },
 }
 
-# ─── Symbol Aliases (broker-specific names → canonical profile) ────────────
-# XM micro accounts use suffixed symbol names (e.g., GOLDmicro, OILCashmicro)
-SYMBOL_ALIASES: dict[str, str] = {
-    "GOLDmicro": "GOLD",
-    "OILCashmicro": "OILCash",
-    "BTCUSDmicro": "BTCUSD",
-    "USDJPYmicro": "USDJPY",
-}
-
-
-def get_symbol_profile(symbol: str) -> dict:
-    """Get profile for a symbol, resolving aliases (e.g., GOLDmicro → GOLD)."""
-    canonical = SYMBOL_ALIASES.get(symbol, symbol)
-    profile = SYMBOL_PROFILES.get(canonical, SYMBOL_PROFILES.get(symbol, {}))
-    if not profile:
-        # Fallback: try stripping common suffixes
-        for suffix in ("micro", ".micro", "m"):
-            base = symbol.removesuffix(suffix)
-            if base != symbol and base in SYMBOL_PROFILES:
-                return SYMBOL_PROFILES[base]
-    return profile
-
+# ─── 品种别名解析（DB `broker_alias` 是唯一来源）────────────────────────────
+# 券商特定名称（如 XM 微账户的 "GOLDmicro"）通过 symbol_configs 表的
+# `broker_alias` 列映射到规范名。load_profiles_from_db() 会为每行注册一条
+# 别名条目 —— SYMBOL_PROFILES[alias]["canonical"] 携带规范名反查标记。
+# 刻意不设静态别名表：别名只在 DB 加载完成后才存在。
 
 def get_canonical_symbol(symbol: str) -> str:
-    """Resolve alias to canonical symbol name (e.g., GOLDmicro → GOLD)."""
-    return SYMBOL_ALIASES.get(symbol, symbol)
+    """把券商别名解析为规范名（如 GOLDmicro → GOLD）。
+
+    对已经是规范名或未知的名称恒等返回。
+    """
+    profile = SYMBOL_PROFILES.get(symbol)
+    canonical = profile.get("canonical") if profile else None
+    return canonical or symbol
 
 
-def resolve_broker_symbol(symbol: str) -> str:
-    """Resolve canonical symbol to broker name via live engine (e.g., GOLD → GOLDmicro).
+def resolve_canonical_symbol(symbol: str) -> str:
+    """把任意已配置名称（规范名或券商别名）通过在线 BotManager
+    归一化为规范引擎键（如 GOLDmicro → GOLD）。
 
-    Falls back to the input symbol if the bot manager is unavailable.
+    manager 未运行时回退到基于 profile 的别名解析；两者都不匹配时
+    原样返回输入。
     """
     try:
-        from app.api.routes.bot import _get_engine
+        from app.bot.manager import get_global_manager
 
-        return _get_engine(symbol).symbol
+        mgr = get_global_manager()
+        if mgr is not None:
+            key = mgr.resolve_symbol(symbol)
+            if key:
+                return key
     except Exception:
-        return symbol
+        pass
+    return get_canonical_symbol(symbol)
 
 
 def get_active_symbols() -> list[str]:
-    """Return all active engine symbols, falling back to SYMBOL_PROFILES canonicals.
+    """返回全部活跃引擎品种，manager 不可用时回退到 SYMBOL_PROFILES 规范名。
 
-    Prefers the live BotManager (reflects runtime add/remove via Symbols UI). Falls
-    back to non-alias profiles when the manager is unavailable (tests, startup).
+    优先使用在线 BotManager（反映 /symbols UI 的运行时增删）。manager 不可用
+    （测试、启动阶段）时回退到非别名 profile 条目。
     """
     try:
-        from app.api.routes.bot import get_manager
+        from app.bot.manager import get_global_manager
 
-        return list(get_manager().engines.keys())
+        mgr = get_global_manager()
+        if mgr is not None and mgr.engines:
+            return list(mgr.engines.keys())
     except Exception:
-        return [sym for sym, p in SYMBOL_PROFILES.items() if "canonical" not in p]
+        pass
+    return [sym for sym, p in SYMBOL_PROFILES.items() if "canonical" not in p]
 
 
-# Auto-register aliased profiles so SYMBOL_PROFILES["GOLDmicro"] works directly
-for _alias, _canonical in SYMBOL_ALIASES.items():
-    if _canonical in SYMBOL_PROFILES and _alias not in SYMBOL_PROFILES:
-        _profile = SYMBOL_PROFILES[_canonical].copy()
-        _profile["display_name"] = f"{_profile['display_name']} (Micro)"
-        _profile["canonical"] = _canonical
-        # Micro accounts typically have smaller lot sizes
-        _profile["default_lot"] = min(_profile["default_lot"], 0.1)
-        _profile["max_lot"] = min(_profile["max_lot"], 1.0)
-        SYMBOL_PROFILES[_alias] = _profile
-
-
-# Snapshot static defaults so repeated reloads can restore them before merging DB rows.
+# 静态默认快照：多次重载时先恢复静态值，再叠加 DB 条目。
 _STATIC_SYMBOL_PROFILES: dict[str, dict] = {k: v.copy() for k, v in SYMBOL_PROFILES.items()}
 
 
 def apply_db_symbol_profiles(db_profiles: dict[str, dict]) -> None:
-    """Replace SYMBOL_PROFILES with static defaults overridden by DB entries."""
+    """用"静态默认 + DB 覆盖"的结果整体替换 SYMBOL_PROFILES。"""
     SYMBOL_PROFILES.clear()
     SYMBOL_PROFILES.update(_STATIC_SYMBOL_PROFILES)
     SYMBOL_PROFILES.update(db_profiles)
@@ -212,16 +198,6 @@ class Settings(BaseSettings):
     # without an entry produce a null cost rather than crashing.
     custom_price_per_million: dict = {}
 
-    # Binance (for BTCUSD — uses Binance API instead of MT5)
-    binance_api_key: str = ""
-    binance_api_secret: str = ""
-    binance_base_url: str = "https://testnet.binance.vision"  # testnet default; live = https://api.binance.com
-    binance_symbols: str = ""  # comma-separated symbols to route via Binance, e.g. "BTCUSD"
-
-    @property
-    def binance_symbol_list(self) -> list[str]:
-        return [s.strip() for s in self.binance_symbols.split(",") if s.strip()]
-
     # Bot Config
     # NOTE: `symbol` is a legacy single-symbol default only used by a few AI
     # helpers and tests. Runtime trading uses DB-managed symbol configs via
@@ -229,6 +205,12 @@ class Settings(BaseSettings):
     symbol: str = "GOLD"
     symbols: str = "GOLD"  # comma-separated list, e.g. "GOLD,OILCash,BTCUSD,USDJPY"
     timeframe: str = "M15"
+    # 启动时对已启用品种做券商存在性校验（backend/app/main.py）：
+    #   "warn"   —— 仅告警，引擎照常启动（默认；VPS/bridge 故障不得停摆交易）
+    #   "strict" —— 券商明确报告品种缺失/不可交易的引擎创建但置 PAUSED
+    #               （持仓对账与手动平仓仍可用）；bridge 不可达时两种模式
+    #               都退化为 warn。
+    symbol_startup_validation: str = "warn"
     max_risk_per_trade: float = 0.01
     max_daily_loss: float = 0.03
     max_concurrent_trades: int = 3
@@ -388,6 +370,14 @@ class Settings(BaseSettings):
         if v in ("", "claude", "openai_compat"):
             return v or "claude"
         raise ValueError(f"llm_provider must be 'claude' or 'openai_compat', got {v!r}")
+
+    @field_validator("symbol_startup_validation")
+    @classmethod
+    def _validate_symbol_startup_validation(cls, v: str) -> str:
+        v = (v or "warn").strip().lower()
+        if v not in ("warn", "strict"):
+            raise ValueError(f"symbol_startup_validation must be 'warn' or 'strict', got {v!r}")
+        return v
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

@@ -58,23 +58,21 @@ async def place_order(
     """
     _require_init()
 
-    # Resolve symbol to broker name (e.g. GOLD → GOLDmicro)
-    # AI sends canonical names but MT5 may use different names (GOLDmicro on XM)
-    # Use the live engine list — engines are keyed by actual broker symbols from SYMBOLS env var
+    # 把品种解析为活跃引擎键（例如券商别名 GOLDmicro → 规范名 GOLD，
+    # 或按引擎键的实际情况反向解析）。别名映射来自 DB 加载的别名 profile ——
+    # 引擎以 symbol_configs 的 `symbol` 列为主键。
     try:
-        from app.api.routes.bot import get_manager
+        from app.bot.manager import get_global_manager
 
-        mgr = get_manager()
-        if symbol not in mgr.engines:
-            # AI sent canonical name (GOLD), find matching broker name in engines
-            from app.config import SYMBOL_ALIASES
-
-            for broker_name, canonical in SYMBOL_ALIASES.items():
-                if canonical == symbol and broker_name in mgr.engines:
-                    logger.info(f"Symbol resolved: {symbol} → {broker_name}")
-                    symbol = broker_name
-                    break
-            else:
+        mgr = get_global_manager()
+        if mgr is None:
+            logger.warning(f"Symbol resolution skipped — no active BotManager for '{symbol}'")
+        else:
+            key = mgr.resolve_symbol(symbol)
+            if key and key != symbol:
+                logger.info(f"Symbol resolved: {symbol} → {key}")
+                symbol = key
+            elif key is None:
                 logger.warning(f"Symbol '{symbol}' not found in engines: {list(mgr.engines.keys())}")
     except Exception as e:
         logger.warning(f"Symbol resolution failed for '{symbol}': {e}")
@@ -135,6 +133,40 @@ async def place_order(
             "reason": result.reason,
         }
 
+    # ─── 券商手数防线 + 品种名解析（与策略引擎同一套防线）────────────────
+    # connector 使用的是券商品种名；引擎以 symbol_configs 的规范名为主键。
+    # 不做 to_broker_alias() 转换，AI 订单会以错误的名字到达 MT5。手数防线把
+    # 手数向下取整到券商 step，并拒绝低于 volume_min 的手数 —— 否则 bridge
+    # 会静默放大，击穿风险预算。
+    from app.config import SYMBOL_PROFILES
+    from app.mt5.symbol_resolver import to_broker_alias
+    from app.services.symbol_validation import normalize_lot_to_volume_grid
+
+    broker_symbol = to_broker_alias(symbol)
+    profile = SYMBOL_PROFILES.get(symbol) or {}
+    guarded_lot = normalize_lot_to_volume_grid(
+        lot,
+        volume_min=profile.get("volume_min"),
+        volume_max=profile.get("volume_max"),
+        volume_step=profile.get("volume_step"),
+    )
+    if guarded_lot is None:
+        logger.warning(
+            f"place_order rejected [{symbol}]: lot {lot} below broker minimum "
+            f"{profile.get('volume_min')} — bridge would upsize beyond risk budget"
+        )
+        return {
+            "executed": False,
+            "rejected": True,
+            "reason": (
+                f"lot {lot} below broker minimum {profile.get('volume_min')} — "
+                f"raise lot or fix symbol volume config"
+            ),
+        }
+    if guarded_lot != lot:
+        logger.info(f"place_order [{symbol}]: lot normalized {lot} → {guarded_lot}")
+        lot = guarded_lot
+
     # ─── ROLLOUT MODE CHECK (Phase F) ────────────────────────────────────
     from mcp_server.guardrails import MICRO_MAX_LOT
 
@@ -147,7 +179,7 @@ async def place_order(
             "executed": False,
             "mode": "shadow",
             "would_execute": {
-                "symbol": symbol,
+                "symbol": broker_symbol,
                 "order_type": order_type,
                 "lot": lot,
                 "sl": sl,
@@ -165,7 +197,7 @@ async def place_order(
             "mode": "paper",
             "order": {
                 "ticket": random.randint(900000, 999999),
-                "symbol": symbol,
+                "symbol": broker_symbol,
                 "type": order_type,
                 "lot": lot,
                 "price": tick.get("ask" if order_type == "BUY" else "bid", 0),
@@ -181,9 +213,9 @@ async def place_order(
         lot = min(lot, MICRO_MAX_LOT)
 
     # ─── EXECUTE ORDER (live or micro) ───────────────────────────────────
-    logger.info(f"place_order [{symbol}] {order_type} lot={lot} sl={sl} tp={tp} mode={rollout_mode}")
+    logger.info(f"place_order [{broker_symbol}] {order_type} lot={lot} sl={sl} tp={tp} mode={rollout_mode}")
     order_result = await _connector.place_order(
-        symbol=symbol,
+        symbol=broker_symbol,
         order_type=order_type,
         lot=lot,
         sl=sl,
@@ -210,10 +242,11 @@ async def place_order(
                 logger.error(f"Telegram notify failed: {e}")
         # Log AI-initiated trade to event DB
         try:
-            from app.bot.manager import get_manager
+            from app.bot.manager import get_global_manager
             from app.db.models import BotEventType
 
-            engine = get_manager().engines.get(symbol)
+            mgr = get_global_manager()
+            engine = mgr.engines.get(symbol) if mgr else None
             if engine:
                 await engine._log_event(
                     BotEventType.TRADE_OPENED,
@@ -318,11 +351,11 @@ async def close_position(ticket: int) -> dict:
         # Log AI-initiated close to event DB
         if pos_info:
             try:
-                from app.bot.manager import get_manager
+                from app.bot.manager import get_global_manager
                 from app.db.models import BotEventType
 
                 sym = pos_info.get("symbol", "")
-                engine = get_manager().engines.get(sym)
+                engine = (get_global_manager().engines if get_global_manager() else {}).get(sym)
                 if engine:
                     await engine._log_event(
                         BotEventType.TRADE_CLOSED,

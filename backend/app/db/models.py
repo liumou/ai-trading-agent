@@ -407,6 +407,11 @@ class SymbolConfig(Base):
     sl_atr_mult: Mapped[float] = mapped_column(Float, default=1.5, server_default="1.5")
     tp_atr_mult: Mapped[float] = mapped_column(Float, default=2.0, server_default="2.0")
     contract_size: Mapped[float] = mapped_column(Float, default=1.0, server_default="1.0")
+    # 券商 volume 限制：创建/更新时从 MT5 规格回填。可空：该列存在之前创建的
+    # 行（存量品种）保持 NULL，订单侧手数防线会跳过它们，直到重新校验。
+    volume_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_step: Mapped[float | None] = mapped_column(Float, nullable=True)
     ml_tp_pips: Mapped[float] = mapped_column(Float)
     ml_sl_pips: Mapped[float] = mapped_column(Float)
     ml_forward_bars: Mapped[int] = mapped_column(Integer, default=10, server_default="10")

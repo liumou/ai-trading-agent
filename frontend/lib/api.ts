@@ -277,6 +277,9 @@ export interface SymbolConfig {
   sl_atr_mult: number;
   tp_atr_mult: number;
   contract_size: number;
+  volume_min: number | null;
+  volume_max: number | null;
+  volume_step: number | null;
   ml_tp_pips: number;
   ml_sl_pips: number;
   ml_forward_bars: number;
@@ -287,13 +290,27 @@ export interface SymbolConfig {
   updated_at: string | null;
 }
 
+// `symbol` 在目录驱动的创建流程中为可选项：省略时由服务端从券商品种名派生
+// 规范名。volume_* 由服务端管理（从实时 MT5 规格回填）。
 export type SymbolConfigInput = Omit<
   SymbolConfig,
-  "is_enabled" | "ml_status" | "ml_last_trained_at" | "created_at" | "updated_at"
->;
+  | "is_enabled"
+  | "ml_status"
+  | "ml_last_trained_at"
+  | "created_at"
+  | "updated_at"
+  | "symbol"
+  | "volume_min"
+  | "volume_max"
+  | "volume_step"
+> & {
+  symbol?: string | null;
+  confirm_pip_value?: boolean;
+};
 
 export interface SymbolSpec {
   symbol: string;
+  path?: string;
   digits: number;
   point: number;
   volume_min: number;
@@ -302,6 +319,8 @@ export interface SymbolSpec {
   trade_contract_size: number;
   trade_tick_size: number;
   trade_tick_value: number;
+  /** MT5 SYMBOL_TRADE_MODE —— 0=DISABLED, 3=CLOSEONLY。旧版 bridge 可能缺失。 */
+  trade_mode?: number;
   visible: boolean;
 }
 

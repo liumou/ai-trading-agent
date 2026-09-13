@@ -24,39 +24,40 @@ router = APIRouter(
     dependencies=[Depends(require_auth)],
 )
 
-# BotManager will be injected via app.state
-_manager = None
-
-
+# BotManager 存放在 app.bot.manager 持有的进程级注册表中，使 config.py /
+# mcp_server 无需 import API 层即可访问。API 层保留 set/get 名称，
+# main.py 与测试已在用。
 def set_manager(manager):
-    global _manager
-    _manager = manager
+    from app.bot.manager import set_global_manager
+
+    set_global_manager(manager)
 
 
 def get_manager():
-    if _manager is None:
+    from app.bot.manager import get_global_manager
+
+    mgr = get_global_manager()
+    if mgr is None:
         raise HTTPException(status_code=503, detail="Bot not initialized")
-    return _manager
+    return mgr
 
 
 def _get_engine(symbol: str | None = None):
-    """Get a specific engine or the first one as default.
+    """获取指定引擎，未指定时取第一个作为默认。
 
-    Resolves symbol aliases (e.g., GOLD → GOLDmicro if that's what's configured).
+    通过 DB 加载的别名 profile 解析券商别名（例如前端/AI 可能发送
+    GOLD 或 GOLDmicro）。
     """
     mgr = get_manager()
     if symbol:
         engine = mgr.get_engine(symbol)
-        if not engine:
-            # Try reverse alias: frontend sends "GOLD" but engine is "GOLDmicro"
-            from app.config import SYMBOL_ALIASES
-
-            for alias, canonical in SYMBOL_ALIASES.items():
-                if canonical == symbol and alias in mgr.engines:
-                    return mgr.engines[alias]
-            raise HTTPException(status_code=404, detail=f"Symbol {symbol} not configured")
-        return engine
-    # Default: first engine (backward compat)
+        if engine is not None:
+            return engine
+        key = mgr.resolve_symbol(symbol)
+        if key:
+            return mgr.engines[key]
+        raise HTTPException(status_code=404, detail=f"Symbol {symbol} not configured")
+    # 默认：第一个引擎（向后兼容）
     return next(iter(mgr.engines.values()))
 
 
@@ -174,11 +175,9 @@ async def get_account():
         result = await engine.connector.get_account()
         if result.get("success"):
             data = result["data"]
-            # Detect connector type
-            is_binance = hasattr(engine.connector, "_sign")  # BinanceConnector has _sign method
             accounts.append(
                 {
-                    "connector": "binance" if is_binance else "mt5",
+                    "connector": "mt5",
                     "balance": data.get("balance", 0),
                     "equity": data.get("equity", 0),
                     "margin": data.get("margin", 0),

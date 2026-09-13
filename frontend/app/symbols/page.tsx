@@ -141,7 +141,7 @@ export default function SymbolsPage() {
       } else {
         const resp = await createSymbolConfig(input);
         upsertLocal(resp.data);
-        setBanner({ kind: "ok", msg: t("created", { symbol: input.symbol }) });
+        setBanner({ kind: "ok", msg: t("created", { symbol: resp.data.symbol }) });
       }
       setDialogOpen(false);
     } catch (err) {

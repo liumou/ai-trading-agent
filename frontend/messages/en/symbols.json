@@ -79,10 +79,12 @@
     "saving": "Saving...",
     "saveChanges": "Save changes",
     "createSymbol": "Create symbol",
-    "catalogUnavailable": "Broker catalog unavailable{error}. Fill fields manually below.",
-    "pickFromBroker": "Pick from XM broker (auto-fills fields)",
+    "catalogUnavailable": "Broker catalog unavailable{error}. Symbols cannot be added while the broker cannot be verified.",
+    "pickFromBroker": "Pick from the broker catalog (validates and auto-fills fields)",
     "loadingCatalog": "Loading broker catalog...",
     "searchPh": "Search symbol or description (e.g. ENJ, gold, Apple)",
-    "itemMeta": "{assetClass} · min {min} / max {max}"
+    "itemMeta": "{assetClass} · min {min} / max {max}",
+    "symbolAutoDerived": "Canonical name is derived server-side from broker symbol \"{broker}\"",
+    "brokerValidated": "Broker symbol selected — existence and tradability are verified live on create"
   }
 }

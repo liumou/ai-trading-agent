@@ -32,9 +32,9 @@ class CollectRequest(BaseModel):
 
 @router.post("/collect")
 async def collect_data(req: CollectRequest):
-    from app.config import resolve_broker_symbol
+    from app.config import resolve_canonical_symbol
 
-    actual_symbol = resolve_broker_symbol(req.symbol)
+    actual_symbol = resolve_canonical_symbol(req.symbol)
     collector = get_collector()
     result = await collector.collect(actual_symbol, req.timeframe, req.from_date, req.to_date)
     return result
@@ -43,8 +43,8 @@ async def collect_data(req: CollectRequest):
 @router.get("/status")
 async def data_status(symbol: str | None = None):
     if symbol:
-        from app.config import resolve_broker_symbol
+        from app.config import resolve_canonical_symbol
 
-        symbol = resolve_broker_symbol(symbol)
+        symbol = resolve_canonical_symbol(symbol)
     collector = get_collector()
     return await collector.get_data_status(symbol)

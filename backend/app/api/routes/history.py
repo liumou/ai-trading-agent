@@ -30,11 +30,13 @@ async def get_trades(
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.api.routes.bot import _manager
-    from app.config import resolve_broker_symbol
+    from app.bot.manager import get_global_manager
+
+    _manager = get_global_manager()
+    from app.config import resolve_canonical_symbol
 
     if symbol:
-        symbol = resolve_broker_symbol(symbol)
+        symbol = resolve_canonical_symbol(symbol)
 
     cutoff = datetime.utcnow() - timedelta(days=days)
 
@@ -176,11 +178,13 @@ async def get_daily_pnl(
     db: AsyncSession = Depends(get_db),
 ):
     """Today's closed trade P&L — merges MT5 live history + DB records."""
-    from app.api.routes.bot import _manager
-    from app.config import resolve_broker_symbol
+    from app.bot.manager import get_global_manager
+
+    _manager = get_global_manager()
+    from app.config import resolve_canonical_symbol
 
     if symbol:
-        symbol = resolve_broker_symbol(symbol)
+        symbol = resolve_canonical_symbol(symbol)
 
     async def _fetch():
         return await _fetch_daily_pnl(symbol, db, _manager)
@@ -253,12 +257,14 @@ async def get_performance(
     symbol: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    from app.api.routes.bot import _manager
+    from app.bot.manager import get_global_manager
+
+    _manager = get_global_manager()
 
     if symbol:
-        from app.config import resolve_broker_symbol
+        from app.config import resolve_canonical_symbol
 
-        symbol = resolve_broker_symbol(symbol)
+        symbol = resolve_canonical_symbol(symbol)
 
     cutoff = datetime.utcnow() - timedelta(days=days)
     query = select(Trade).where(Trade.open_time >= cutoff, Trade.profit.isnot(None), Trade.is_archived.is_(False))

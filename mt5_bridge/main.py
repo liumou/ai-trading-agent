@@ -151,6 +151,7 @@ async def get_symbol_spec(symbol: str):
             return mt5_response(False, error=f"Symbol {symbol} not available after select")
     return mt5_response(True, data={
         "symbol": info.name,
+        "path": info.path or "",
         "digits": int(info.digits),
         "point": float(info.point),
         "volume_min": float(info.volume_min),
@@ -159,6 +160,10 @@ async def get_symbol_spec(symbol: str):
         "trade_contract_size": float(info.trade_contract_size),
         "trade_tick_size": float(info.trade_tick_size),
         "trade_tick_value": float(info.trade_tick_value),
+        # MT5 SYMBOL_TRADE_MODE：0=DISABLED 1=LONGONLY 2=SHORTONLY
+        # 3=CLOSEONLY 4=FULL。旧版 bridge 部署可能省略此字段；后端把缺失
+        # 视为"未知"而不是拒绝。
+        "trade_mode": int(info.trade_mode),
         "visible": bool(info.visible),
     })
 

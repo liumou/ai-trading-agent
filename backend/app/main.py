@@ -101,6 +101,68 @@ def _init_sentry() -> None:
 _init_sentry()
 
 
+async def _validate_symbols_at_startup(connector, manager, notifier) -> None:
+    """校验每个已启用品种在券商侧仍然存在且可交易。
+
+    在 lifespan 启动时执行一次，并发校验（每次检查以 3s 封顶，因此 bridge 挂掉
+    只损失一次超时，而不是每品种一次）。行为：
+      - 校验通过 → 把券商 volume 限制回填进内存 profile
+                    （供订单侧手数防线使用）并重新应用到引擎
+      - warn 模式 → 记日志 + Telegram 告警，引擎照常启动
+      - strict    → 券商明确报告品种缺失/不可交易时引擎置 PAUSED；
+                    bridge 不可达时两种模式都退化为 warn
+    """
+    from app.bot.engine import BotState
+    from app.config import SYMBOL_PROFILES
+    from app.services.symbol_validation import verify_enabled_symbols
+
+    symbols = list(manager.engines.keys())
+    if not symbols:
+        return
+    broker_names = {
+        s: (SYMBOL_PROFILES.get(s, {}).get("broker_alias") or s) for s in symbols
+    }
+    checks = await verify_enabled_symbols(connector, [broker_names[s] for s in symbols])
+    strict = settings.symbol_startup_validation == "strict"
+
+    for symbol in symbols:
+        check = checks.get(broker_names[symbol])
+        if check is None:
+            logger.warning(f"Startup validation [{symbol}] skipped (batch failure)")
+            continue
+        if check.ok and check.spec:
+            profile = SYMBOL_PROFILES.get(symbol)
+            if profile is not None:
+                profile.update(
+                    volume_min=check.spec.get("volume_min"),
+                    volume_max=check.spec.get("volume_max"),
+                    volume_step=check.spec.get("volume_step"),
+                )
+                engine = manager.get_engine(symbol)
+                if engine is not None:
+                    engine.apply_profile(profile)
+            logger.info(f"Startup validation [{symbol}]: OK ({broker_names[symbol]})")
+            continue
+
+        reason = check.error or "unknown"
+        logger.warning(f"Startup validation [{symbol}] FAILED ({broker_names[symbol]}): {reason}")
+        if notifier is not None and notifier.enabled:
+            try:
+                await notifier.send_error_alert(
+                    f"⚠️ Startup symbol validation failed: {symbol} ({broker_names[symbol]}) — {reason}"
+                )
+            except Exception as e:
+                logger.debug(f"Startup validation alert failed: {e}")
+        if strict and check.broker_answered:
+            engine = manager.get_engine(symbol)
+            if engine is not None:
+                engine.state = BotState.PAUSED
+                logger.warning(
+                    f"Startup validation strict [{symbol}]: engine paused — "
+                    f"re-validate via /api/symbols/{symbol}/validate before trading"
+                )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.logging_config import configure_logging
@@ -228,6 +290,12 @@ async def lifespan(app: FastAPI):
         logger.info("Telegram notifications enabled")
     else:
         logger.info("Telegram notifications disabled (no token/chat_id)")
+
+    # 启动券商校验 —— 券商是"什么能交易"的事实来源。"warn"（默认）仅告警，
+    # 使 VPS/bridge 故障绝不会停摆交易；"strict" 把券商明确报告缺失或不可
+    # 交易的引擎置 PAUSED（它们保留在 manager.engines 中，持仓对账与手动平仓
+    # 仍可用）。同时把券商 volume 限制回填进内存 profile，供订单侧手数防线使用。
+    await _validate_symbols_at_startup(connector, manager, notifier)
 
     # Set up routes with manager reference
     bot.set_manager(manager)
@@ -388,8 +456,6 @@ async def lifespan(app: FastAPI):
     await manager.stop_reload_subscriber()
     await manager.stop()
     await connector.close()
-    if manager._binance_connector:
-        await manager._binance_connector.close()
     await db_session.close()
     await redis_client.close()
 
@@ -408,7 +474,7 @@ app = FastAPI(
 
 
 # i18n: translate error details per Accept-Language
-from fastapi import HTTPException, Request  # noqa: E402
+from fastapi import HTTPException, Request  # noqa: E402, F811
 from fastapi.responses import JSONResponse  # noqa: E402
 
 from app.i18n import pick_language, translate_detail  # noqa: E402

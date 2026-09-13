@@ -79,10 +79,12 @@
     "saving": "保存中...",
     "saveChanges": "保存更改",
     "createSymbol": "创建品种",
-    "catalogUnavailable": "经纪商目录不可用{error}，请在下方手动填写字段。",
-    "pickFromBroker": "从 XM 经纪商目录中选择（自动填充字段）",
+    "catalogUnavailable": "经纪商目录不可用{error}。无法校验券商品种时，服务端将拒绝新增品种。",
+    "pickFromBroker": "从经纪商目录中选择（自动校验并填充字段）",
     "loadingCatalog": "正在加载经纪商目录...",
     "searchPh": "搜索品种或描述（如 ENJ、gold、Apple）",
-    "itemMeta": "{assetClass} · 最小 {min} / 最大 {max}"
+    "itemMeta": "{assetClass} · 最小 {min} / 最大 {max}",
+    "symbolAutoDerived": "规范名由服务端从券商品种 \"{broker}\" 自动派生",
+    "brokerValidated": "已选择券商品种，创建时将实时校验其存在性与可交易性"
   }
 }

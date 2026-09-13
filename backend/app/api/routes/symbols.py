@@ -18,6 +18,8 @@ from app.auth import require_auth
 from app.db.models import SymbolConfig
 from app.db.session import async_session, get_db
 from app.services import symbol_config_service as svc
+from app.services.symbol_validation import check_broker_symbol
+from app.services.symbol_validation import pip_value_suggestion as _pip_value_suggestion
 
 router = APIRouter(prefix="/api/symbols", tags=["symbols"])
 
@@ -47,13 +49,15 @@ class SymbolBase(BaseModel):
     broker_alias: str | None = None
     asset_class: str = Field(default="forex", max_length=16)
     default_timeframe: Timeframe = "M15"
-    pip_value: float = Field(gt=0)
+    # pip_value / contract_size 为可选项：省略时服务端从 MT5 实时规格回填
+    # （以券商为准）。PUT 时传 None 表示"不修改"，而非把已存值清空。
+    pip_value: float | None = Field(default=None, gt=0)
     default_lot: float = Field(gt=0)
     max_lot: float = Field(gt=0)
     price_decimals: int = Field(ge=0, le=8, default=2)
     sl_atr_mult: float = Field(gt=0, le=10, default=1.5)
     tp_atr_mult: float = Field(gt=0, le=10, default=2.0)
-    contract_size: float = Field(gt=0, default=1.0)
+    contract_size: float | None = Field(default=None, gt=0)
     ml_tp_pips: float = Field(gt=0)
     ml_sl_pips: float = Field(gt=0)
     ml_forward_bars: int = Field(ge=1, le=100, default=10)
@@ -76,60 +80,53 @@ class SymbolBase(BaseModel):
 
     @model_validator(mode="after")
     def _check_pip_value_sane(self) -> SymbolBase:
-        """Reject pip_value that cannot co-exist with price_decimals.
+        """拒绝与 price_decimals 量级不匹配的 pip_value。
 
-        ML labeling treats `entry ± (tp_pips × pip_value)` as the TP/SL barrier;
-        if pip_value is wildly out of scale (e.g. 10.0 on an instrument priced
-        in cents) every candle gets labelled HOLD and training fails with
-        "missing classes ['SELL','BUY']". Clamp to the plausible range derived
-        from price_decimals.
+        ML 标注把 `entry ± (tp_pips × pip_value)` 当作 TP/SL 障碍；若 pip_value
+        量级严重偏离（例如以"分"计价的品种填了 10.0），每根 K 线都会被标注为
+        HOLD，训练将因 "missing classes ['SELL','BUY']" 失败。这里按
+        price_decimals 推导出的合理区间做钳制。
         """
-        # Permitted band: [10^-price_decimals, 10^-(price_decimals-2)]
-        # Gives a 3-order-of-magnitude window around the conventional pip.
-        max_pip = 10 ** (-(self.price_decimals - 2)) if self.price_decimals >= 2 else 100.0
-        min_pip = 10 ** (-self.price_decimals) if self.price_decimals > 0 else 0.01
-        if not (min_pip <= self.pip_value <= max_pip):
-            suggested = 10 ** (-(self.price_decimals - 1)) if self.price_decimals >= 1 else 1.0
-            raise ValueError(
-                f"pip_value={self.pip_value} is out of range for price_decimals={self.price_decimals}. "
-                f"Expected [{min_pip}, {max_pip}]. Suggested: {suggested}."
-            )
+        if self.pip_value is None:
+            return self
+        try:
+            _ensure_pip_value_sane(self.pip_value, self.price_decimals)
+        except ValueError as e:
+            raise ValueError(str(e)) from e
         return self
 
     @model_validator(mode="after")
     def _check_ml_barrier_sane(self) -> SymbolBase:
-        """Warn when ml_tp_pips × pip_value would exceed a 50% price move.
+        """当 ml_tp_pips × pip_value 超过价格 50% 幅度时告警。
 
-        Triple-barrier labeling needs BUY and SELL labels to appear in the
-        training set. If the barrier is larger than half the typical price,
-        the labeler will only ever produce HOLD.
+        三重障碍标注需要训练集中同时出现 BUY 与 SELL 标签。若障碍大于典型
+        价格的一半，标注器将只会产出 HOLD。
         """
-        tp_frac = self.ml_tp_pips * self.pip_value
-        sl_frac = self.ml_sl_pips * self.pip_value
-        # Rough heuristic: if barrier > 50 price units, it's almost certainly
-        # wrong for anything that isn't a stock index. Keep the check cheap
-        # and deterministic (no DB lookup) — actual price check happens at
-        # train time via the trainer's minimum-samples guard.
-        if tp_frac > 50 or sl_frac > 50:
-            raise ValueError(
-                f"ml_tp_pips × pip_value = {tp_frac} and ml_sl_pips × pip_value = {sl_frac}. "
-                f"Barriers above 50 price units almost always produce HOLD-only labels. "
-                f"Lower ml_tp_pips / ml_sl_pips or correct pip_value."
-            )
+        if self.pip_value is None:
+            return self
+        try:
+            _ensure_ml_barriers_sane(self.ml_tp_pips, self.ml_sl_pips, self.pip_value)
+        except ValueError as e:
+            raise ValueError(str(e)) from e
         return self
 
 
 class SymbolCreateRequest(SymbolBase):
-    symbol: str = Field(min_length=2, max_length=32)
+    # 可选：省略时（目录驱动流程）由服务端从券商品种名派生规范名，
+    # 剔除规范标识符无法承载的字符（见 _derive_canonical）。
+    symbol: str | None = Field(default=None, min_length=2, max_length=32)
+    confirm_pip_value: bool = False
 
     @field_validator("symbol")
     @classmethod
-    def _check_symbol(cls, v: str) -> str:
+    def _check_symbol(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
         return _validate_symbol_name(v)
 
 
 class SymbolUpdateRequest(SymbolBase):
-    pass
+    confirm_pip_value: bool = False
 
 
 class SymbolResponse(BaseModel):
@@ -148,6 +145,9 @@ class SymbolResponse(BaseModel):
     sl_atr_mult: float
     tp_atr_mult: float
     contract_size: float
+    volume_min: float | None = None
+    volume_max: float | None = None
+    volume_step: float | None = None
     ml_tp_pips: float
     ml_sl_pips: float
     ml_forward_bars: int
@@ -202,11 +202,10 @@ async def _publish(request: Request, symbol: str, action: str) -> None:
 
 
 async def _reload_engines_direct(request: Request) -> None:
-    """Trigger BotManager.reload_engines directly.
+    """直接触发 BotManager.reload_engines。
 
-    Safety net for when the Redis pubsub subscriber is not running or the
-    message is missed (e.g. subscriber reconnecting). Swallows exceptions so
-    API request does not fail if reload has a problem — pubsub will retry.
+    Redis pubsub 订阅者未运行或消息丢失（如订阅者重连）时的安全网。
+    吞掉异常，使 reload 出问题时 API 请求不会失败 —— pubsub 会重试。
     """
     manager = getattr(request.app.state, "manager", None)
     if manager is None:
@@ -222,29 +221,26 @@ async def _reload_engines_direct(request: Request) -> None:
         logger.warning(f"Direct engine reload failed (pubsub will retry): {e}")
 
 
-# Cap concurrent bootstrap tasks so a burst of /symbols POST requests cannot
-# exhaust the DB connection pool. Each task does a multi-minute ML retrain that
-# holds a session for its duration; without this gate, 5 simultaneous adds eat
-# 5 connections from a pool of ~20.
+# 限制并发引导任务数，避免突发 /symbols POST 请求耗尽 DB 连接池。每个任务都要
+# 跑数分钟的 ML 重训并在期间占用一个连接；没有这道闸门时，5 个并发新增会吃掉
+# 约 20 个连接中的 5 个。
 _BOOTSTRAP_SEMAPHORE = asyncio.Semaphore(2)
 
 
 async def _bootstrap_new_symbol(app_state, symbol: str, timeframe: str, days: int = 90) -> None:
-    """Seed historical OHLCV + kick off ML retrain for a freshly-created symbol.
+    """为新建品种回填历史 OHLCV 并触发 ML 重训。
 
-    Runs as a background task — caller's HTTP response returns immediately. The
-    collector handles missing-data and partial-fetch cases internally; the ML
-    retrain job updates ``ml_status`` to ``ready`` or ``failed`` on completion.
+    以后台任务运行 —— 调用方的 HTTP 响应立即返回。collector 内部处理缺数据与
+    部分拉取的情况；ML 重训任务完成后把 ``ml_status`` 更新为 ``ready`` 或
+    ``failed``。
 
-    Skips entirely when ``hist_collector`` is not registered on ``app_state`` —
-    that indicates a non-production wiring (tests, partial bootstrap) where
-    running seed/retrain would race with the test's own assertions.
+    当 ``app_state`` 上未注册 ``hist_collector`` 时整体跳过 —— 那表示非生产装配
+    （测试、部分引导），此时执行回填/重训会与测试自身的断言竞争。
 
-    Claims the row by flipping ``ml_status`` to ``'training'`` *before* spending
-    minutes on the seed: avoids paying collector cost when an explicit
-    /retrain has already started for the same symbol.
+    在花费数分钟回填之前，先把 ``ml_status`` 翻转为 ``'training'`` 抢占该行：
+    避免显式 /retrain 已针对同品种启动时仍付出 collector 成本。
 
-    Serialized through ``_BOOTSTRAP_SEMAPHORE`` so we do not pile up retrains.
+    通过 ``_BOOTSTRAP_SEMAPHORE`` 串行化，避免重训任务堆积。
     """
     from datetime import timedelta
 
@@ -300,7 +296,7 @@ _PATH_TO_CLASS: tuple[tuple[str, str], ...] = (
 
 
 def _infer_asset_class(path: str) -> str:
-    """Map MT5 symbol path (e.g. "Forex\\Majors\\EURUSD") to supported asset class."""
+    """把 MT5 品种路径（如 "Forex\\Majors\\EURUSD"）映射为受支持的资产类别。"""
     if not path:
         return "forex"
     first = path.split("\\")[0].lower()
@@ -310,9 +306,170 @@ def _infer_asset_class(path: str) -> str:
     return "forex"
 
 
-def _pip_value_from_spec(digits: int, point: float) -> float:
-    """Forex 3/5-digit quotes: 1 pip = 10 × point. Else: 1 pip = point."""
-    return point * 10 if digits in (3, 5) else point
+def _ensure_pip_value_sane(pip_value: float, price_decimals: int) -> None:
+    """允许区间：[10^-price_decimals, 10^-(price_decimals-2)]。"""
+    max_pip = 10 ** (-(price_decimals - 2)) if price_decimals >= 2 else 100.0
+    min_pip = 10 ** (-price_decimals) if price_decimals > 0 else 0.01
+    if not (min_pip <= pip_value <= max_pip):
+        suggested = 10 ** (-(price_decimals - 1)) if price_decimals >= 1 else 1.0
+        raise ValueError(
+            f"pip_value={pip_value} is out of range for price_decimals={price_decimals}. "
+            f"Expected [{min_pip}, {max_pip}]. Suggested: {suggested}."
+        )
+
+
+def _ensure_ml_barriers_sane(ml_tp_pips: float, ml_sl_pips: float, pip_value: float) -> None:
+    """障碍超过 50 个价格单位时几乎必然只会产出 HOLD 标签。"""
+    tp_frac = ml_tp_pips * pip_value
+    sl_frac = ml_sl_pips * pip_value
+    if tp_frac > 50 or sl_frac > 50:
+        raise ValueError(
+            f"ml_tp_pips × pip_value = {tp_frac} and ml_sl_pips × pip_value = {sl_frac}. "
+            f"Barriers above 50 price units almost always produce HOLD-only labels. "
+            f"Lower ml_tp_pips / ml_sl_pips or correct pip_value."
+        )
+
+
+_CANONICAL_INVALID_CHARS = re.compile(r"[^A-Za-z0-9]")
+
+
+def _derive_canonical(broker_symbol: str) -> str:
+    """从券商品种名派生规范内部名。
+
+    券商名常携带券商专属字符（"GOLDm#"、"EURUSD.a"、"+GOLD"），不得进入规范
+    标识符 —— 因为它会被插值进 ML 模型文件路径（``models/{symbol}_signal.pkl``）。
+    只保留字母数字；券商原始名保存在 ``broker_alias`` 中，由 MT5 边界的
+    ``to_broker_alias()`` 使用。
+    """
+    candidate = _CANONICAL_INVALID_CHARS.sub("", broker_symbol).strip("._-")
+    try:
+        return _validate_symbol_name(candidate)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot derive a valid canonical name from broker symbol "
+                f"'{broker_symbol}' (got '{candidate}'). Provide an explicit symbol."
+            ),
+        ) from None
+
+
+async def _require_broker_spec(request: Request, broker_symbol: str) -> dict:
+    """品种准入路径上的 fail-closed 券商校验。
+
+    返回券商 spec 字典。抛错：
+      - 503：bridge/MT5 终端不可达 —— 无法核实的品种不得创建（"不会配错"
+              要求先验证，asset_class 交叉校验也不得静默退化为 fail-open）。
+      - 502：bridge 有响应但返回体不可用。
+      - 400：券商明确报告品种不存在或不可交易。
+    """
+    connector = getattr(request.app.state, "connector", None)
+    check = await check_broker_symbol(connector, broker_symbol)
+    if check.kind == "ok":
+        assert check.spec is not None
+        return check.spec
+    if check.kind == "unreachable":
+        raise HTTPException(
+            status_code=503,
+            detail=f"MT5 bridge unavailable while validating '{broker_symbol}': {check.error}",
+        )
+    if check.kind == "unexpected":
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unexpected bridge response while validating '{broker_symbol}'",
+        )
+    raise HTTPException(status_code=400, detail=check.error or "symbol rejected by broker")
+
+
+def _cross_check_asset_class(spec: dict, declared: str) -> None:
+    """把声明的 asset_class 与券商品种路径比对。不一致抛 400。"""
+    path = spec.get("path") or ""
+    if not path:
+        return  # 旧版 bridge 无 path 字段 —— 无法交叉校验
+    inferred = _infer_asset_class(path)
+    if inferred != declared:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"asset_class={declared!r} does not match broker path {path!r} "
+                f"(inferred {inferred!r}). Use {inferred!r} or pick a different symbol."
+            ),
+        )
+
+
+def _check_lot_against_volume(default_lot: float, volume_min: float | None, volume_step: float | None) -> None:
+    """拒绝会被券商静默放大的手数。
+
+    bridge 会在按 step 向下取整后用 ``max(vol, volume_min)`` 钳制，因此低于
+    volume_min 或偏离 step 网格的计算手数会被静默放大成交，超出风险预算假设
+    （volume_min=1.0 的品种可放大 100 倍）。改在准入阶段拦截。
+    """
+    if volume_min is not None and default_lot < volume_min:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"default_lot={default_lot} is below the broker minimum volume "
+                f"{volume_min} — the bridge would silently upsize the order and "
+                f"exceed the risk budget. Raise default_lot."
+            ),
+        )
+    if volume_step and volume_step > 0:
+        rounded = round(round(default_lot / volume_step) * volume_step, 10)
+        if abs(rounded - default_lot) > 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"default_lot={default_lot} is not a multiple of the broker "
+                    f"volume_step={volume_step} (would be rounded to {rounded}). "
+                    f"Align default_lot to the step grid."
+                ),
+            )
+
+
+async def _ensure_no_alias_collision(
+    db: AsyncSession,
+    symbol: str,
+    broker_alias: str | None,
+) -> None:
+    """品种与券商别名之间的跨行唯一性。
+
+    load_profiles_from_db() 同时以 symbol 与 broker_alias 为键写入 profile；
+    发生撞车会静默覆盖 SYMBOL_PROFILES 中其他行的条目（后写覆盖先写），
+    因此在准入阶段拦截。
+    """
+    if broker_alias:
+        if broker_alias != symbol:
+            other = await db.execute(
+                select(SymbolConfig).where(
+                    SymbolConfig.symbol == broker_alias,
+                    SymbolConfig.is_deleted.is_(False),
+                    SymbolConfig.symbol != symbol,
+                )
+            )
+            if other.scalar_one_or_none() is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"broker_alias '{broker_alias}' collides with an existing "
+                        f"symbol — the alias profile would overwrite it"
+                    ),
+                )
+    other_alias = await db.execute(
+        select(SymbolConfig).where(
+            SymbolConfig.broker_alias == symbol,
+            SymbolConfig.is_deleted.is_(False),
+            SymbolConfig.symbol != symbol,
+        )
+    )
+    clash = other_alias.scalar_one_or_none()
+    if clash is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"symbol '{symbol}' collides with the broker_alias of existing "
+                f"symbol '{clash.symbol}' — the alias profile would overwrite it"
+            ),
+        )
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -352,7 +509,11 @@ async def broker_catalog(request: Request) -> dict:
                     "description": it.get("description") or "",
                     "asset_class": _infer_asset_class(it.get("path") or ""),
                     "price_decimals": int(it["digits"]),
-                    "pip_value": _pip_value_from_spec(int(it["digits"]), float(it["point"])),
+                    "pip_value": _pip_value_suggestion(
+                        _infer_asset_class(it.get("path") or ""),
+                        int(it["digits"]),
+                        float(it["point"]),
+                    ),
                     "contract_size": float(it["trade_contract_size"]),
                     "volume_min": float(it["volume_min"]),
                     "volume_max": float(it["volume_max"]),
@@ -378,71 +539,90 @@ async def get_symbol(symbol: str, db: AsyncSession = Depends(get_db)) -> SymbolR
     return SymbolResponse.model_validate(cfg)
 
 
-async def _validate_asset_class_against_broker(
-    request: Request,
-    broker_symbol: str,
-    declared: str,
-) -> None:
-    """Cross-check declared asset_class with broker's symbol path.
-
-    Raises 400 when the broker reports an unambiguous asset class that conflicts
-    with the user's choice (e.g. user picked ``forex`` for a crypto symbol).
-    Soft-fails when the broker is unreachable so symbol creation is not blocked
-    by transient bridge outages.
-    """
-    connector = getattr(request.app.state, "connector", None)
-    if connector is None:
-        return
-    try:
-        # Cap on bridge latency: validation runs on the API hot path so a
-        # slow bridge must not turn a symbol-create into a 30s wait.
-        spec = await asyncio.wait_for(connector.get_symbol_spec(broker_symbol), timeout=3.0)
-        if not isinstance(spec, dict) or not spec.get("success"):
-            return
-        data = spec.get("data")
-        if not isinstance(data, dict):
-            return
-        path = data.get("path") or ""
-    except Exception as e:
-        logger.debug(f"asset_class validate skipped [{broker_symbol}]: {e}")
-        return
-    if not path:
-        return
-    inferred = _infer_asset_class(path)
-    if inferred != declared:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"asset_class={declared!r} does not match broker path {path!r} "
-                f"(inferred {inferred!r}). Use {inferred!r} or pick a different symbol."
-            ),
-        )
-
-
 @router.post("", dependencies=[Depends(require_auth)])
 async def create_symbol(
     req: SymbolCreateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> SymbolResponse:
-    if await svc.get_config(db, req.symbol):
-        raise HTTPException(status_code=409, detail=f"Symbol '{req.symbol}' already exists")
+    # ── 准入闸门（fail-closed）：品种在进入系统前必须存在于券商侧且可交易。───
+    broker_name = (req.broker_alias or "").strip() or (req.symbol or "").strip()
+    if not broker_name:
+        raise HTTPException(status_code=422, detail="symbol or broker_alias is required")
+    spec = await _require_broker_spec(request, broker_name)
 
-    await _validate_asset_class_against_broker(request, req.broker_alias or req.symbol, req.asset_class)
+    canonical = (req.symbol or "").strip() or _derive_canonical(broker_name)
+    if await svc.get_config(db, canonical):
+        raise HTTPException(status_code=409, detail=f"Symbol '{canonical}' already exists")
+    await _ensure_no_alias_collision(db, canonical, (req.broker_alias or "").strip() or None)
 
-    # Check for soft-deleted row with same symbol — revive it instead of INSERT
-    # (DB has a unique constraint on `symbol`, so a raw INSERT would fail with
-    # IntegrityError when a previously-deleted row is still present).
+    declared_class = req.asset_class
+    _cross_check_asset_class(spec, declared_class)
+
+    # ── 以 MT5 为准的规格回填 ──────────────────────────────────────────────────
+    digits = int(spec.get("digits", req.price_decimals))
+    point = float(spec.get("point") or 0.0)
+    suggestion = _pip_value_suggestion(declared_class, digits, point) if point else None
+    pip_value = req.pip_value
+    if pip_value is None:
+        pip_value = suggestion
+        if pip_value is None:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Bridge spec for '{broker_name}' lacks digits/point — cannot derive pip_value",
+            )
+    elif suggestion and suggestion > 0:
+        ratio = max(pip_value / suggestion, suggestion / pip_value)
+        if ratio > 10 and not req.confirm_pip_value:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"pip_value={pip_value} is >10x off the broker-convention "
+                    f"suggestion {suggestion} for {declared_class} (digits={digits}, "
+                    f"point={point}). Fix pip_value or re-send with "
+                    f"confirm_pip_value=true to override."
+                ),
+            )
+    price_decimals = digits
+    contract_size = float(spec.get("trade_contract_size") or req.contract_size or 1.0)
+
+    # 用解析后的值做最终合理性检查（请求级校验器只见过原始请求，
+    # 无法预知回填后的小数位）。
+    try:
+        _ensure_pip_value_sane(pip_value, price_decimals)
+        _ensure_ml_barriers_sane(req.ml_tp_pips, req.ml_sl_pips, pip_value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    _check_lot_against_volume(
+        req.default_lot,
+        spec.get("volume_min"),
+        spec.get("volume_step"),
+    )
+
+    values = req.model_dump(exclude={"confirm_pip_value"})
+    values.update(
+        symbol=canonical,
+        pip_value=pip_value,
+        price_decimals=price_decimals,
+        contract_size=contract_size,
+        volume_min=spec.get("volume_min"),
+        volume_max=spec.get("volume_max"),
+        volume_step=spec.get("volume_step"),
+    )
+
+    # 若存在同 symbol 的软删除行则复活而非 INSERT（DB 对 `symbol` 有唯一约束，
+    # 之前删除的行还在时，直接 INSERT 会抛 IntegrityError）。
     existing_deleted = await db.execute(
         select(SymbolConfig).where(
-            SymbolConfig.symbol == req.symbol,
+            SymbolConfig.symbol == canonical,
             SymbolConfig.is_deleted.is_(True),
         )
     )
     cfg = existing_deleted.scalar_one_or_none()
     action = "symbol_created"
     if cfg is not None:
-        for field, value in req.model_dump().items():
+        for field, value in values.items():
             setattr(cfg, field, value)
         cfg.is_deleted = False
         cfg.is_enabled = False
@@ -452,26 +632,40 @@ async def create_symbol(
         cfg.updated_by = "owner"
         action = "symbol_revived"
     else:
-        cfg = SymbolConfig(**req.model_dump(), is_enabled=False, ml_status="pending")
+        cfg = SymbolConfig(**values, is_enabled=False, ml_status="pending")
         db.add(cfg)
 
-    await _audit(db, request, action, req.symbol, {"broker_alias": req.broker_alias})
+    await _audit(
+        db,
+        request,
+        action,
+        canonical,
+        {
+            "broker_alias": values.get("broker_alias"),
+            "spec_backfill": {
+                "contract_size": contract_size,
+                "price_decimals": price_decimals,
+                "volume_min": spec.get("volume_min"),
+                "volume_max": spec.get("volume_max"),
+                "volume_step": spec.get("volume_step"),
+            },
+        },
+    )
     await db.commit()
     await db.refresh(cfg)
-    await _publish(request, req.symbol, "created")
+    await _publish(request, canonical, "created")
     await _reload_engines_direct(request)
 
-    # Kick off historical seed + ML retrain so the new symbol can produce
-    # signals on the next candle close instead of waiting for Monday's
-    # weekly retrain. Runs detached — API response returns immediately.
+    # 触发历史回填 + ML 重训，使新品种在下一根 K 线收盘时即可产出信号，
+    # 不必等到周一批量重训。以后台任务运行 —— API 响应立即返回。
     from app.bot.engine import _spawn_background
 
     _spawn_background(
-        _bootstrap_new_symbol(request.app.state, req.symbol, req.ml_timeframe or req.default_timeframe),
-        name=f"symbol_bootstrap:{req.symbol}",
+        _bootstrap_new_symbol(request.app.state, canonical, values["ml_timeframe"]),
+        name=f"symbol_bootstrap:{canonical}",
     )
 
-    logger.info(f"Symbol {action}: {req.symbol}")
+    logger.info(f"Symbol {action}: {canonical}")
     return SymbolResponse.model_validate(cfg)
 
 
@@ -483,10 +677,73 @@ async def update_symbol(
     db: AsyncSession = Depends(get_db),
 ) -> SymbolResponse:
     cfg = await _require_config(db, symbol)
-    for field, value in req.model_dump().items():
+    values = req.model_dump(exclude={"confirm_pip_value"})
+
+    new_alias = (values.get("broker_alias") or "").strip() or None
+    old_alias = cfg.broker_alias
+    effective_broker = new_alias or old_alias or cfg.symbol
+
+    # 规格类字段以券商为准：当它们（或券商别名）发生变更时，重新向 MT5 校验并
+    # 回填，使操作员无法事后通过编辑绕过准入时的回填。
+    spec_class_touched = new_alias != old_alias or any(
+        values.get(f) is not None and values.get(f) != getattr(cfg, f)
+        for f in ("pip_value", "contract_size", "price_decimals")
+    )
+    spec: dict | None = None
+    if spec_class_touched:
+        spec = await _require_broker_spec(request, effective_broker)
+        declared_class = values.get("asset_class") or cfg.asset_class
+        _cross_check_asset_class(spec, declared_class)
+
+        digits = int(spec.get("digits", cfg.price_decimals))
+        point = float(spec.get("point") or 0.0)
+        suggestion = _pip_value_suggestion(declared_class, digits, point) if point else None
+        pip_value = values.get("pip_value")
+        if pip_value is None:
+            # 换品种（别名变更）：采用券商约定建议值；同品种：保留已存值。
+            values["pip_value"] = suggestion if new_alias != old_alias else cfg.pip_value
+        elif suggestion and suggestion > 0:
+            ratio = max(pip_value / suggestion, suggestion / pip_value)
+            if ratio > 10 and not req.confirm_pip_value:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"pip_value={pip_value} is >10x off the broker-convention "
+                        f"suggestion {suggestion} for {declared_class} (digits={digits}, "
+                        f"point={point}). Fix pip_value or re-send with "
+                        f"confirm_pip_value=true to override."
+                    ),
+                )
+        values["price_decimals"] = digits
+        values["contract_size"] = float(spec.get("trade_contract_size") or cfg.contract_size)
+
+        try:
+            _ensure_pip_value_sane(values["pip_value"], digits)
+            _ensure_ml_barriers_sane(
+                values.get("ml_tp_pips") or cfg.ml_tp_pips,
+                values.get("ml_sl_pips") or cfg.ml_sl_pips,
+                values["pip_value"],
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # 可选字段传 None 表示"不修改"（对券商回填字段采用部分更新语义；
+    # 其余字段仍按整表单 PUT）。
+    for field, value in values.items():
+        if value is None and field in ("pip_value", "contract_size", "broker_alias"):
+            continue
         setattr(cfg, field, value)
+    if spec is not None:
+        cfg.volume_min = spec.get("volume_min")
+        cfg.volume_max = spec.get("volume_max")
+        cfg.volume_step = spec.get("volume_step")
     cfg.updated_at = datetime.utcnow()
     cfg.updated_by = "owner"
+
+    if new_alias and new_alias != old_alias:
+        await _ensure_no_alias_collision(db, cfg.symbol, new_alias)
+    if spec is not None:
+        _check_lot_against_volume(cfg.default_lot, cfg.volume_min, cfg.volume_step)
 
     await _audit(db, request, "symbol_updated", symbol)
     await db.commit()
@@ -524,6 +781,21 @@ async def toggle_symbol(
     db: AsyncSession = Depends(get_db),
 ) -> SymbolResponse:
     cfg = await _require_config(db, symbol)
+    if not cfg.is_enabled:
+        # 启用即上线闸门：品种此刻必须存在于券商侧且可交易（自创建以来可能
+        # 已被下架或改为 CLOSEONLY）。禁用方向不做拦截。
+        broker_name = cfg.broker_alias or cfg.symbol
+        spec = await _require_broker_spec(request, broker_name)
+        _cross_check_asset_class(spec, cfg.asset_class)
+        _check_lot_against_volume(cfg.default_lot, cfg.volume_min, cfg.volume_step)
+        # 回填以券商为准的规格字段，使订单侧手数防线生效。存量行的 volume 列
+        # 为 NULL；不做回填它们将永远得不到防线保护（create/PUT 均会回填）。
+        cfg.contract_size = float(spec.get("trade_contract_size") or cfg.contract_size)
+        cfg.price_decimals = int(spec.get("digits", cfg.price_decimals))
+        cfg.volume_min = spec.get("volume_min", cfg.volume_min)
+        cfg.volume_max = spec.get("volume_max", cfg.volume_max)
+        cfg.volume_step = spec.get("volume_step", cfg.volume_step)
+
     cfg.is_enabled = not cfg.is_enabled
     cfg.updated_at = datetime.utcnow()
     cfg.updated_by = "owner"
@@ -551,7 +823,14 @@ async def validate_symbol(
     if connector is None:
         raise HTTPException(status_code=503, detail="MT5 connector unavailable")
 
-    result = await connector.get_symbol_spec(alias)
+    try:
+        # 没有这道超时上限时，bridge 挂掉会让手动点击"校验"变成 24 秒以上的
+        # 卡死（connector 超时 8s × 3 次尝试）。
+        result = await asyncio.wait_for(connector.get_symbol_spec(alias), timeout=10.0)
+    except TimeoutError:
+        return SymbolSpecResponse(ok=False, message=f"MT5 bridge timeout validating {alias}")
+    except Exception as e:
+        return SymbolSpecResponse(ok=False, message=f"MT5 bridge error: {e}")
     if not result.get("success"):
         return SymbolSpecResponse(ok=False, message=result.get("error") or "unknown error")
     return SymbolSpecResponse(ok=True, message=f"Validated {alias}", spec=result.get("data"))

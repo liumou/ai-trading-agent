@@ -53,3 +53,4 @@ gold_analysis_script.py
 backend/uv.lock
 .omc/
 .history/
+.zcode/

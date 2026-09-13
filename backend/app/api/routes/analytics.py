@@ -30,12 +30,14 @@ async def get_performance_analytics(
 ):
     from types import SimpleNamespace
 
-    from app.api.routes.bot import _manager
+    from app.bot.manager import get_global_manager
+
+    _manager = get_global_manager()
 
     if symbol:
-        from app.config import resolve_broker_symbol
+        from app.config import resolve_canonical_symbol
 
-        symbol = resolve_broker_symbol(symbol)
+        symbol = resolve_canonical_symbol(symbol)
 
     async def _compute():
         return await _compute_performance(symbol, days, db, _manager, SimpleNamespace)
@@ -277,9 +279,9 @@ async def get_slippage_analysis(
 ):
     """Detailed slippage analysis: by hour, by strategy, total cost."""
     if symbol:
-        from app.config import resolve_broker_symbol
+        from app.config import resolve_canonical_symbol
 
-        symbol = resolve_broker_symbol(symbol)
+        symbol = resolve_canonical_symbol(symbol)
 
     cutoff = datetime.utcnow() - timedelta(days=days)
     query = select(Trade).where(

@@ -18,7 +18,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import defer
 
 from app.auth import require_auth
-from app.config import resolve_broker_symbol, settings
+from app.config import resolve_canonical_symbol, settings
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -79,7 +79,7 @@ async def train_model(req: TrainRequest):
     if _collector is None or _db_session is None:
         raise HTTPException(status_code=503, detail="ML dependencies not initialized")
 
-    symbol = resolve_broker_symbol(req.symbol)
+    symbol = resolve_canonical_symbol(req.symbol)
     model_name = f"lightgbm_{symbol.lower()}"
     model_path = f"models/{symbol.lower()}_signal.pkl"
 
@@ -178,7 +178,7 @@ async def model_status(symbol: str = Query("GOLD")):
     if _db_session is None:
         raise HTTPException(status_code=503, detail="Not initialized")
 
-    symbol = resolve_broker_symbol(symbol)
+    symbol = resolve_canonical_symbol(symbol)
     from app.db.models import MLModelLog
 
     model_prefix = f"lightgbm_{symbol.lower()}"
@@ -228,7 +228,7 @@ async def predict_now(symbol: str = Query("GOLD")):
     if _collector is None or _db_session is None:
         raise HTTPException(status_code=503, detail="Not initialized")
 
-    symbol = resolve_broker_symbol(symbol)
+    symbol = resolve_canonical_symbol(symbol)
     model_prefix = f"lightgbm_{symbol.lower()}"
 
     # Try loading symbol-specific model from file first. Resolve the path and
@@ -364,7 +364,7 @@ async def get_drift_report(symbol: str = Query("GOLD")):
     if _db_session is None:
         raise HTTPException(status_code=503, detail="ML dependencies not initialized")
 
-    symbol = resolve_broker_symbol(symbol)
+    symbol = resolve_canonical_symbol(symbol)
     from app.db.models import MLModelLog, MLPredictionLog
     from app.ml.drift import check_drift
 
@@ -426,7 +426,7 @@ async def get_calibration(symbol: str = Query("GOLD")):
     if _db_session is None:
         raise HTTPException(status_code=503, detail="ML dependencies not initialized")
 
-    symbol = resolve_broker_symbol(symbol)
+    symbol = resolve_canonical_symbol(symbol)
     from app.db.models import MLPredictionLog
 
     result = await _db_session.execute(

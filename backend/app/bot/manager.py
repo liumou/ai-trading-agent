@@ -16,6 +16,19 @@ from app.mt5.connector import MT5BridgeConnector
 from app.services import symbol_config_service as symbol_svc
 from app.services.symbol_config_service import RELOAD_CHANNEL
 
+# 进程级 BotManager 注册表。放在此处（而非 API 层）是为了让 config.py 与
+# mcp_server 无需 import app.api 即可解析品种。
+_global_manager: "BotManager | None" = None
+
+
+def set_global_manager(manager: "BotManager | None") -> None:
+    global _global_manager
+    _global_manager = manager
+
+
+def get_global_manager() -> "BotManager | None":
+    return _global_manager
+
 
 class BotManager:
     """Manages one BotEngine per configured symbol, sharing infrastructure."""
@@ -37,7 +50,6 @@ class BotManager:
         self._reload_task: asyncio.Task | None = None
         self._sentiment_analyzer = None
         self._notifier = None
-        self._binance_connector = None
         # Optional back-reference set by BotScheduler so reload_engines() can
         # re-register cron candle jobs for newly-added symbols.
         self._scheduler = None
@@ -73,6 +85,21 @@ class BotManager:
 
     def get_engine(self, symbol: str) -> BotEngine | None:
         return self.engines.get(symbol)
+
+    def resolve_symbol(self, symbol: str) -> str | None:
+        """把规范名或券商别名解析为活跃引擎键。
+
+        别名解析使用 DB 加载的别名 profile：券商名通过其 ``canonical`` 反查标记
+        映射回来（``SYMBOL_PROFILES["GOLDmicro"]["canonical"] == "GOLD"``）。
+        无匹配的活跃引擎时返回 None。
+        """
+        if symbol in self.engines:
+            return symbol
+        profile = SYMBOL_PROFILES.get(symbol)
+        canonical = profile.get("canonical") if profile else None
+        if canonical and canonical in self.engines:
+            return canonical
+        return None
 
     def get_symbols(self) -> list[str]:
         return list(self.engines.keys())

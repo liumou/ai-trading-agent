@@ -177,10 +177,10 @@ Profit factor: {pf:.2f}"""
             # Load last 90 days of data from DB
             to_date = datetime.now(UTC).strftime("%Y-%m-%d")
             from_date = (datetime.now(UTC) - timedelta(days=90)).strftime("%Y-%m-%d")
-            from app.config import resolve_broker_symbol
+            from app.config import resolve_canonical_symbol
 
             df = await self._collector.load_from_db(
-                resolve_broker_symbol(settings.symbol), settings.timeframe, from_date, to_date
+                resolve_canonical_symbol(settings.symbol), settings.timeframe, from_date, to_date
             )
             if df.empty or len(df) < 200:
                 logger.info("Not enough historical data for backtest validation")

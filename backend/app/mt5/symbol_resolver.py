@@ -1,6 +1,6 @@
 """Resolve canonical symbol (e.g. GOLD) to broker alias (e.g. GOLDm#) at the MT5 boundary.
 
-Distinct from `config.resolve_broker_symbol`, which normalizes user input to engine.symbol
+Distinct from `config.resolve_canonical_symbol`, which normalizes user input to engine.symbol
 (canonical). This helper is the last-mile mapping applied immediately before calling MT5 Bridge.
 """
 

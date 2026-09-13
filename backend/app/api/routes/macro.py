@@ -32,15 +32,25 @@ async def get_latest_macro(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/correlations")
-async def get_correlations(days: int = 90, db: AsyncSession = Depends(get_db)):
+async def get_correlations(
+    days: int = 90,
+    symbol: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """单个品种的宏观相关性。默认取第一个活跃引擎，而非遗留的单品种
+    环境变量默认值。"""
     if _macro_service is None:
         raise HTTPException(status_code=503, detail="Macro service not initialized")
-    from app.config import resolve_broker_symbol
+    from app.config import get_active_symbols, resolve_canonical_symbol
     from app.data.macro import MacroDataService
 
     svc = MacroDataService(db)
-    symbol = resolve_broker_symbol(settings.symbol)
-    return await svc.compute_correlations(symbol, settings.timeframe, days)
+    canonical = symbol or (get_active_symbols() or [None])[0]
+    if not canonical:
+        raise HTTPException(status_code=404, detail="No active symbol configured")
+    return await svc.compute_correlations(
+        resolve_canonical_symbol(canonical), settings.timeframe, days
+    )
 
 
 @router.get("/events")

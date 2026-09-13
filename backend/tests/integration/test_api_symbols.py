@@ -1,5 +1,6 @@
 """Integration tests for Symbol Config API."""
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -183,6 +184,279 @@ class TestValidation:
         assert resp.status_code == 422
 
 
+def _spec_ok(symbol: str = "EURUSDm", **overrides) -> dict:
+    """券商 spec 返回体（/symbol-spec），含新增的 trade_mode 字段。"""
+    data = {
+        "symbol": symbol,
+        "path": "Forex\\Majors\\EURUSD",
+        "digits": 5,
+        "point": 0.00001,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.01,
+        "trade_contract_size": 100000.0,
+        "trade_tick_size": 0.00001,
+        "trade_tick_value": 1.0,
+        "trade_mode": 4,  # SYMBOL_TRADE_MODE_FULL（可正常交易）
+        "visible": True,
+    }
+    data.update(overrides)
+    return {"success": True, "data": data}
+
+
+def _metal_create() -> dict:
+    return {
+        "symbol": "XAUUSD",
+        "display_name": "Gold",
+        "broker_alias": "XAUUSDm",
+        "asset_class": "metal",
+        "pip_value": 0.01,
+        "default_lot": 0.01,
+        "max_lot": 1.0,
+        "price_decimals": 2,
+        "sl_atr_mult": 1.5,
+        "tp_atr_mult": 2.0,
+        "contract_size": 100,
+        "ml_tp_pips": 30,
+        "ml_sl_pips": 20,
+        "ml_forward_bars": 10,
+        "ml_timeframe": "M15",
+    }
+
+
+class TestAdmissionGate:
+    """品种准入路径上的 fail-closed 券商校验。"""
+
+    @pytest_asyncio.fixture
+    async def gate_client(self, db_session, redis_client):
+        connector = AsyncMock()
+        connector.get_symbol_spec.return_value = _spec_ok()
+        app = _build_app(db_session, connector=connector, redis_client=redis_client)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c, connector
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_unknown_broker_symbol(self, gate_client):
+        client, connector = gate_client
+        connector.get_symbol_spec.return_value = {
+            "success": False,
+            "data": None,
+            "error": "Symbol EURUSDm not found",
+        }
+        resp = await client.post("/api/symbols", json=_sample_create())
+        assert resp.status_code == 400
+        assert "does not exist" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_non_tradable_trade_mode(self, gate_client):
+        client, _ = gate_client
+        connector_spec = _spec_ok(trade_mode=0)  # SYMBOL_TRADE_MODE_DISABLED（禁止交易）
+        connector = gate_client[1]
+        connector.get_symbol_spec.return_value = connector_spec
+        resp = await client.post("/api/symbols", json=_sample_create())
+        assert resp.status_code == 400
+        assert "not tradable" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_create_allows_missing_trade_mode_old_bridge(self, gate_client):
+        """向后兼容：旧版 bridge 省略 trade_mode —— 视为未知而非拒绝。"""
+        client, connector = gate_client
+        spec = _spec_ok()
+        del spec["data"]["trade_mode"]
+        connector.get_symbol_spec.return_value = spec
+        resp = await client.post("/api/symbols", json=_sample_create())
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_create_fails_closed_on_bridge_timeout(self, gate_client):
+        client, connector = gate_client
+        connector.get_symbol_spec.side_effect = asyncio.TimeoutError
+        resp = await client.post("/api/symbols", json=_sample_create())
+        assert resp.status_code == 503
+        assert "unavailable" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_create_requires_connector(self, db_session, redis_client):
+        app = _build_app(db_session, connector=None, redis_client=redis_client)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post("/api/symbols", json=_sample_create())
+            assert resp.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_create_derives_canonical_from_broker_name(self, gate_client):
+        """目录流程：不发送 symbol —— 服务端从券商品种名派生规范名，
+        剔除规范标识符无法承载的字符。"""
+        client, _ = gate_client
+        payload = _sample_create()
+        del payload["symbol"]
+        payload["broker_alias"] = "EURUSDm#"
+        resp = await client.post("/api/symbols", json=payload)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["symbol"] == "EURUSDm"
+        assert body["broker_alias"] == "EURUSDm#"
+        # 以 MT5 为准的规格回填
+        assert body["volume_min"] == 0.01
+        assert body["volume_step"] == 0.01
+        assert body["contract_size"] == 100000.0
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_symbol_matching_other_alias(self, gate_client):
+        client, _ = gate_client
+        await client.post("/api/symbols", json=_sample_create())
+        # 既有行：symbol=EURUSD、broker_alias=EURUSDm。若新行的规范名等于该
+        # 别名，会静默覆盖既有行的 profile。
+        clash = _sample_create()
+        clash["symbol"] = "EURUSDm"
+        clash["broker_alias"] = None
+        resp = await client.post("/api/symbols", json=clash)
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_alias_matching_other_symbol(self, gate_client):
+        client, _ = gate_client
+        await client.post("/api/symbols", json=_sample_create())
+        clash = _sample_create()
+        clash["symbol"] = "USDX"
+        clash["broker_alias"] = "EURUSD"
+        resp = await client.post("/api/symbols", json=clash)
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_default_lot_below_broker_min(self, gate_client):
+        client, connector = gate_client
+        connector.get_symbol_spec.return_value = _spec_ok(volume_min=1.0, volume_step=0.1)
+        resp = await client.post("/api/symbols", json=_sample_create())
+        assert resp.status_code == 400
+        assert "minimum volume" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_lot_off_step_grid(self, gate_client):
+        client, connector = gate_client
+        connector.get_symbol_spec.return_value = _spec_ok(volume_min=0.01, volume_step=0.1)
+        payload = _sample_create()
+        payload["default_lot"] = 0.55
+        resp = await client.post("/api/symbols", json=payload)
+        assert resp.status_code == 400
+        assert "volume_step" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_create_pip_value_mismatch_requires_confirmation(self, gate_client):
+        """pip_value 偏离券商约定建议值 >10 倍时需显式 confirm_pip_value
+        覆盖（防止旧版目录自动填充给黄金类金属写入 0.01）。"""
+        client, connector = gate_client
+        connector.get_symbol_spec.return_value = _spec_ok(
+            symbol="XAUUSDm",
+            path="CFD Metals\\XAUUSD",
+            digits=2,
+            point=0.01,
+            trade_contract_size=100.0,
+        )
+        resp = await client.post("/api/symbols", json=_metal_create())
+        assert resp.status_code == 400
+        assert "confirm_pip_value" in resp.json()["detail"]
+
+        confirmed = dict(_metal_create(), confirm_pip_value=True)
+        resp = await client.post("/api/symbols", json=confirmed)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["pip_value"] == 0.01
+
+    @pytest.mark.asyncio
+    async def test_toggle_on_blocked_when_broker_symbol_gone(self, gate_client):
+        """启用即上线闸门：自创建以来已被下架的品种无法重新启用，
+        但禁用不受限制。"""
+        client, connector = gate_client
+        resp = await client.post("/api/symbols", json=_sample_create())
+        assert resp.status_code == 200
+
+        connector.get_symbol_spec.return_value = {
+            "success": False,
+            "data": None,
+            "error": "Symbol EURUSDm not found",
+        }
+        resp = await client.post("/api/symbols/EURUSD/toggle")
+        assert resp.status_code == 400
+
+        # 被拒绝的 toggle 不得把品种置为启用
+        resp = await client.get("/api/symbols/EURUSD")
+        assert resp.json()["is_enabled"] is False
+
+        # 券商恢复 → 闸门放行，品种上线
+        connector.get_symbol_spec.return_value = _spec_ok()
+        resp = await client.post("/api/symbols/EURUSD/toggle")
+        assert resp.status_code == 200
+        assert resp.json()["is_enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_put_alias_change_revalidates(self, gate_client):
+        client, connector = gate_client
+        await client.post("/api/symbols", json=_sample_create())
+
+        connector.get_symbol_spec.return_value = {
+            "success": False,
+            "data": None,
+            "error": "Symbol BADALIAS not found",
+        }
+        payload = _sample_create()
+        del payload["symbol"]
+        payload["broker_alias"] = "BADALIAS"
+        resp = await client.put("/api/symbols/EURUSD", json=payload)
+        assert resp.status_code == 400
+
+        connector.get_symbol_spec.return_value = _spec_ok(symbol="EURUSDx")
+        payload["broker_alias"] = "EURUSDx"
+        resp = await client.put("/api/symbols/EURUSD", json=payload)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["broker_alias"] == "EURUSDx"
+
+    @pytest.mark.asyncio
+    async def test_toggle_on_backfills_broker_spec(self, gate_client, db_session):
+        """存量行（volume 列为 NULL）启用时回填券商规格，订单侧防线随之生效。"""
+        client, connector = gate_client
+        cfg = SymbolConfig(
+            symbol="XAUUSDx",
+            display_name="Gold X",
+            broker_alias="XAUUSDx",
+            asset_class="metal",
+            is_enabled=False,
+            ml_status="pending",
+            default_timeframe="M15",
+            pip_value=1.0,
+            default_lot=0.1,
+            max_lot=1.0,
+            price_decimals=2,
+            sl_atr_mult=1.5,
+            tp_atr_mult=2.0,
+            contract_size=100.0,
+            ml_tp_pips=10.0,
+            ml_sl_pips=10.0,
+            ml_forward_bars=10,
+            ml_timeframe="M15",
+            # volume_min/max/step 保持 NULL，模拟存量行
+        )
+        db_session.add(cfg)
+        await db_session.commit()
+
+        connector.get_symbol_spec.return_value = _spec_ok(
+            symbol="XAUUSDx",
+            path="CFD Metals\\XAUUSD",
+            digits=2,
+            point=0.01,
+            trade_contract_size=100.0,
+            volume_min=0.1,
+            volume_step=0.05,
+        )
+        resp = await client.post("/api/symbols/XAUUSDx/toggle")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["is_enabled"] is True
+        assert body["volume_min"] == 0.1
+        assert body["volume_step"] == 0.05
+        assert body["contract_size"] == 100.0
+
+
 class TestRetrain:
     @pytest.mark.asyncio
     async def test_retrain_requires_manager(self, client):
@@ -195,6 +469,21 @@ class TestRetrain:
         from unittest.mock import AsyncMock, MagicMock
 
         connector = AsyncMock()
+        connector.get_symbol_spec.return_value = {
+            "success": True,
+            "data": {
+                "symbol": "EURUSDm",
+                "digits": 5,
+                "point": 0.00001,
+                "volume_min": 0.01,
+                "volume_max": 100.0,
+                "volume_step": 0.01,
+                "trade_contract_size": 100000.0,
+                "trade_tick_size": 0.00001,
+                "trade_tick_value": 1.0,
+                "visible": True,
+            },
+        }
 
         retrain_started = False
 
@@ -424,7 +713,9 @@ class TestBrokerCatalog:
         gold = items["XAUUSD"]
         assert gold["asset_class"] == "metal"
         assert gold["price_decimals"] == 2
-        assert gold["pip_value"] == pytest.approx(0.01)  # 2-digit: pip = point
+        # 金属规则（d2 → 100×point）：与静态 GOLD 约定 pip_value=1.0 一致。
+        # 旧的"仅外汇"规则在此给出 0.01 —— 偏差 100 倍。
+        assert gold["pip_value"] == pytest.approx(1.0)
 
     @pytest.mark.asyncio
     async def test_second_call_hits_redis_cache(self, catalog_client):

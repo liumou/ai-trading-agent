@@ -86,3 +86,74 @@ def test_prompt_registry_sentiment_default_is_symbol_agnostic():
     # (the word "GOLD" may still appear in the asset-class framework examples)
     # Key invariant: the target instrument slot is a placeholder.
     assert "headlines for the instrument **{symbol}**" in default
+
+
+# ─── 别名解析：DB broker_alias 是唯一来源（PR3）───────────────────────────────
+
+
+class TestAliasResolution:
+    @pytest.fixture(autouse=True)
+    def _restore(self, restore_profiles):
+        yield
+
+    def _load_alias_profile(self):
+        """模拟 load_profiles_from_db() 为一行注册的内容：
+        symbol=GOLD、broker_alias=GOLDmicro。"""
+        SYMBOL_PROFILES.clear()
+        SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "broker_alias": "GOLDmicro"}
+        SYMBOL_PROFILES["GOLDmicro"] = {"pip_value": 1.0, "canonical": "GOLD"}
+
+    def test_get_canonical_symbol_via_alias_profile(self):
+        self._load_alias_profile()
+        from app.config import get_canonical_symbol
+
+        assert get_canonical_symbol("GOLDmicro") == "GOLD"
+        assert get_canonical_symbol("GOLD") == "GOLD"
+        assert get_canonical_symbol("UNKNOWN") == "UNKNOWN"
+
+    def test_manager_resolve_symbol_direct_and_alias(self):
+        self._load_alias_profile()
+        from unittest.mock import MagicMock
+
+        from app.bot.manager import BotManager
+
+        mgr = BotManager.__new__(BotManager)
+        engine = MagicMock()
+        mgr.engines = {"GOLD": engine}
+
+        assert mgr.resolve_symbol("GOLD") == "GOLD"
+        assert mgr.resolve_symbol("GOLDmicro") == "GOLD"  # 别名条目 → 规范名
+        assert mgr.resolve_symbol("NOPE") is None
+
+    def test_resolve_canonical_symbol_uses_global_manager(self):
+        self._load_alias_profile()
+        from unittest.mock import MagicMock
+
+        from app.bot.manager import get_global_manager, set_global_manager
+        from app.config import resolve_canonical_symbol
+
+        mgr = MagicMock()
+        mgr.engines = {"GOLD": MagicMock()}
+        mgr.resolve_symbol.return_value = "GOLD"
+        set_global_manager(mgr)
+        try:
+            assert resolve_canonical_symbol("GOLDmicro") == "GOLD"
+        finally:
+            set_global_manager(None)
+        assert get_global_manager() is None
+
+    def test_resolve_canonical_symbol_falls_back_to_profiles(self):
+        self._load_alias_profile()
+        from app.config import resolve_canonical_symbol
+
+        # 未注册 manager → 走基于 profile 的别名解析
+        assert resolve_canonical_symbol("GOLDmicro") == "GOLD"
+        assert resolve_canonical_symbol("GOLD") == "GOLD"
+
+    def test_no_static_alias_entries_after_pr3(self):
+        """静态 SYMBOL_ALIASES 注册已移除：全新静态 profile 集合
+        不得再包含 micro 别名条目。"""
+        from app.config import _STATIC_SYMBOL_PROFILES
+
+        assert not any("canonical" in p for p in _STATIC_SYMBOL_PROFILES.values())
+        assert "GOLDmicro" not in _STATIC_SYMBOL_PROFILES

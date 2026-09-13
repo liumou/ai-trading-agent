@@ -559,7 +559,16 @@ class BotEngine:
         """Check per-symbol and global circuit breakers. Returns True if trading should stop."""
         import asyncio as _asyncio
 
-        all_symbols = settings.symbol_list
+        # 全局熔断的作用域 = 在线引擎集合（含经 /symbols 热重载加入的
+        # DB 管理品种），而非遗留的 SYMBOLS 环境变量列表 —— 仅按 env 作用域
+        # 会让 UI 新增的品种静默失去组合级回撤保护。
+        manager = self._manager
+        if manager is not None and manager.engines:
+            all_symbols = list(manager.engines.keys())
+        else:
+            from app.config import SYMBOL_PROFILES
+
+            all_symbols = [s for s, p in SYMBOL_PROFILES.items() if "canonical" not in p] or settings.symbol_list
         symbol_triggered, global_triggered = await _asyncio.gather(
             self.circuit_breaker.is_triggered(balance),
             CircuitBreaker.is_global_triggered(self.redis, all_symbols, balance),
@@ -795,6 +804,54 @@ class BotEngine:
 
         return True
 
+    def _normalize_lot_to_broker(self, lot: float) -> float | None:
+        """在下单前把计算出的手数对齐到券商手数网格。
+
+        bridge 会先按 ``volume_step`` 向下取整，再用 ``max(vol, volume_min)``
+        静默上调；因此低于券商最小手数或偏离 step 网格的手数会以大于风险预算
+        假设的规模成交（volume_min=1.0 的品种最多放大 100 倍）。这里向下取整
+        保证实际风险 ≤ 计算风险；低于券商最小手数的手数直接拒单
+        （见 services.symbol_validation.normalize_lot_to_volume_grid）。
+
+        未回填券商 volume 数据的品种（存量行未重新校验）跳过该防线 ——
+        保持原有行为。
+        """
+        from app.services.symbol_validation import normalize_lot_to_volume_grid
+
+        profile = self.symbol_profile or {}
+        normalized = normalize_lot_to_volume_grid(
+            lot,
+            volume_min=profile.get("volume_min"),
+            volume_max=profile.get("volume_max"),
+            volume_step=profile.get("volume_step"),
+        )
+        if normalized == lot:
+            return lot
+        if normalized is None:
+            logger.warning(
+                f"Order rejected [{self.symbol}]: lot {lot} below broker minimum "
+                f"{profile.get('volume_min')} after step rounding — sending it would "
+                f"make the bridge upsize the order beyond the risk budget"
+            )
+            if self.notifier is not None:
+                _spawn_background(
+                    self._notify(
+                        self.notifier.send_error_alert(
+                            f"⚠️ Order rejected [{self.symbol}]: lot {lot} < broker "
+                            f"min {profile.get('volume_min')} — raise default_lot or "
+                            f"fix symbol volume config"
+                        )
+                    ),
+                    name=f"lot_guard_alert:{self.symbol}",
+                )
+            return None
+        logger.info(
+            f"Lot normalized [{self.symbol}]: {lot} → {normalized} "
+            f"(min={profile.get('volume_min')}, step={profile.get('volume_step')}, "
+            f"max={profile.get('volume_max')})"
+        )
+        return normalized
+
     async def _size_and_place_order(
         self,
         signal: int,
@@ -867,6 +924,10 @@ class BotEngine:
             logger.info(
                 f"Event filter [{self.symbol}]: lot reduced to {lot} (event: {near_event.get('event', 'unknown')})"
             )
+
+        lot = self._normalize_lot_to_broker(lot)
+        if lot is None:
+            return
 
         # Place order (real or paper)
         order_type = "BUY" if signal == 1 else "SELL"
@@ -1491,6 +1552,12 @@ class BotEngine:
             new_lot = max(round(lot * (1 - PARTIAL_TP_CLOSE_PCT), 2), MIN_LOT)
             if new_lot < MIN_LOT:
                 logger.info(f"Partial TP {ticket}: remaining lot too small, fully closed")
+                return
+            # 减仓后的手数可能偏离券商 step 网格或低于最小手数 ——
+            # 与新建仓同样的"静默放大"风险。
+            new_lot = self._normalize_lot_to_broker(new_lot)
+            if new_lot is None:
+                logger.info(f"Partial TP {ticket}: reduced lot rejected by volume guard, position remains closed")
                 return
 
             tick_size = 10 ** (-self.risk_manager.price_decimals)
