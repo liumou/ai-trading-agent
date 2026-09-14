@@ -341,7 +341,9 @@ class Settings(BaseSettings):
     # DB observability thresholds (Phase 1 long-term scaling plan)
     db_slow_query_threshold_ms: float = 500.0
     db_request_warn_ms: float = 2000.0
-    db_request_error_ms: float = 10000.0
+    # Wall-clock request budget: heavy compute endpoints (e.g. overfitting-score,
+    # 32s+ of pure CPU) must not trip the error alert despite holding no pool conns.
+    db_request_error_ms: float = 60000.0
     db_pool_alert_threshold: float = 0.7
     db_pool_alert_sustained_seconds: float = 60.0
 

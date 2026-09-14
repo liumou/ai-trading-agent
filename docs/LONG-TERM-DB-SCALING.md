@@ -35,9 +35,12 @@ App side: SQLAlchemy `before_cursor_execute` / `after_cursor_execute` events →
 
 File: [backend/app/main.py](backend/app/main.py) — new middleware logs:
 - Request path + session checkout duration
-- Warn if >2s, error if >10s
+- Warn if >2s, error if >60s
 
-Output goes to structured JSON log. Alert any request holding conn >10s.
+Output goes to structured JSON log. Alert any request holding conn >60s.
+The error threshold is high because it is wall-clock request time: compute-heavy
+endpoints (e.g. overfitting-score) take 30s+ of pure CPU while holding no pool
+conns. Config: `DB_REQUEST_WARN_MS` / `DB_REQUEST_ERROR_MS`.
 
 ### 1.4 Alert on pool pressure
 
