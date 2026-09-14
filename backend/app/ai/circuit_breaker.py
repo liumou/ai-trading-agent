@@ -20,6 +20,19 @@ class LLMCircuitBreaker:
         self._failures = 0
         self._opened_at: float | None = None
         self._recovered = True
+        self._alert_cb = None
+
+    def set_alert_callback(self, cb) -> None:
+        """Wire an operator-facing alert (e.g. Telegram) fired when the breaker trips."""
+        self._alert_cb = cb
+
+    def _fire_alert(self, message: str) -> None:
+        if self._alert_cb is None:
+            return
+        try:
+            self._alert_cb(message)
+        except Exception as e:
+            logger.warning(f"[llm_circuit] alert callback failed: {e!r}")
 
     def _threshold(self) -> int:
         from app.config import settings
@@ -63,6 +76,11 @@ class LLMCircuitBreaker:
             logger.error(
                 f"[llm_circuit] tripped at {self._failures} failures — cooldown "
                 f"{self._cooldown_s()}s"
+            )
+            self._fire_alert(
+                f"⚠️ <b>LLM circuit breaker tripped</b>\n"
+                f"{self._failures} consecutive connection failures — "
+                f"AI analysis paused for {self._cooldown_s()}s."
             )
 
     def record_success(self) -> None:

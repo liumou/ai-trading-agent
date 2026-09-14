@@ -42,7 +42,22 @@ def get_strategy(name: str, params: dict | None = None, symbol: str = "GOLD") ->
     # Pass symbol to strategies that need it (ML + quant cross-asset)
     if name in ("ml_signal", "risk_parity", "momentum_rank", "pair_spread"):
         kwargs.setdefault("symbol", symbol)
+    # Drop params the constructor doesn't accept so cross-strategy suggestions
+    # (e.g. rsi_period from the optimizer's PARAM_RANGES onto ema_crossover) can't
+    # crash the build with "unexpected keyword argument".
+    if not _accepts_any_extra_kwargs(cls):
+        import inspect
+
+        accepted = inspect.signature(cls.__init__).parameters
+        kwargs = {k: v for k, v in kwargs.items() if k in accepted}
     return cls(**kwargs)
+
+
+def _accepts_any_extra_kwargs(cls: type) -> bool:
+    """True when the strategy constructor takes ``**kwargs`` and should keep extras."""
+    import inspect
+
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in inspect.signature(cls.__init__).parameters.values())
 
 
 def _build_ensemble(params: dict | None, symbol: str) -> BaseStrategy:

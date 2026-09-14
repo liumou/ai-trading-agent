@@ -70,6 +70,7 @@ from app.db.session import engine as db_engine
 from app.health import check_health
 from app.mt5.connector import MT5BridgeConnector
 from app.notifications.telegram import TelegramNotifier
+from app.ai.circuit_breaker import llm_circuit_breaker
 
 
 def _init_sentry() -> None:
@@ -305,6 +306,12 @@ async def lifespan(app: FastAPI):
     manager.set_notifier(notifier)
     if notifier.enabled:
         logger.info("Telegram notifications enabled")
+        # Alert the operator when the LLM circuit breaker trips (endpoint down).
+        import asyncio
+
+        llm_circuit_breaker.set_alert_callback(
+            lambda msg: asyncio.create_task(notifier._send(msg))
+        )
     else:
         logger.info("Telegram notifications disabled (no token/chat_id)")
 
@@ -320,7 +327,7 @@ async def lifespan(app: FastAPI):
     backtest.set_market_data(first_engine.market_data)
     backtest.set_collector(hist_collector)
     data.set_collector(hist_collector)
-    ml.set_ml_deps(hist_collector, db_session)
+    ml.set_ml_deps(hist_collector)
     macro.set_macro_deps(macro_service, event_calendar)
 
     # Store references for health checks

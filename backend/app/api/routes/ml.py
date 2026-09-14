@@ -15,10 +15,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from app.auth import require_auth
 from app.config import resolve_canonical_symbol, settings
+from app.db.session import get_db
 from app.ml.barrier_validation import validate_ml_barriers
 
 if TYPE_CHECKING:
@@ -31,7 +33,6 @@ router = APIRouter(
 )
 
 _collector = None
-_db_session = None
 
 
 async def _load_macro_from_db(db_session) -> pd.DataFrame | None:
@@ -57,10 +58,15 @@ async def _load_macro_from_db(db_session) -> pd.DataFrame | None:
         return None
 
 
-def set_ml_deps(collector, db_session):
-    global _collector, _db_session
+def set_ml_deps(collector):
+    """Wire the historical-data collector.
+
+    Routes take their own per-request sessions via ``Depends(get_db)`` — never
+    a shared module-global session. The collector only uses short-lived isolated
+    sessions internally, so holding it globally is safe.
+    """
+    global _collector
     _collector = collector
-    _db_session = db_session
 
 
 def _mean_bar_range(df: "pd.DataFrame", bars: int = 500) -> float | None:
@@ -89,8 +95,8 @@ class TrainRequest(BaseModel):
 
 
 @router.post("/train", dependencies=[Depends(require_auth)])
-async def train_model(req: TrainRequest):
-    if _collector is None or _db_session is None:
+async def train_model(req: TrainRequest, db: AsyncSession = Depends(get_db)):
+    if _collector is None:
         raise HTTPException(status_code=503, detail="ML dependencies not initialized")
 
     symbol = resolve_canonical_symbol(req.symbol)
@@ -106,7 +112,7 @@ async def train_model(req: TrainRequest):
             }
 
         # Load macro data from DB
-        macro_df = await _load_macro_from_db(_db_session)
+        macro_df = await _load_macro_from_db(db)
 
         from app.ml.trainer import ModelTrainer
 
@@ -163,7 +169,7 @@ async def train_model(req: TrainRequest):
 
             from app.db.models import MLModelLog
 
-            await _db_session.execute(
+            await db.execute(
                 update(MLModelLog)
                 .where(MLModelLog.is_active, MLModelLog.model_name == model_name)
                 .values(is_active=False)
@@ -186,10 +192,10 @@ async def train_model(req: TrainRequest):
                 model_digest=compute_model_digest(model_bytes),
                 is_active=True,
             )
-            _db_session.add(log)
-            await _db_session.commit()
+            db.add(log)
+            await db.commit()
         except Exception as e:
-            await _db_session.rollback()
+            await db.rollback()
             return {"warning": f"Model trained but DB log failed: {e}", **result.to_dict()}
 
         return {**result.to_dict(), "symbol": symbol}
@@ -204,8 +210,8 @@ async def train_model(req: TrainRequest):
 
 
 @router.get("/status")
-async def model_status(symbol: str = Query("GOLD")):
-    if _db_session is None:
+async def model_status(symbol: str = Query("GOLD"), db: AsyncSession = Depends(get_db)):
+    if _collector is None:
         raise HTTPException(status_code=503, detail="Not initialized")
 
     symbol = resolve_canonical_symbol(symbol)
@@ -217,7 +223,7 @@ async def model_status(symbol: str = Query("GOLD")):
     # so /status doesn't pull the full model into memory each call.
     blob_defer = defer(MLModelLog.model_binary)
 
-    result = await _db_session.execute(
+    result = await db.execute(
         select(MLModelLog)
         .where(MLModelLog.is_active, MLModelLog.model_name.like(f"{model_prefix}%"))
         .options(blob_defer)
@@ -226,7 +232,7 @@ async def model_status(symbol: str = Query("GOLD")):
     log = result.scalar_one_or_none()
 
     if not log:
-        result = await _db_session.execute(select(MLModelLog).where(MLModelLog.is_active).options(blob_defer).limit(1))
+        result = await db.execute(select(MLModelLog).where(MLModelLog.is_active).options(blob_defer).limit(1))
         log = result.scalar_one_or_none()
 
     if not log:
@@ -253,9 +259,9 @@ async def model_status(symbol: str = Query("GOLD")):
 
 
 @router.post("/predict", dependencies=[Depends(require_auth)])
-async def predict_now(symbol: str = Query("GOLD")):
+async def predict_now(symbol: str = Query("GOLD"), db: AsyncSession = Depends(get_db)):
     """Run ML prediction on current market data."""
-    if _collector is None or _db_session is None:
+    if _collector is None:
         raise HTTPException(status_code=503, detail="Not initialized")
 
     symbol = resolve_canonical_symbol(symbol)
@@ -287,7 +293,7 @@ async def predict_now(symbol: str = Query("GOLD")):
         # Load from DB
         from app.db.models import MLModelLog
 
-        result = await _db_session.execute(
+        result = await db.execute(
             select(MLModelLog)
             .where(
                 MLModelLog.is_active,
@@ -299,7 +305,7 @@ async def predict_now(symbol: str = Query("GOLD")):
         log = result.scalar_one_or_none()
         # Fallback to any active model
         if not log:
-            result = await _db_session.execute(
+            result = await db.execute(
                 select(MLModelLog)
                 .where(
                     MLModelLog.is_active,
@@ -357,7 +363,7 @@ async def predict_now(symbol: str = Query("GOLD")):
     try:
         from app.db.models import MLModelLog, MLPredictionLog
 
-        model_result = await _db_session.execute(
+        model_result = await db.execute(
             select(MLModelLog)
             .where(
                 MLModelLog.is_active,
@@ -373,10 +379,10 @@ async def predict_now(symbol: str = Query("GOLD")):
             predicted_signal=signal,
             confidence=confidence,
         )
-        _db_session.add(pred_log)
-        await _db_session.commit()
+        db.add(pred_log)
+        await db.commit()
     except Exception:
-        await _db_session.rollback()
+        await db.rollback()
 
     return {
         "signal": signal_label,
@@ -389,9 +395,9 @@ async def predict_now(symbol: str = Query("GOLD")):
 
 
 @router.get("/drift")
-async def get_drift_report(symbol: str = Query("GOLD")):
+async def get_drift_report(symbol: str = Query("GOLD"), db: AsyncSession = Depends(get_db)):
     """Get feature and prediction drift report for the active model."""
-    if _db_session is None:
+    if _collector is None:
         raise HTTPException(status_code=503, detail="ML dependencies not initialized")
 
     symbol = resolve_canonical_symbol(symbol)
@@ -399,7 +405,7 @@ async def get_drift_report(symbol: str = Query("GOLD")):
     from app.ml.drift import check_drift
 
     # Get active model stats
-    result = await _db_session.execute(
+    result = await db.execute(
         select(MLModelLog)
         .where(MLModelLog.is_active, MLModelLog.model_name.like(f"lightgbm_{symbol.lower()}%"))
         .options(defer(MLModelLog.model_binary))
@@ -414,7 +420,7 @@ async def get_drift_report(symbol: str = Query("GOLD")):
     training_label_dist = metrics.get("label_distribution")
 
     # Get recent predictions
-    pred_result = await _db_session.execute(
+    pred_result = await db.execute(
         select(MLPredictionLog)
         .where(MLPredictionLog.symbol == symbol)
         .order_by(desc(MLPredictionLog.created_at))
@@ -451,15 +457,15 @@ async def get_drift_report(symbol: str = Query("GOLD")):
 
 
 @router.get("/calibration")
-async def get_calibration(symbol: str = Query("GOLD")):
+async def get_calibration(symbol: str = Query("GOLD"), db: AsyncSession = Depends(get_db)):
     """Get confidence calibration — predicted vs actual win rate per bucket."""
-    if _db_session is None:
+    if _collector is None:
         raise HTTPException(status_code=503, detail="ML dependencies not initialized")
 
     symbol = resolve_canonical_symbol(symbol)
     from app.db.models import MLPredictionLog
 
-    result = await _db_session.execute(
+    result = await db.execute(
         select(MLPredictionLog)
         .where(
             MLPredictionLog.symbol == symbol,
