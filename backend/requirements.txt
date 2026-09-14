@@ -9,6 +9,7 @@ redis==5.2.1
 python-dotenv==1.0.1
 websockets==14.1
 claude-agent-sdk==0.1.50
+mcp>=1.0,<2
 openai>=1.40,<2
 httpx==0.28.1
 feedparser==6.0.11
