@@ -39,7 +39,8 @@
     "trainSize": "Train Size",
     "testSize": "Test Size",
     "topFeature": "Top Feature",
-    "na": "N/A"
+    "na": "N/A",
+    "tpPipsHint": "(pips × pip_value = price distance; training label only, not live SL/TP)"
   },
   "predict": {
     "topFeatures": "Top Features",

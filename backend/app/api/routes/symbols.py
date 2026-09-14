@@ -17,11 +17,18 @@ from app.audit import log_audit
 from app.auth import require_auth
 from app.db.models import OHLCVData, SymbolConfig
 from app.db.session import async_session, get_db
+from app.ml.barrier_validation import validate_ml_barriers
 from app.services import symbol_config_service as svc
 from app.services.symbol_validation import check_broker_symbol
 from app.services.symbol_validation import pip_value_suggestion as _pip_value_suggestion
 
 router = APIRouter(prefix="/api/symbols", tags=["symbols"])
+
+# clamp 模式 sl_cap 安全界推导用的参考本金与风险比例（量级护栏，见
+# _check_sl_clamp_bounds）。真实风险预算由运行期 balance 与 max_risk_per_trade
+# 决定，此处用参考值确保 sl_cap 不会大到让手数被钳到 MIN_LOT 后超预算。
+_CLAMP_CAP_REF_BALANCE = 10000.0
+_CLAMP_CAP_REF_RISK = 0.01
 
 
 Timeframe = Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
@@ -57,6 +64,12 @@ class SymbolBase(BaseModel):
     price_decimals: int = Field(ge=0, le=8, default=2)
     sl_atr_mult: float = Field(gt=0, le=10, default=1.5)
     tp_atr_mult: float = Field(gt=0, le=10, default=2.0)
+    # 止损/止盈标准化模式（默认全部等价旧行为，可逐品种灰度）。
+    sl_mode: Literal["atr", "clamped"] = "atr"
+    sl_floor: float | None = Field(default=None, gt=0)
+    sl_cap: float | None = Field(default=None, gt=0)
+    tp_mode: Literal["atr", "rr"] = "atr"
+    target_r_multiple: float | None = Field(default=None, gt=0)
     contract_size: float | None = Field(default=None, gt=0)
     ml_tp_pips: float = Field(gt=0)
     ml_sl_pips: float = Field(gt=0)
@@ -76,6 +89,31 @@ class SymbolBase(BaseModel):
     def _check_lot_bounds(self) -> SymbolBase:
         if self.default_lot > self.max_lot:
             raise ValueError("default_lot must be <= max_lot")
+        return self
+
+    @model_validator(mode="after")
+    def _check_sl_clamp_bounds(self) -> SymbolBase:
+        """止损夹逼边界必须自洽，且上限不得让手数被压到 MIN_LOT 以下。
+
+        - floor/cap 只在 sl_mode="clamped" 时有意义，但一律校验，避免存下
+          自相矛盾的值在切换模式时突然生效。
+        - cap 过大 → sl_distance 过大 → lot 被钳到 MIN_LOT，实际单笔风险
+          会**超过**风险预算（见 calculate_lot_size 的公式）。这里用参考本金
+          与默认风险比例推导安全上界；注意滑点缓冲已计入分母，所以真实上界
+          比此处略小 —— 本校验是量级护栏，不是精确模拟。
+        """
+        if self.sl_floor is not None and self.sl_cap is not None and self.sl_floor > self.sl_cap:
+            raise ValueError("sl_floor must be <= sl_cap")
+        if self.sl_cap is not None and self.contract_size:
+            from app.constants import MIN_LOT
+
+            max_safe = (_CLAMP_CAP_REF_BALANCE * _CLAMP_CAP_REF_RISK) / (MIN_LOT * self.contract_size)
+            if self.sl_cap > max_safe:
+                raise ValueError(
+                    f"sl_cap {self.sl_cap:g} exceeds the safe bound {max_safe:g} "
+                    f"for contract_size={self.contract_size:g}: lot would be floored to "
+                    f"MIN_LOT and the actual risk per trade would exceed the risk budget."
+                )
         return self
 
     @model_validator(mode="after")
@@ -145,6 +183,11 @@ class SymbolResponse(BaseModel):
     price_decimals: int
     sl_atr_mult: float
     tp_atr_mult: float
+    sl_mode: str = "atr"
+    sl_floor: float | None = None
+    sl_cap: float | None = None
+    tp_mode: str = "atr"
+    target_r_multiple: float | None = None
     contract_size: float
     volume_min: float | None = None
     volume_max: float | None = None
@@ -319,15 +362,6 @@ def _ensure_pip_value_sane(pip_value: float, price_decimals: int) -> None:
         )
 
 
-# 障碍是否合理，取决于它相对"单根 K 线实际波动"的大小，而不是它的绝对
-# 价格数值。实测 BTCUSD H1（mean(high-low)≈521，均价≈88 990）：
-#   出厂默认 500 ≈ 0.96× 单根波幅 → 三类分布健康；
-#   被改坏的 15 ≈ 0.03× 单根波幅 → 前向窗口必触屏，HOLD 坍缩为 0。
-# 旧的"绝对 50 价格单位"上限同时犯两个错：放行了 15，却拒绝了 500。
-_BARRIER_RATIO_REJECT = (0.15, 6.0)  # 结构性地产不出三类标签
-_BARRIER_RATIO_WARN = (0.3, 3.0)  # 可疑但允许（例如刻意的宽/窄屏障策略）
-
-
 def _ensure_ml_barriers_sane(
     ml_tp_pips: float,
     ml_sl_pips: float,
@@ -336,6 +370,9 @@ def _ensure_ml_barriers_sane(
     enforce: bool = True,
 ) -> None:
     """校验 ML 障碍相对单根 K 线波动是否合理。
+
+    判定逻辑单源在 :mod:`app.ml.barrier_validation` —— 与训练入口
+    （``POST /api/ml/train``）共用，避免两处阈值漂移。
 
     ``mean_bar_range`` 为该品种近期 ``mean(high - low)``（同训练所用 timeframe）：
 
@@ -348,43 +385,17 @@ def _ensure_ml_barriers_sane(
     ``enforce=False`` 用于"编辑与本参数无关的字段"的场景：此时历史遗留的坏配置
     只告警、不拒绝，避免操作员被无法一次性修好的旧数据锁死。
     """
-    tp_delta = ml_tp_pips * pip_value
-    sl_delta = ml_sl_pips * pip_value
-
-    if mean_bar_range and mean_bar_range > 0:
-        lo_rej, hi_rej = _BARRIER_RATIO_REJECT
-        lo_warn, hi_warn = _BARRIER_RATIO_WARN
-        for name, delta in (("ml_tp_pips", tp_delta), ("ml_sl_pips", sl_delta)):
-            ratio = delta / mean_bar_range
-            if ratio < lo_rej or ratio > hi_rej:
-                message = (
-                    f"{name} × pip_value = {delta:g} is {ratio:.3g}× the symbol's "
-                    f"mean bar range ({mean_bar_range:g}). Barriers this far from typical "
-                    f"bar volatility cannot produce a 3-class (BUY/SELL/HOLD) training set. "
-                    f"Keep the barrier within roughly [{lo_rej}, {hi_rej}]× mean bar range."
-                )
-                if enforce:
-                    raise ValueError(message)
-                logger.warning(f"{message} (unchanged parameter — allowed for now)")
-                continue
-            if ratio < lo_warn or ratio > hi_warn:
-                logger.warning(
-                    f"{name} × pip_value = {delta:g} is {ratio:.3g}× mean bar range "
-                    f"({mean_bar_range:g}) — outside the recommended [{lo_warn}, {hi_warn}]× "
-                    f"band; ML labeling may be skewed."
-                )
+    ok, message = validate_ml_barriers(
+        ml_tp_pips,
+        ml_sl_pips,
+        pip_value,
+        mean_bar_range,
+    )
+    if ok:
         return
-
-    # 尚无行情数据 —— 只拦截明显的录入错误。
-    for name, delta in (("ml_tp_pips", tp_delta), ("ml_sl_pips", sl_delta)):
-        if delta <= 0 or delta > 1_000_000:
-            message = (
-                f"{name} × pip_value = {delta:g} is implausible. "
-                f"Check ml_tp_pips / ml_sl_pips and pip_value."
-            )
-            if enforce:
-                raise ValueError(message)
-            logger.warning(f"{message} (unchanged parameter — allowed for now)")
+    if enforce:
+        raise ValueError(message)
+    logger.warning(f"{message} (unchanged parameter — allowed for now)")
 
 
 async def _symbol_mean_bar_range(

@@ -71,6 +71,11 @@ class RiskManager:
         sl_atr_mult: float = 1.5,
         tp_atr_mult: float = 2.0,
         contract_size: float = 100.0,
+        sl_mode: str = "atr",
+        sl_floor: float | None = None,
+        sl_cap: float | None = None,
+        tp_mode: str = "atr",
+        target_r_multiple: float | None = None,
     ):
         self.max_risk_per_trade = max_risk_per_trade
         self.max_daily_loss = max_daily_loss
@@ -88,6 +93,14 @@ class RiskManager:
         # that equalled contract_size — only true for GOLD, broken for other
         # symbols (OIL ×10 undersize, BTC ×100 undersize, USDJPY ×10 oversize).
         self.contract_size = contract_size
+        # 止损/止盈标准化模式（默认全部等价旧行为，可逐品种灰度）：
+        #   sl_mode="clamped" → sl_distance 被夹在 [sl_floor, sl_cap]（价格单位）
+        #   tp_mode="rr"      → tp_distance = target_r_multiple × 实际止损距离
+        self.sl_mode = sl_mode
+        self.sl_floor = sl_floor
+        self.sl_cap = sl_cap
+        self.tp_mode = tp_mode
+        self.target_r_multiple = target_r_multiple
         self.current_regime = "normal"
         self.regime_lot_multiplier = 1.0
 
@@ -176,6 +189,49 @@ class RiskManager:
             return round(base_lot * STREAK_2_FACTOR, 2)
         return max(base_lot, MIN_LOT)
 
+    def resolve_sl_tp_distances(
+        self,
+        atr: float,
+        sl_mult: float | None = None,
+        tp_mult: float | None = None,
+    ) -> tuple[float, float]:
+        """按当前配置解析 (止损距离, 止盈距离)，单位：价格单位。
+
+        这是下单与确认门的**唯一**口径来源（避免 gate 用未 clamp 的倍数
+        估算 R:R 与实际成交不一致）：
+          - sl_mode="atr"（默认）：sl_distance = atr × sl_mult × regime_sl
+          - sl_mode="clamped"：同上再夹到 [sl_floor, sl_cap]
+          - tp_mode="atr"（默认）：tp_distance = atr × tp_mult × regime_tp
+          - tp_mode="rr"：tp_distance = target_r_multiple × 实际止损距离，
+            盈亏比恒等于 R（regime 不再扰动比值）
+        """
+        from app.strategy.regime import REGIME_ADJUSTMENTS
+
+        adj = REGIME_ADJUSTMENTS.get(self.current_regime, {})
+        sl_m = (sl_mult if sl_mult is not None else self.sl_atr_mult) * adj.get("sl_atr_mult_factor", 1.0)
+        sl_distance = atr * sl_m
+
+        if self.sl_mode == "clamped":
+            if self.sl_floor is not None and self.sl_floor > 0:
+                sl_distance = max(sl_distance, self.sl_floor)
+            if self.sl_cap is not None and self.sl_cap > 0:
+                sl_distance = min(sl_distance, self.sl_cap)
+
+        if self.tp_mode == "rr" and self.target_r_multiple is not None and self.target_r_multiple > 0:
+            tp_distance = self.target_r_multiple * sl_distance
+        else:
+            tp_m = (tp_mult if tp_mult is not None else self.tp_atr_mult) * adj.get("tp_atr_mult_factor", 1.0)
+            tp_distance = atr * tp_m
+
+        return sl_distance, tp_distance
+
+    def expected_rr(self, atr: float) -> float:
+        """预期盈亏比（TP/SL），与 gate 与 UI 展示共用同一口径。"""
+        sl_distance, tp_distance = self.resolve_sl_tp_distances(atr)
+        if sl_distance <= 0:
+            return 0.0
+        return tp_distance / sl_distance
+
     def calculate_sl_tp(
         self,
         entry_price: float,
@@ -184,20 +240,13 @@ class RiskManager:
         sl_mult: float | None = None,
         tp_mult: float | None = None,
     ) -> SLTPResult:
-        from app.strategy.regime import REGIME_ADJUSTMENTS
-
-        sl_m = sl_mult if sl_mult is not None else self.sl_atr_mult
-        tp_m = tp_mult if tp_mult is not None else self.tp_atr_mult
-        # Apply regime SL/TP adjustments
-        adj = REGIME_ADJUSTMENTS.get(self.current_regime, {})
-        sl_m *= adj.get("sl_atr_mult_factor", 1.0)
-        tp_m *= adj.get("tp_atr_mult_factor", 1.0)
+        sl_distance, tp_distance = self.resolve_sl_tp_distances(atr, sl_mult, tp_mult)
         if signal == 1:  # BUY
-            sl = entry_price - (atr * sl_m)
-            tp = entry_price + (atr * tp_m)
+            sl = entry_price - sl_distance
+            tp = entry_price + tp_distance
         else:  # SELL
-            sl = entry_price + (atr * sl_m)
-            tp = entry_price - (atr * tp_m)
+            sl = entry_price + sl_distance
+            tp = entry_price - tp_distance
         return SLTPResult(
             sl=round(sl, self.price_decimals),
             tp=round(tp, self.price_decimals),

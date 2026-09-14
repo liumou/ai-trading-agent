@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.routes.bot import _get_engine
 from app.auth import require_auth
 from app.cache import cached
+from app.constants import BACKTEST_FORMULA_VERSION
 from app.db.models import AIOptimizationLog, NewsSentiment
 from app.db.session import get_db
 
@@ -101,7 +102,11 @@ async def run_optimization():
         raise HTTPException(status_code=503, detail="Optimizer not configured")
     if bot.strategy is None:
         raise HTTPException(status_code=400, detail="Cannot optimize in AI Autonomous mode — select a strategy first")
-    result = await bot._optimizer.optimize(bot.strategy.get_params())
+    result = await bot._optimizer.optimize(
+        bot.strategy.get_params(),
+        strategy_name=bot.strategy.name,
+        symbol=bot.symbol,
+    )
     if result is None:
         raise HTTPException(status_code=500, detail="Optimization failed")
     return result.to_dict()
@@ -117,6 +122,18 @@ async def apply_optimization(log_id: int, db: AsyncSession = Depends(get_db)):
     log = result.scalar_one_or_none()
     if not log:
         raise HTTPException(status_code=404, detail="Optimization log not found")
+
+    # 回测口径版本门：旧口径（v1，contract_size 换算/品种配置读取缺失）算出的
+    # suggested_params 不得在新口径下应用，防止"旧数据新用"。
+    if log.backtest_formula_version != BACKTEST_FORMULA_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Optimization log v{log.backtest_formula_version} was produced with an older "
+                f"backtest formula (current: v{BACKTEST_FORMULA_VERSION}). Params are not "
+                f"comparable — re-run optimization before applying."
+            ),
+        )
 
     import json
 

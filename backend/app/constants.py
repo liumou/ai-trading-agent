@@ -140,3 +140,10 @@ CONFIDENCE_TRENDING_HV_DISCOUNT = 0.05  # looser in clear high-vol trend
 CONFIDENCE_LOW_WINRATE_BOOST = 0.10  # stricter when recent win rate < 40%
 CONFIDENCE_LOW_WINRATE_THRESHOLD = 0.40
 CONFIDENCE_RECENT_TRADES_WINDOW = 20
+
+# ─── Backtest Formula Version ───────────────────────────────────────────────
+
+# 回测口径（PnL = pips × lot × contract_size、读取品种 SL/TP 配置等）的版本号。
+# 写进 AIOptimizationLog；版本不匹配的历史建议不得被应用到实盘，
+# 防止"旧口径算出的最优参数在新口径下生效"。
+BACKTEST_FORMULA_VERSION = "v2"

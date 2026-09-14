@@ -44,6 +44,11 @@ type FormState = {
   price_decimals: string;
   sl_atr_mult: string;
   tp_atr_mult: string;
+  sl_mode: "atr" | "clamped";
+  sl_floor: string;
+  sl_cap: string;
+  tp_mode: "atr" | "rr";
+  target_r_multiple: string;
   contract_size: string;
   ml_tp_pips: string;
   ml_sl_pips: string;
@@ -62,9 +67,14 @@ function toFormState(cfg?: SymbolConfig): FormState {
     default_lot: String(cfg?.default_lot ?? ""),
     max_lot: String(cfg?.max_lot ?? ""),
     price_decimals: String(cfg?.price_decimals ?? 2),
-    sl_atr_mult: String(cfg?.sl_atr_mult ?? 1.5),
-    tp_atr_mult: String(cfg?.tp_atr_mult ?? 2.0),
-    contract_size: String(cfg?.contract_size ?? 1),
+  sl_atr_mult: String(cfg?.sl_atr_mult ?? 1.5),
+  tp_atr_mult: String(cfg?.tp_atr_mult ?? 2.0),
+  sl_mode: cfg?.sl_mode ?? "atr",
+  sl_floor: cfg?.sl_floor != null ? String(cfg.sl_floor) : "",
+  sl_cap: cfg?.sl_cap != null ? String(cfg.sl_cap) : "",
+  tp_mode: cfg?.tp_mode ?? "atr",
+  target_r_multiple: cfg?.target_r_multiple != null ? String(cfg.target_r_multiple) : "",
+  contract_size: String(cfg?.contract_size ?? 1),
     ml_tp_pips: String(cfg?.ml_tp_pips ?? ""),
     ml_sl_pips: String(cfg?.ml_sl_pips ?? ""),
     ml_forward_bars: String(cfg?.ml_forward_bars ?? 10),
@@ -87,6 +97,11 @@ function toPayload(state: FormState, picked: BrokerCatalogItem | null): SymbolCo
     price_decimals: Number(state.price_decimals),
     sl_atr_mult: Number(state.sl_atr_mult),
     tp_atr_mult: Number(state.tp_atr_mult),
+    sl_mode: state.sl_mode,
+    sl_floor: state.sl_floor.trim() ? Number(state.sl_floor) : null,
+    sl_cap: state.sl_cap.trim() ? Number(state.sl_cap) : null,
+    tp_mode: state.tp_mode,
+    target_r_multiple: state.target_r_multiple.trim() ? Number(state.target_r_multiple) : null,
     contract_size: Number(state.contract_size),
     ml_tp_pips: Number(state.ml_tp_pips),
     ml_sl_pips: Number(state.ml_sl_pips),
@@ -136,6 +151,61 @@ export function SymbolForm({
   const [picked, setPicked] = useState<BrokerCatalogItem | null>(null);
 
   const isEdit = Boolean(initial);
+
+  // 盈亏比实时提示：atr 模式 = 止盈倍数 ÷ 止损倍数（ATR 约掉，不随行情波动）；
+  // rr 模式 = 目标盈亏比 R（止盈 = R × 实际止损距离）。
+  const renderRrHint = (s: FormState) => {
+    if (s.tp_mode === "rr") {
+      const r = Number(s.target_r_multiple);
+      if (!Number.isFinite(r) || r <= 0) return null;
+      return (
+        <p className="text-xs text-muted-foreground">
+          {t("rrHint", { ratio: r.toFixed(2) })}
+        </p>
+      );
+    }
+    const sl = Number(s.sl_atr_mult);
+    const tp = Number(s.tp_atr_mult);
+    if (!Number.isFinite(sl) || !Number.isFinite(tp) || sl <= 0) {
+      return null;
+    }
+    return (
+      <p className="text-xs text-muted-foreground">
+        {t("rrHint", { ratio: (tp / sl).toFixed(2) })}
+      </p>
+    );
+  };
+
+  // 模式组合预览：把 clamp / R 模式的实际效果换算成可读文本。
+  // ATR 为运行期动态值，这里给出公式与区间（无法给出精确金额）。
+  const renderModePreview = (s: FormState) => {
+    const parts: string[] = [];
+    if (s.sl_mode === "clamped") {
+      const floor = s.sl_floor.trim() ? Number(s.sl_floor) : null;
+      const cap = s.sl_cap.trim() ? Number(s.sl_cap) : null;
+      const bounds =
+        floor != null && cap != null
+          ? `[${floor} ~ ${cap}]`
+          : floor != null
+            ? `≥ ${floor}`
+            : cap != null
+              ? `≤ ${cap}`
+              : "";
+      if (bounds) {
+        parts.push(t("previewClamp", { bounds }));
+      }
+    }
+    if (s.tp_mode === "rr") {
+      const r = s.target_r_multiple.trim() ? Number(s.target_r_multiple) : null;
+      if (r != null && Number.isFinite(r) && r > 0) {
+        parts.push(t("previewRr", { ratio: String(r) }));
+      }
+    }
+    if (parts.length === 0) {
+      return null;
+    }
+    return <p className="text-xs text-muted-foreground">{parts.join(" · ")}</p>;
+  };
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setState((prev) => ({ ...prev, [key]: value }));
@@ -299,14 +369,79 @@ export function SymbolForm({
             onChange={(e) => update("sl_atr_mult", e.target.value)}
           />
         </Field>
-        <Field label={t("labelTpAtr")}>
-          <Input
-            type="number"
-            step="any"
-            value={state.tp_atr_mult}
-            onChange={(e) => update("tp_atr_mult", e.target.value)}
-          />
+        {state.tp_mode === "atr" && (
+          <Field label={t("labelTpAtr")}>
+            <Input
+              type="number"
+              step="any"
+              value={state.tp_atr_mult}
+              onChange={(e) => update("tp_atr_mult", e.target.value)}
+            />
+          </Field>
+        )}
+        {renderRrHint(state)}
+        <Field label={t("labelSlMode")}>
+          <Select
+            value={state.sl_mode}
+            onValueChange={(v) => update("sl_mode", v as "atr" | "clamped")}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="atr">{t("slModeAtr")}</SelectItem>
+              <SelectItem value="clamped">{t("slModeClamped")}</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
+        {state.sl_mode === "clamped" && (
+          <>
+            <Field label={t("labelSlFloor")}>
+              <Input
+                type="number"
+                step="any"
+                value={state.sl_floor}
+                placeholder={t("phOptional")}
+                onChange={(e) => update("sl_floor", e.target.value)}
+              />
+            </Field>
+            <Field label={t("labelSlCap")}>
+              <Input
+                type="number"
+                step="any"
+                value={state.sl_cap}
+                placeholder={t("phOptional")}
+                onChange={(e) => update("sl_cap", e.target.value)}
+              />
+            </Field>
+          </>
+        )}
+        <Field label={t("labelTpMode")}>
+          <Select
+            value={state.tp_mode}
+            onValueChange={(v) => update("tp_mode", v as "atr" | "rr")}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="atr">{t("tpModeAtr")}</SelectItem>
+              <SelectItem value="rr">{t("tpModeRr")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        {state.tp_mode === "rr" && (
+          <Field label={t("labelTargetR")}>
+            <Input
+              type="number"
+              step="any"
+              value={state.target_r_multiple}
+              placeholder="2.0"
+              onChange={(e) => update("target_r_multiple", e.target.value)}
+            />
+          </Field>
+        )}
+        {renderModePreview(state)}
         <Field label={t("labelContractSize")} required>
           <Input
             type="number"

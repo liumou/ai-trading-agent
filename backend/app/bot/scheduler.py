@@ -536,7 +536,15 @@ class BotScheduler:
             if not engine._optimizer or engine.strategy is None:
                 continue
             try:
-                result = await engine._optimizer.optimize(engine.strategy.get_params())
+                # 必须传 engine 自己的 symbol 与 strategy_name：
+                # 此前 optimize() 默认 strategy_name="ema_crossover" 且回测验证
+                # 固定用 settings.symbol（GOLD）数据 —— 对非 GOLD 引擎会出现
+                # "用 GOLD 数据验证、按 GOLD 参数域、却应用到 OIL/BTC 上"的错位。
+                result = await engine._optimizer.optimize(
+                    engine.strategy.get_params(),
+                    strategy_name=engine.strategy.name,
+                    symbol=engine.symbol,
+                )
                 if result:
                     logger.info(
                         f"Optimization result [{engine.symbol}]: {result.assessment} (confidence={result.confidence})"
@@ -554,6 +562,20 @@ class BotScheduler:
                         flag_on = (flag_raw == b"1" or flag_raw == "1") if flag_raw else False
                         if flag_on:
                             from mcp_server.strategy_switch_guard import StrategySwitchGuard
+
+                            # 与手动 /apply 的"需 STOP"对齐：自动切换也要求当前无持仓，
+                            # 避免在已有头寸的中途换策略参数（新参数会作用于这些仓位的
+                            # 后续管理，口径不一致）。RUNNING 但无持仓时允许切换。
+                            try:
+                                open_positions = await engine.executor.get_open_positions(engine.symbol)
+                                if open_positions:
+                                    logger.info(
+                                        f"[Optimizer Auto-Apply] [{engine.symbol}] skipped: "
+                                        f"{len(open_positions)} open position(s)"
+                                    )
+                                    continue
+                            except Exception as e:
+                                logger.warning(f"[Optimizer Auto-Apply] [{engine.symbol}] position check failed: {e}")
 
                             guard = StrategySwitchGuard(engine.redis)
                             strategy_name = engine.strategy.name if engine.strategy else "ema_crossover"

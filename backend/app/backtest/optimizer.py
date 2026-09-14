@@ -9,6 +9,7 @@ import pandas as pd
 from loguru import logger
 
 from app.backtest.engine import BacktestEngine, BacktestResult
+from app.backtest.risk_factory import RiskManagerFactory
 from app.risk.manager import RiskManager
 from app.strategy import get_strategy
 
@@ -60,8 +61,14 @@ def grid_search(
     risk_per_trade: float = 0.01,
     max_lot: float = 1.0,
     min_trades: int = 10,
+    risk_manager_factory: RiskManagerFactory | None = None,
 ) -> OptimizationResult:
-    """Run backtest for each parameter combination and return ranked results."""
+    """Run backtest for each parameter combination and return ranked results.
+
+    ``risk_manager_factory`` 可选：传入时每个组合都用该工厂新建 RiskManager
+    （从而读取品种配置的 SL/TP 与合约规模）；默认 None 保持旧的裸
+    RiskManager 行为（向后兼容，避免既有调用方结果漂移）。
+    """
     combinations = generate_combinations(param_grid)
     total = len(combinations)
 
@@ -69,13 +76,15 @@ def grid_search(
         logger.warning(f"Grid search: {total} combos exceeds max {MAX_COMBINATIONS}, truncating")
         combinations = combinations[:MAX_COMBINATIONS]
 
-    risk_manager = RiskManager(max_risk_per_trade=risk_per_trade, max_lot=max_lot)
+    if risk_manager_factory is None:
+        risk_manager = RiskManager(max_risk_per_trade=risk_per_trade, max_lot=max_lot)
+        risk_manager_factory = lambda: risk_manager  # noqa: E731
     results = []
 
     for i, params in enumerate(combinations):
         try:
             strategy = get_strategy(strategy_name, params)
-            engine = BacktestEngine(strategy, risk_manager, initial_balance)
+            engine = BacktestEngine(strategy, risk_manager_factory(), initial_balance)
             bt_result = engine.run(df)
 
             s = score_result(bt_result, min_trades)

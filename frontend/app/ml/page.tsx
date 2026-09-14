@@ -328,6 +328,9 @@ export default function MLPage() {
                 <label className="text-[11px] text-muted-foreground font-medium">{t("train.slPips")}</label>
                 <Input type="number" step="0.5" value={slPips} onChange={(e) => setSlPips(parseFloat(e.target.value) || 5)} className="text-sm" />
               </div>
+              <p className="sm:col-span-3 text-[11px] text-muted-foreground">
+                {t("train.tpPipsHint")}
+              </p>
             </div>
           )}
 

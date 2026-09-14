@@ -276,6 +276,11 @@ export interface SymbolConfig {
   price_decimals: number;
   sl_atr_mult: number;
   tp_atr_mult: number;
+  sl_mode: "atr" | "clamped";
+  sl_floor: number | null;
+  sl_cap: number | null;
+  tp_mode: "atr" | "rr";
+  target_r_multiple: number | null;
   contract_size: number;
   volume_min: number | null;
   volume_max: number | null;

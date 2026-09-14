@@ -275,6 +275,9 @@ gold-trading-bot/
 ├── mt5_bridge/                 # MetaTrader 5 HTTP bridge (Windows VPS)
 ├── agent-character/            # Source character art (PNG)
 ├── docs/
+│   ├── SYMBOL-PARAMETERS.md      # 品种参数说明（运营者版）
+│   ├── SYMBOL-PARAMETERS-TECH.md # 参数/风控链路技术审计（开发者版）
+│   ├── LONG-TERM-DB-SCALING.md   # DB 长期扩展方案
 │   ├── logo/                   # Logo assets
 │   └── screenshots/            # README screenshots
 ├── scripts/backup_db.sh        # Daily pg_dump

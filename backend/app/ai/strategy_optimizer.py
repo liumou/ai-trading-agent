@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.client import AIClient
 from app.ai.prompts import OPTIMIZATION_SYSTEM_PROMPT
 from app.backtest.engine import BacktestEngine
+from app.backtest.risk_factory import risk_manager_for_symbol
+from app.constants import BACKTEST_FORMULA_VERSION
 from app.db.models import AIOptimizationLog, Trade
 from app.risk.manager import RiskManager
 from app.strategy import get_strategy
@@ -101,7 +103,12 @@ Total profit: {total_profit:.2f}
 Profit factor: {pf:.2f}"""
         return summary
 
-    async def optimize(self, current_params: dict, strategy_name: str = "ema_crossover") -> OptimizationResult | None:
+    async def optimize(
+        self,
+        current_params: dict,
+        strategy_name: str = "ema_crossover",
+        symbol: str | None = None,
+    ) -> OptimizationResult | None:
         summary = await self.build_performance_summary()
         user_prompt = f"Current performance:\n{summary}\n\nCurrent params: {json.dumps(current_params)}"
 
@@ -124,7 +131,7 @@ Profit factor: {pf:.2f}"""
         backtest_validation = None
         should_apply = False
         if self._collector:
-            backtest_validation = await self._backtest_compare(strategy_name, current_params, suggested)
+            backtest_validation = await self._backtest_compare(strategy_name, current_params, suggested, symbol=symbol)
             if backtest_validation:
                 should_apply = backtest_validation.get("suggested_better", False)
                 logger.info(
@@ -151,6 +158,7 @@ Profit factor: {pf:.2f}"""
                     confidence=float(result.get("confidence", 0.0)),
                     applied=should_apply,
                     backtest_result=json.dumps(backtest_validation) if backtest_validation else None,
+                    backtest_formula_version=BACKTEST_FORMULA_VERSION,
                 )
                 db.add(log)
                 await db.commit()
@@ -169,8 +177,19 @@ Profit factor: {pf:.2f}"""
             log_id=log_id,
         )
 
-    async def _backtest_compare(self, strategy_name: str, current_params: dict, suggested_params: dict) -> dict | None:
-        """Backtest current vs suggested params on recent historical data."""
+    async def _backtest_compare(
+        self,
+        strategy_name: str,
+        current_params: dict,
+        suggested_params: dict,
+        symbol: str | None = None,
+    ) -> dict | None:
+        """Backtest current vs suggested params on recent historical data.
+
+        ``symbol`` 应传被验证引擎自己的品种 —— 此前固定用 ``settings.symbol``，
+        导致给 OIL/BTC 应用参数时实际验证的是 GOLD 数据（跨品种验证错位）。
+        未传时回退到 settings.symbol 以保持向后兼容。
+        """
         try:
             from app.config import settings
 
@@ -179,14 +198,14 @@ Profit factor: {pf:.2f}"""
             from_date = (datetime.now(UTC) - timedelta(days=90)).strftime("%Y-%m-%d")
             from app.config import resolve_canonical_symbol
 
-            df = await self._collector.load_from_db(
-                resolve_canonical_symbol(settings.symbol), settings.timeframe, from_date, to_date
-            )
+            target_symbol = resolve_canonical_symbol(symbol or settings.symbol)
+            df = await self._collector.load_from_db(target_symbol, settings.timeframe, from_date, to_date)
             if df.empty or len(df) < 200:
                 logger.info("Not enough historical data for backtest validation")
                 return None
 
-            risk_manager = RiskManager()
+            # 按被验证品种的配置构造 RiskManager（SL/TP 口径与实盘一致）。
+            risk_manager = risk_manager_for_symbol(target_symbol)
 
             # Backtest current params
             current_strategy = get_strategy(strategy_name, current_params)

@@ -10,6 +10,7 @@ import pandas as pd
 from loguru import logger
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
+from app.ml.barrier_validation import BARRIER_RATIO_RECOMMENDED
 from app.ml.features import FEATURE_COLUMNS, build_features, build_labels
 
 
@@ -79,9 +80,11 @@ def _barrier_diagnosis(
     barrier = max(tp_delta, sl_delta) if tp_delta > 0 else sl_delta
     ratio = barrier / mean_range if mean_range > 0 else float("inf")
 
+    # 推荐区间与护栏同源（app/ml/barrier_validation.py），避免两处阈值互相矛盾：
     # [0.5, 1.5]× mean bar range 实测能稳定产出三类（BTCUSD H1 复核：
     # 500 ≈ 0.96× → BUY 34% / HOLD 29% / SELL 37%）。
-    lo, hi = 0.5 * mean_range, 1.5 * mean_range
+    rec_lo, rec_hi = BARRIER_RATIO_RECOMMENDED
+    lo, hi = rec_lo * mean_range, rec_hi * mean_range
 
     if ratio < 0.3:
         cause = (
@@ -105,9 +108,10 @@ def _barrier_diagnosis(
         f"bars={len(df)}, tp_delta={tp_delta:g}, sl_delta={sl_delta:g}, "
         f"class_counts={{SELL: {class_counts.get(-1, 0)}, HOLD: {class_counts.get(0, 0)}, "
         f"BUY: {class_counts.get(1, 0)}}}. "
-        f"Suggestions: set ml_tp_pips/ml_sl_pips so tp_delta ≈ [{lo:.4g}, {hi:.4g}] "
-        f"(0.5–1.5× mean bar range); widen the date range only if a class is merely "
-        f"rare, not structurally absent."
+        f"Suggestions: set ml_tp_pips so tp_delta ≈ [{lo:.4g}, {hi:.4g}] "
+        f"({rec_lo:g}–{rec_hi:g}× mean bar range; ml_sl_pips is currently ignored by the "
+        f"labeler — barriers stay symmetric); widen the date range only if a class is "
+        f"merely rare, not structurally absent."
     )
 
 

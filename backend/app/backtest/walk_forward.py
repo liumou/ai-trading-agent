@@ -11,6 +11,7 @@ from loguru import logger
 
 from app.backtest.engine import BacktestEngine
 from app.backtest.optimizer import grid_search
+from app.backtest.risk_factory import RiskManagerFactory
 from app.risk.manager import RiskManager
 from app.strategy import get_strategy
 
@@ -99,6 +100,7 @@ def walk_forward_test(
     max_lot: float = 1.0,
     min_trades: int = 5,
     anchored: bool = True,
+    risk_manager_factory: RiskManagerFactory | None = None,
 ) -> WalkForwardResult:
     """
     Walk-forward optimization with expanding (anchored) or sliding windows.
@@ -106,6 +108,8 @@ def walk_forward_test(
     Args:
         anchored: If True, training always starts from bar 0 (expanding window).
                   If False, sliding window of fixed size.
+        risk_manager_factory: 可选；传入时内部 grid_search 用它构造 RiskManager
+            （读取品种配置）；默认 None 保持旧行为。
     """
     total_bars = len(df)
     if total_bars < 200:
@@ -147,6 +151,7 @@ def walk_forward_test(
             risk_per_trade=risk_per_trade,
             max_lot=max_lot,
             min_trades=min_trades,
+            risk_manager_factory=risk_manager_factory,
         )
 
         if not opt_result.results:
@@ -159,7 +164,11 @@ def walk_forward_test(
 
         # Validate on test data with best params
         strategy = get_strategy(strategy_name, best_params)
-        risk_manager = RiskManager(max_risk_per_trade=risk_per_trade, max_lot=max_lot)
+        risk_manager = (
+            risk_manager_factory()
+            if risk_manager_factory is not None
+            else RiskManager(max_risk_per_trade=risk_per_trade, max_lot=max_lot)
+        )
         engine = BacktestEngine(strategy, risk_manager, initial_balance)
         oos_result = engine.run(test_df)
 

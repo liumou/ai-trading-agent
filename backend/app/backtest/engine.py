@@ -125,14 +125,16 @@ class BacktestEngine:
                                 ai_filtered += 1
                                 continue
 
-                atr = prev_row.get("atr", 10.0)
+                atr = prev_row.get("atr")
                 if pd.isna(atr) or atr <= 0:
                     continue
 
                 entry_price = row["open"]
                 # Apply spread cost: BUY at ask (higher), SELL at bid (lower)
                 if self.include_costs:
-                    half_spread = self.spread_pips * 0.5
+                    # 点差单位为 pip，需乘 pip_value 换算成价格单位
+                    # （与实盘 risk.manager.calculate_lot_size 的滑点口径一致）。
+                    half_spread = self.spread_pips * self.risk_manager.pip_value * 0.5
                     if signal == 1:
                         entry_price += half_spread
                     else:
@@ -195,9 +197,13 @@ class BacktestEngine:
             pips = close_price - trade["entry_price"]
         else:
             pips = trade["entry_price"] - close_price
-        gross = pips * trade["lot"] * 100
+        # 合约规模必须用品种配置（contract_size），不能用硬编码 100：
+        # 100 只对 GOLD/OIL（=100）成立，BTCUSD（=1）会被高估 100×、
+        # USDJPY（=100000）会被低估 1000×。
+        cs = self.risk_manager.contract_size
+        gross = pips * trade["lot"] * cs
         if self.include_costs:
-            commission = abs(close_price * trade["lot"] * 100) * self.commission_pct
+            commission = abs(close_price * trade["lot"] * cs) * self.commission_pct
             return round(gross - commission, 2)
         return round(gross, 2)
 

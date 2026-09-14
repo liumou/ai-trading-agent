@@ -200,6 +200,11 @@ class BotEngine:
             sl_atr_mult=profile.get("sl_atr_mult", 1.5),
             tp_atr_mult=profile.get("tp_atr_mult", 2.0),
             contract_size=profile.get("contract_size", 100),
+            sl_mode=profile.get("sl_mode") or "atr",
+            sl_floor=profile.get("sl_floor"),
+            sl_cap=profile.get("sl_cap"),
+            tp_mode=profile.get("tp_mode") or "atr",
+            target_r_multiple=profile.get("target_r_multiple"),
         )
         self.sentiment_analyzer: NewsSentimentAnalyzer | None = None
         self.context_builder = AIContextBuilder(db_session)
@@ -252,6 +257,11 @@ class BotEngine:
         rm.price_decimals = profile.get("price_decimals", rm.price_decimals)
         rm.sl_atr_mult = profile.get("sl_atr_mult", rm.sl_atr_mult)
         rm.tp_atr_mult = profile.get("tp_atr_mult", rm.tp_atr_mult)
+        rm.sl_mode = profile.get("sl_mode") or rm.sl_mode
+        rm.sl_floor = profile.get("sl_floor")
+        rm.sl_cap = profile.get("sl_cap")
+        rm.tp_mode = profile.get("tp_mode") or rm.tp_mode
+        rm.target_r_multiple = profile.get("target_r_multiple")
         rm.max_lot = profile.get("max_lot", rm.max_lot)
         rm.contract_size = profile.get("contract_size", rm.contract_size)
 
@@ -505,9 +515,10 @@ class BotEngine:
                     regime_data = {"label": str(self._last_regime), "probabilities": self._last_hmm_probs}
 
                 atr_val = df.iloc[-2].get("atr", 0)
-                df["close"].iloc[-1]
-                sl_est = atr_val * self.risk_manager.sl_atr_mult
-                tp_est = atr_val * self.risk_manager.tp_atr_mult
+                # 必须与真实下单同口径（含 regime 因子、clamp、R 派生），否则
+                # gate 看到的 R:R 与实际成交的 SL/TP 不一致 —— 夹宽止损时
+                # 会静默拦单，或对"实际 5:1"的单误判为不达标。
+                sl_est, tp_est = self.risk_manager.resolve_sl_tp_distances(atr_val)
                 rr_data = {"ratio": tp_est / sl_est if sl_est > 0 else 0}
 
                 ai_agrees = ai_sentiment and ai_sentiment.get("label") in (

@@ -39,7 +39,8 @@
     "trainSize": "训练集大小",
     "testSize": "测试集大小",
     "topFeature": "最重要特征",
-    "na": "N/A"
+    "na": "N/A",
+    "tpPipsHint": "（点数 × 点值 = 价格距离，仅影响训练标签，不影响实盘止盈止损）"
   },
   "predict": {
     "topFeatures": "重要特征",

@@ -161,6 +161,9 @@ class AIOptimizationLog(Base):
     confidence: Mapped[float] = mapped_column(Float)
     applied: Mapped[bool] = mapped_column(Boolean, default=False)
     backtest_result: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON backtest comparison
+    # 回测口径版本号：回测公式（contract_size 换算、品种配置读取等）一旦变化，
+    # 用旧口径算出的 suggested_params 不得再被应用到实盘（防"旧数据新用"）。
+    backtest_formula_version: Mapped[str] = mapped_column(String(16), default="v1", server_default="v1")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -406,6 +409,14 @@ class SymbolConfig(Base):
     price_decimals: Mapped[int] = mapped_column(Integer, default=2, server_default="2")
     sl_atr_mult: Mapped[float] = mapped_column(Float, default=1.5, server_default="1.5")
     tp_atr_mult: Mapped[float] = mapped_column(Float, default=2.0, server_default="2.0")
+    # 止损/止盈标准化模式。默认 "atr" = 旧行为（sl=ATR×倍数，tp=ATR×倍数）；
+    # "clamped" 时 sl_distance 被夹在 [sl_floor, sl_cap] 之间（价格单位）；
+    # tp_mode="rr" 时 tp_distance = target_r_multiple × 实际止损距离，盈亏比恒等于 R。
+    sl_mode: Mapped[str] = mapped_column(String(8), default="atr", server_default="atr")
+    sl_floor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sl_cap: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tp_mode: Mapped[str] = mapped_column(String(8), default="atr", server_default="atr")
+    target_r_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)
     contract_size: Mapped[float] = mapped_column(Float, default=1.0, server_default="1.0")
     # 券商 volume 限制：创建/更新时从 MT5 规格回填。可空：该列存在之前创建的
     # 行（存量品种）保持 NULL，订单侧手数防线会跳过它们，直到重新校验。

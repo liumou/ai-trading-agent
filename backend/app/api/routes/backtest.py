@@ -14,10 +14,10 @@ from app.auth import require_auth
 from app.backtest.engine import BacktestEngine
 from app.backtest.monte_carlo import monte_carlo_analysis
 from app.backtest.optimizer import grid_search
+from app.backtest.risk_factory import risk_manager_for_symbol
 from app.backtest.walk_forward import walk_forward_test
 from app.db.models import NewsSentiment
 from app.db.session import get_db
-from app.risk.manager import RiskManager
 from app.strategy import get_strategy
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
@@ -91,8 +91,11 @@ async def run_backtest(req: BacktestRequest, db: AsyncSession = Depends(get_db))
         return {"error": "No OHLCV data available"}
 
     strategy = get_strategy(req.strategy, req.params)
-    risk_manager = RiskManager(
-        max_risk_per_trade=req.risk_per_trade,
+    # 按品种配置构造：使回测的 SL/TP 口径与实盘一致（此前恒用默认 1.5/2.0，
+    # 运营者新配的盈亏比在回测里看不到效果）。
+    risk_manager = risk_manager_for_symbol(
+        req.symbol,
+        risk_per_trade=req.risk_per_trade,
         max_lot=req.max_lot,
     )
 
@@ -128,6 +131,9 @@ async def run_optimization(req: OptimizeRequest):
         risk_per_trade=req.risk_per_trade,
         max_lot=req.max_lot,
         min_trades=req.min_trades,
+        risk_manager_factory=lambda: risk_manager_for_symbol(
+            req.symbol, risk_per_trade=req.risk_per_trade, max_lot=req.max_lot
+        ),
     )
     return result.to_dict()
 
@@ -169,6 +175,9 @@ async def run_walk_forward(req: WalkForwardRequest):
         initial_balance=req.initial_balance,
         risk_per_trade=req.risk_per_trade,
         max_lot=req.max_lot,
+        risk_manager_factory=lambda: risk_manager_for_symbol(
+            req.symbol, risk_per_trade=req.risk_per_trade, max_lot=req.max_lot
+        ),
     )
     return result.to_dict()
 
@@ -183,7 +192,7 @@ async def run_monte_carlo(req: MonteCarloRequest):
 
     def _run_mc():
         strategy = get_strategy(req.strategy, req.params)
-        risk_manager = RiskManager(max_risk_per_trade=req.risk_per_trade, max_lot=req.max_lot)
+        risk_manager = risk_manager_for_symbol(req.symbol, risk_per_trade=req.risk_per_trade, max_lot=req.max_lot)
         engine = BacktestEngine(strategy, risk_manager, req.initial_balance)
         bt_result = engine.run(df)
         trades = bt_result.to_dict().get("trades", [])
@@ -212,7 +221,7 @@ async def run_comparison(req: CompareRequest):
             name = config.get("name", "ema_crossover")
             params = config.get("params")
             strategy = get_strategy(name, params)
-            risk_manager = RiskManager(max_risk_per_trade=req.risk_per_trade, max_lot=req.max_lot)
+            risk_manager = risk_manager_for_symbol(req.symbol, risk_per_trade=req.risk_per_trade, max_lot=req.max_lot)
             engine = BacktestEngine(strategy, risk_manager, req.initial_balance)
             bt_result = engine.run(df)
             result_dict = bt_result.to_dict()
@@ -295,7 +304,7 @@ async def run_permutation_test_endpoint(req: PermutationTestRequest):
         return {"error": "No OHLCV data available"}
 
     strategy = get_strategy(req.strategy, req.params, symbol=req.symbol)
-    risk_manager = RiskManager()
+    risk_manager = risk_manager_for_symbol(req.symbol)
 
     # Run in thread to avoid blocking event loop (CPU-heavy)
     result = await asyncio.to_thread(
@@ -346,7 +355,7 @@ async def compute_overfitting_score_endpoint(req: OverfittingScoreRequest):
     if df.empty:
         return {"error": "No OHLCV data available"}
 
-    risk_manager = RiskManager(max_risk_per_trade=req.risk_per_trade, max_lot=req.max_lot)
+    risk_manager = risk_manager_for_symbol(req.symbol, risk_per_trade=req.risk_per_trade, max_lot=req.max_lot)
     param_grid = auto_param_grid(req.strategy)
 
     # ── Define sub-tasks ────────────────────────────────────────────────
@@ -365,6 +374,9 @@ async def compute_overfitting_score_endpoint(req: OverfittingScoreRequest):
                 initial_balance=req.initial_balance,
                 risk_per_trade=req.risk_per_trade,
                 max_lot=req.max_lot,
+                risk_manager_factory=lambda: risk_manager_for_symbol(
+                    req.symbol, risk_per_trade=req.risk_per_trade, max_lot=req.max_lot
+                ),
             )
         except Exception as e:
             logger.error(f"Walk-forward failed: {e}")

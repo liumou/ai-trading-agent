@@ -19,6 +19,7 @@ from sqlalchemy.orm import defer
 
 from app.auth import require_auth
 from app.config import resolve_canonical_symbol, settings
+from app.ml.barrier_validation import validate_ml_barriers
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -62,14 +63,27 @@ def set_ml_deps(collector, db_session):
     _db_session = db_session
 
 
+def _mean_bar_range(df: "pd.DataFrame", bars: int = 500) -> float | None:
+    """近期 mean(high - low)，与品种页护栏的波动尺度保持一致。"""
+    if df is None or df.empty:
+        return None
+    ranges = (df["high"] - df["low"]).tail(bars)
+    if ranges.empty:
+        return None
+    value = float(ranges.mean())
+    return value if value > 0 else None
+
+
 class TrainRequest(BaseModel):
     symbol: str = "GOLD"
     timeframe: str = "M15"
     from_date: str | None = None
     to_date: str | None = None
     forward_bars: int = Field(10, ge=1, le=50)
-    tp_pips: float = Field(5.0, ge=0.1, le=5000.0)
-    sl_pips: float = Field(5.0, ge=0.1, le=5000.0)
+    # 可空：未显式传参时回退到品种库存配置（ml_tp_pips / ml_sl_pips），
+    # 与定时重训（scheduler）同源，避免两条训练入口用两套障碍口径。
+    tp_pips: float | None = Field(None, ge=0.1, le=5000.0)
+    sl_pips: float | None = Field(None, ge=0.1, le=5000.0)
     test_size: float = Field(0.2, ge=0.05, le=0.5)
     use_walk_forward: bool = False
 
@@ -104,12 +118,24 @@ async def train_model(req: TrainRequest):
         from app.config import SYMBOL_PROFILES
 
         pip_value = SYMBOL_PROFILES.get(symbol, {}).get("pip_value", 1.0) or 1.0
-        tp_delta = req.tp_pips * pip_value
-        sl_delta = req.sl_pips * pip_value
+        # 未显式传参时回退到品种库存配置 —— 与定时重训（scheduler._ml_retrain_symbol）
+        # 同源，避免两条训练入口用两套障碍口径（此前手动训练恒用请求体默认 5.0）。
+        tp_pips = req.tp_pips if req.tp_pips is not None else SYMBOL_PROFILES.get(symbol, {}).get("ml_tp_pips", 5.0)
+        sl_pips = req.sl_pips if req.sl_pips is not None else SYMBOL_PROFILES.get(symbol, {}).get("ml_sl_pips", 5.0)
+        tp_delta = tp_pips * pip_value
+        sl_delta = sl_pips * pip_value
         logger.info(
-            f"Training {symbol}: tp_pips={req.tp_pips} × pip_value={pip_value} = tp_delta={tp_delta}; "
-            f"sl_pips={req.sl_pips} × pip_value={pip_value} = sl_delta={sl_delta}"
+            f"Training {symbol}: tp_pips={tp_pips} × pip_value={pip_value} = tp_delta={tp_delta}; "
+            f"sl_pips={sl_pips} × pip_value={pip_value} = sl_delta={sl_delta}"
         )
+
+        # 障碍合理性护栏：与品种页共用同一判定（app.ml.barrier_validation），
+        # 避免从 API 写入结构性坏配置（此前这里零护栏，UI 修好仍可从 API 复现）。
+        mean_bar_range = _mean_bar_range(df)
+        ok, barrier_msg = validate_ml_barriers(tp_pips, sl_pips, pip_value, mean_bar_range)
+        if not ok:
+            # 抛 HTTPException（而非返回 200 + {"error":...}）才能走 i18n 翻译器。
+            raise HTTPException(status_code=400, detail=barrier_msg)
 
         # Prepare dataset (with macro features if available)
         X, y = trainer.prepare_dataset(df, req.forward_bars, tp_delta, sl_delta, macro_df=macro_df)
@@ -168,6 +194,10 @@ async def train_model(req: TrainRequest):
 
         return {**result.to_dict(), "symbol": symbol}
 
+    except HTTPException:
+        # 护栏等显式错误必须穿透到全局异常处理器（main.py），否则会被下面的
+        # 宽 except 转成 HTTP 200 + {"error":...}，i18n 翻译器永不触发。
+        raise
     except Exception as e:
         logger.error(f"Train model error [{symbol}]: {e}")
         return {"error": f"Training failed: {e}"}

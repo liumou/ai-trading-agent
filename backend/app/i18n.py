@@ -101,6 +101,31 @@ _FSTRING_CATALOG: list[Msg] = [
     Msg(re.compile(r"^Authentication failed: (.+?)$"), "认证失败：{0}"),
     Msg(re.compile(r"^Registration failed: (.+?)$"), "注册失败：{0}"),
     Msg(re.compile(r"^Cannot jump from '(.+?)' to '(.+?)'\. Must transition sequentially\.$"), "无法从「{0}」跳转到「{1}」，必须按顺序切换。"),
+    # ML 障碍护栏（app/ml/barrier_validation.py）。该文案里同一个参数名出现多次，
+    # 无法用 _p()（会重复定义命名组），故用反向引用 \1 的正则模板。
+    Msg(
+        re.compile(
+            r"^(ml_tp_pips|ml_sl_pips) × pip_value = (.+?) is (.+?)× the symbol's "
+            r"mean bar range \((.+?)\)\. Barriers this far from typical bar volatility "
+            r"cannot produce a 3-class \(BUY/SELL/HOLD\) training set\. Keep \1 within "
+            r"roughly \[(.+?), (.+?)\]× mean bar range, i\.e\. \1 ≈ \[(.+?), (.+?)\] "
+            r"\(recommended (.+?)\) for pip_value=(.+?)\. Note: this parameter only "
+            r"shapes training labels — it does NOT set live SL/TP; use tp_atr_mult / "
+            r"sl_atr_mult for execution\.$"
+        ),
+        "「{0}」× 点值 = {1}，是该品种平均单根K线波幅（{3}）的 {2} 倍。"
+        "屏障离典型波动过远，无法生成 BUY/SELL/HOLD 三类训练标签。"
+        "请把 {0} 保持在波幅的约 [{4}, {5}] 倍以内，即 {0} ≈ [{6}, {7}]"
+        "（建议 {8}）——按当前点值 {9} 换算。"
+        "注意：该参数只影响训练标签，不控制实盘止盈止损；实盘请改用 tp_atr_mult / sl_atr_mult。",
+    ),
+    Msg(
+        re.compile(
+            r"^(ml_tp_pips|ml_sl_pips) × pip_value = (.+?) is implausible\. "
+            r"Check ml_tp_pips / ml_sl_pips and pip_value\.$"
+        ),
+        "「{0}」× 点值 = {1} 明显不合理。请检查 ml_tp_pips / ml_sl_pips 与点值。",
+    ),
 ]
 
 
