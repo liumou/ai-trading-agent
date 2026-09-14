@@ -16,6 +16,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 BACKEND_DIR="$PROJECT_DIR/backend"
 PORT="${BACKEND_PORT:-8002}"
+# 必须 export：MCP server 是独立子进程，靠 PORT/BACKEND_URL 回调 backend API
+# （sentiment / P&L / history）。只作 shell 变量传给 uvicorn 的话子进程拿不到，
+# 会回落到 tools.backend_url() 的默认端口而连不上。
+export PORT
 
 echo "========================================"
 echo "  AI Trading Agent — Backend"

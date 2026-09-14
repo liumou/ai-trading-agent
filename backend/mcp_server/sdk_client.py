@@ -39,6 +39,17 @@ def _get_mcp_server_config() -> dict:
         # 就会报 "No tick/OHLCV data"。
         # 注意：只在有值时透传 —— 传空字符串会覆盖子进程从 .env 读到的真实值。
         **({"DATABASE_URL": os.environ["DATABASE_URL"]} if os.environ.get("DATABASE_URL") else {}),
+        # MCP 工具（sentiment / P&L / history / journal / memory …）通过 HTTP 回调
+        # backend。此前只透传了桥与 DB 的地址，漏了下面两项，于是这些工具全部
+        # 打不通，AI 报告里就会出现“数据源暂不可用 / P&L 接口 502”：
+        #   1) BACKEND_URL/PORT —— 后端实际监听 8002，而 tools.backend_url()
+        #      默认 8000，连不上（connection refused，不是 502）。
+        #   2) INTERNAL_API_TOKEN —— 由 lifespan mint 进 os.environ，auth 开启时
+        #      require_auth 会拒掉无 token 的请求（实测 401）。
+        # 同样只在有值时透传，避免空串覆盖子进程从 .env 读到的真实值。
+        **({"BACKEND_URL": os.environ["BACKEND_URL"]} if os.environ.get("BACKEND_URL") else {}),
+        **({"PORT": os.environ["PORT"]} if os.environ.get("PORT") else {}),
+        **({"INTERNAL_API_TOKEN": os.environ["INTERNAL_API_TOKEN"]} if os.environ.get("INTERNAL_API_TOKEN") else {}),
     }
     return {
         MCP_SERVER_NAME: {
