@@ -129,16 +129,22 @@ _FSTRING_CATALOG: list[Msg] = [
 ]
 
 
-def pick_language(accept_language: str | None) -> str:
+def pick_language(accept_language: str | None, default: str = DEFAULT) -> str:
+    """挑选请求语言（zh/en）。
+
+    ``default`` 用于无 Accept-Language 或未匹配时的回退。错误文案翻译沿用
+    默认 "en"（历史行为不变）；LLM 输出语言经 app/ai/language.py 用
+    settings.llm_response_lang 作为默认传入。
+    """
     if not accept_language:
-        return DEFAULT
+        return default
     for part in accept_language.split(","):
         tag = part.split(";")[0].strip().lower()
         if tag.startswith("zh"):
             return "zh"
         if tag.startswith("en"):
             return "en"
-    return DEFAULT
+    return default
 
 
 def translate_detail(detail: str, lang: str = "zh") -> str:

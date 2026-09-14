@@ -17,6 +17,8 @@ import time
 
 from loguru import logger
 
+from app.ai.circuit_breaker import llm_circuit_breaker
+from app.ai.llm_errors import format_llm_error, is_connection_error
 from app.config import settings
 
 # 默认模型名（config 的 settings.model_specialist 已有默认值，这里仅作兜底）
@@ -35,6 +37,8 @@ def _make_openai_client():
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key or "not-needed",
         timeout=settings.llm_timeout,
+        # 连接类失败显式短退避重试（次数可配）
+        max_retries=settings.llm_max_retries or 2,
     )
 
 
@@ -166,6 +170,9 @@ class OpenAICompatProvider(LLMProvider):
         agent_id: str,
         temperature: float,
     ) -> str | None:
+        if not llm_circuit_breaker.allow():
+            logger.warning(f"OpenAI Compat complete skipped ({agent_id}): LLM circuit open")
+            return None
         try:
             client = _make_openai_client()
             resolved = model or settings.llm_model or _FALLBACK_MODEL
@@ -179,10 +186,16 @@ class OpenAICompatProvider(LLMProvider):
                 max_tokens=max_tokens,
                 temperature=temperature if temperature is not None else settings.llm_temperature,
             )
+            llm_circuit_breaker.record_success()
             await _record_openai_usage(resp, resolved, agent_id, int((time.time() - start) * 1000))
             return resp.choices[0].message.content if resp.choices else None
         except Exception as e:
-            logger.error(f"OpenAI Compat complete failed ({agent_id}): {e}")
+            logger.error(
+                f"OpenAI Compat complete failed ({agent_id}): "
+                f"{format_llm_error(e, settings.llm_base_url)}"
+            )
+            if is_connection_error(e):
+                llm_circuit_breaker.record_failure()
             # 显式 opt-in 回退（llm_fallback_to_claude）：默认 False 时 fail-closed，
             # 绝不静默切换模型（交易决策路径的模型必须是运维明确配置的）。
             if settings.llm_fallback_to_claude:
@@ -247,10 +260,18 @@ class OpenAICompatProvider(LLMProvider):
                 temperature=temperature if temperature is not None else settings.llm_temperature,
                 response_format={"type": "json_object"},
             )
+            llm_circuit_breaker.record_success()
             await _record_openai_usage(resp, resolved, agent_id, int((time.time() - start) * 1000))
             return resp.choices[0].message.content if resp.choices else None
         except Exception as e:
-            logger.debug(f"response_format json_object not supported, falling back ({e})")
+            if is_connection_error(e):
+                logger.error(
+                    f"OpenAI response_format call failed (connection): "
+                    f"{format_llm_error(e, settings.llm_base_url)}"
+                )
+                llm_circuit_breaker.record_failure()
+            else:
+                logger.debug(f"response_format json_object not supported, falling back ({e})")
             return None
 
 

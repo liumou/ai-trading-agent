@@ -77,6 +77,7 @@ async def analyze_quant_metrics(
     ai_client,
     engines: dict,
     recent_trades: list[dict] | None = None,
+    lang: str | None = None,
 ) -> QuantAnalysis:
     """Run AI analysis on quant metrics.
 
@@ -84,10 +85,15 @@ async def analyze_quant_metrics(
         ai_client: AIClient instance
         engines: {symbol: BotEngine}
         recent_trades: list of recent trade dicts for performance analysis
+        lang: 输出语言（None 时用默认配置）
     """
+    from app.ai.language import append_language_instruction, resolve_llm_lang
+
     context = await build_quant_context(engines)
 
-    system_prompt = """You are a quantitative analyst reviewing trading system metrics.
+    resolved_lang = resolve_llm_lang(None) if lang is None else lang
+    system_prompt = append_language_instruction(
+        """You are a quantitative analyst reviewing trading system metrics.
 Analyze the provided quant data and suggest parameter adjustments.
 
 Rules:
@@ -104,7 +110,9 @@ Respond in JSON format:
   "correlation_changes": [{"pair": "...", "status": "stable|shifting|broken"}],
   "suggestions": [{"parameter": "...", "current": ..., "suggested": ..., "reasoning": "..."}],
   "reasoning": "overall assessment in 2-3 sentences"
-}"""
+}""",
+        resolved_lang,
+    )
 
     user_prompt = f"Current quant metrics:\n{context}"
     if recent_trades:

@@ -39,7 +39,13 @@ IMPORTANT context weighting rules:
 - High ATR / volatility periods → reduce confidence unless signal is very clear"""
 
 
-def get_sentiment_prompt(symbol: str = "GOLD") -> str:
+def get_sentiment_prompt(symbol: str = "GOLD", lang: str | None = None) -> str:
+    from app.ai.language import append_language_instruction
+
+    return append_language_instruction(_sentiment_prompt_base(symbol), lang)
+
+
+def _sentiment_prompt_base(symbol: str) -> str:
     return f"""You are a financial market analyst. Analyze news headlines for the instrument **{symbol}** and return ONLY a JSON object.
 No explanation, no markdown, just raw JSON.
 
@@ -48,10 +54,10 @@ Response format:
   "sentiment": "bullish" | "bearish" | "neutral",
   "score": float between -1.0 (very bearish) and 1.0 (very bullish),
   "confidence": float between 0.0 and 1.0,
-  "key_factors": ["Factor 1 in English", "Factor 2 in English"]
+  "key_factors": ["Factor 1", "Factor 2"]
 }}
 
-IMPORTANT: key_factors MUST be in English. Summarize each factor concisely. Do NOT use emoji, icons, or unicode symbols.
+IMPORTANT: Summarize each factor concisely. Do NOT use emoji, icons, or unicode symbols.
 
 Analysis framework — infer the asset class from the symbol ({symbol}) and apply the relevant lens:
 - **Forex (EURUSD, USDJPY, GBPUSD, AUDUSD, etc.)**: central bank policy divergence, rate differentials, CPI / jobs surprises, growth divergence, political risk. Base currency up = bullish pair; quote currency up = bearish pair.
@@ -70,11 +76,15 @@ Cross-asset weighting:
 - Macro data (CPI, NFP, FOMC, ECB) overrides generic news."""
 
 
-def get_enhanced_sentiment_prompt(symbol: str = "GOLD") -> str:
-    base = get_sentiment_prompt(symbol)
-    return (
-        base
-        + """
+def get_enhanced_sentiment_prompt(symbol: str = "GOLD", lang: str | None = None) -> str:
+    from app.ai.language import append_language_instruction
+
+    base = _sentiment_prompt_base(symbol)
+    return append_language_instruction(base + _ENHANCED_CONTEXT_RULES, lang)
+
+
+# 增强 sentiment 的上下文权重规则（叠加在 _sentiment_prompt_base 之后）
+_ENHANCED_CONTEXT_RULES = """
 
 IMPORTANT context weighting rules:
 - If price action shows strong trend + news aligns → increase confidence
@@ -83,7 +93,6 @@ IMPORTANT context weighting rules:
 - When macro data conflicts with news sentiment, weigh macro data more heavily
 - High ATR / volatility periods → reduce confidence unless signal is very clear
 - **Trump/trade policy**: Tariff announcements, trade war escalation, sanctions = HIGH IMPACT. Weight these heavily — they can override technical signals. Tariff escalation = risk-off (gold up, equities down, yen up). De-escalation = risk-on."""
-    )
 
 
 OPTIMIZATION_SYSTEM_PROMPT = """You are a quantitative trading analyst specializing in gold (XAUUSD) algorithmic strategies.
@@ -105,3 +114,10 @@ Response format:
   "confidence": float,
   "reasoning": "string"
 }"""
+
+
+def get_optimization_prompt(lang: str | None = None) -> str:
+    """优化提示词：OPTIMIZATION_SYSTEM_PROMPT + 语言指令段。"""
+    from app.ai.language import append_language_instruction
+
+    return append_language_instruction(OPTIMIZATION_SYSTEM_PROMPT, lang)

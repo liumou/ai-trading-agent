@@ -59,7 +59,7 @@ Examples: "EMA crossover win rate drops to 25% in ranging regime for GOLD",
 
 Be concise and actionable. The Orchestrator reads your report to calibrate its approach.
 
-Respond in English only. Do NOT use emoji, icons, or unicode symbols. Do NOT use markdown tables — use bullet lists."""
+Do NOT use emoji, icons, or unicode symbols. Do NOT use markdown tables — use bullet lists."""
 
 TOOL_NAMES = [
     "analyze_recent_trades",
@@ -79,12 +79,13 @@ TOOL_NAMES = [
 ]
 
 
-async def reflect(symbol: str, timeframe: str = "M15") -> dict:
+async def reflect(symbol: str, timeframe: str = "M15", lang: str | None = None) -> dict:
     """Run the reflection cycle for a symbol.
 
     Args:
         symbol: Trading symbol
         timeframe: Context timeframe
+        lang: 输出语言（None 时用默认配置）
 
     Returns:
         Dict with reflection report, learnings, and strategy recommendation.
@@ -97,7 +98,7 @@ async def reflect(symbol: str, timeframe: str = "M15") -> dict:
     )
     from mcp_server.agents.prompt_registry import get_active_prompt
 
-    active_prompt = await get_active_prompt("reflector")
+    active_prompt = await get_active_prompt("reflector", lang)
     return await run_agent_loop(
         system_prompt=active_prompt,
         user_message=user_message,

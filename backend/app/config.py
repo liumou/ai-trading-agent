@@ -183,9 +183,20 @@ class Settings(BaseSettings):
     llm_model: str = ""  # global fallback model name; empty = per-agent defaults below
     llm_temperature: float = 0.2  # low by default — trading decisions favour determinism
     llm_timeout: int = 120  # per-request timeout (seconds)
+    # 连接类失败（APIConnectionError/超时/拒绝）的请求内重试次数（openai SDK retries）
+    llm_max_retries: int = 2
+    # LLM 熔断：连续连接失败达到阈值 → 冷却期内跳过 LLM 调用（避免每 15 分钟刷屏）
+    llm_circuit_threshold: int = 3
+    llm_circuit_cooldown_s: int = 300
     llm_fallback_to_claude: bool = False  # explicit opt-in; default fail-closed (no silent switch)
     llm_allow_live: bool = False  # opt-in to let non-Claude agents execute beyond shadow/paper
     llm_max_orders_per_loop: int = 1  # hard cap on executed trade tools per agent loop (max 3)
+
+    # LLM 生成内容（AI 决策分析、sentiment key_factors、优化 assessment/reasoning 等）
+    # 的自然语言输出语言。请求触发的生成优先读请求头 Accept-Language（前端 locale），
+    # 后台定时任务（scheduler/runner，无请求上下文）使用本默认值。与前端默认 locale
+    # 保持一致（frontend/i18n/config.ts defaultLocale = "zh"）。
+    llm_response_lang: str = "zh"  # zh | en
 
     # Per-agent model defaults. Resolution order (most specific wins):
     #   per-agent setting > llm_model > built-in Claude default.

@@ -473,6 +473,31 @@ class BotScheduler:
                 duration = result.get("duration_s", 0)
                 logger.info(f"AI agent [{sym}]: {decision[:200]}")
 
+                ai_error = result.get("ai_error")
+                if ai_error:
+                    # AI agent 失败（LLM 连接 / sdk / mcp 依赖等）——单独落 AI_AGENT_ERROR
+                    # 事件，不再当作一次 AI_ANALYSIS 决策，避免基础设施故障在通知中心里
+                    # 伪装成"分析结论"（2026-09-14 事件根因之一）。
+                    logger.warning(f"AI agent [{sym}] unavailable: {ai_error[:200]}")
+                    engine._last_ai_decision = {
+                        "decision": "HOLD (AI unavailable)",
+                        "strategy": "ai_unavailable",
+                        "turns": result.get("turns", 0),
+                        "tool_calls": 0,
+                        "duration_s": duration,
+                        "error": ai_error[:1000],
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    from app.db.models import BotEventType
+
+                    summary = f"[{sym}] AI agent unavailable: {ai_error[:500]}"
+                    await engine._log_event(BotEventType.AI_AGENT_ERROR, summary)
+                    await engine._push_event(
+                        "bot_event",
+                        {"type": "AI_AGENT_ERROR", "symbol": sym, "message": summary},
+                    )
+                    return
+
                 # Store last AI decision for dashboard display
                 engine._last_ai_decision = {
                     "decision": decision[:3000],
@@ -517,6 +542,16 @@ class BotScheduler:
                 )
             except Exception as e:
                 logger.warning(f"AI agent [{sym}] error: {e}")
+                # 异常路径同样落 AI_AGENT_ERROR（此前只打 warning，通知中心完全看不到
+                # 这类 AI 分析失败）。
+                try:
+                    from app.db.models import BotEventType
+
+                    await engine._log_event(
+                        BotEventType.AI_AGENT_ERROR, f"[{sym}] Agent error: {str(e)[:500]}"
+                    )
+                except Exception:
+                    pass
 
         results = await asyncio.gather(*[_run_for_symbol(sym) for sym in symbols], return_exceptions=True)
         self._log_gather_errors("run_ai_agent", results, symbols)

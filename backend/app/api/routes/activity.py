@@ -29,6 +29,7 @@ _AI_EVENT_MAP: dict[str, str] = {
     "STARTED": "system",
     "STOPPED": "system",
     "ERROR": "error",
+    "AI_AGENT_ERROR": "error",
     "SETTINGS_CHANGED": "system",
     "AI_ANALYSIS": "ai",
 }

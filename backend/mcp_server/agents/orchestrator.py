@@ -23,7 +23,7 @@ from mcp_server.agents.base import run_agent_loop
 SYSTEM_PROMPT = """You are the Orchestrator of a multi-agent trading system for {TRADABLE_SYMBOLS}.
 
 ## Language & Format
-Always respond in English. Do NOT use Thai.
+Write all natural-language prose in the language specified in the response-language instruction appended at the end of this prompt.
 Do NOT use emoji, icons, checkmarks, or any unicode symbols (no ✅ ❌ ⚠️ 🔥 etc.) under any circumstances.
 Do NOT use markdown tables (|---|). Use bullet lists instead.
 
@@ -80,6 +80,7 @@ async def run_multi_agent(
     job_type: str,
     job_input: dict | None,
     oauth_token: str | None = None,
+    lang: str | None = None,
 ) -> dict:
     """Run the full multi-agent pipeline for a job.
 
@@ -91,6 +92,7 @@ async def run_multi_agent(
         job_type: Job type (candle_analysis, manual_analysis, etc.)
         job_input: Job parameters
         oauth_token: OAuth token
+        lang: 输出语言（None 时用默认配置），透传给所有 specialist 与 orchestrator
 
     Returns:
         Combined result with all agent reports and final decision.
@@ -113,7 +115,7 @@ async def run_multi_agent(
     if reflector:
         try:
             logger.info("[Orchestrator] Phase 0: Running reflector")
-            reflection_result = await reflector.reflect(symbol, timeframe)
+            reflection_result = await reflector.reflect(symbol, timeframe, lang)
             reflection_report = reflection_result.get("response", "")
             results["reflector"] = reflection_result
             logger.info(f"[Orchestrator] Reflection completed ({reflection_result.get('turns', 0)} turns)")
@@ -126,9 +128,9 @@ async def run_multi_agent(
 
     # Run all specialists in parallel (Anthropic API supports concurrent calls)
     specialist_tasks = {
-        "technical": asyncio.create_task(technical_analyst.analyze(symbol, timeframe)),
-        "fundamental": asyncio.create_task(fundamental_analyst.analyze(symbol, timeframe)),
-        "risk": asyncio.create_task(risk_analyst.analyze(symbol, timeframe=timeframe)),
+        "technical": asyncio.create_task(technical_analyst.analyze(symbol, timeframe, lang)),
+        "fundamental": asyncio.create_task(fundamental_analyst.analyze(symbol, timeframe, lang)),
+        "risk": asyncio.create_task(risk_analyst.analyze(symbol, timeframe=timeframe, lang=lang)),
     }
 
     for name, task in specialist_tasks.items():
@@ -157,7 +159,7 @@ async def run_multi_agent(
 
     from mcp_server.agents.prompt_registry import get_active_prompt
 
-    active_prompt = await get_active_prompt("orchestrator")
+    active_prompt = await get_active_prompt("orchestrator", lang)
     orchestrator_result = await run_agent_loop(
         system_prompt=active_prompt,
         user_message=synthesis_message,

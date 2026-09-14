@@ -11,7 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.client import AIClient
-from app.ai.prompts import OPTIMIZATION_SYSTEM_PROMPT
+from app.ai.language import resolve_llm_lang
+from app.ai.prompts import get_optimization_prompt
 from app.backtest.engine import BacktestEngine
 from app.backtest.risk_factory import risk_manager_for_symbol
 from app.constants import BACKTEST_FORMULA_VERSION
@@ -108,12 +109,14 @@ Profit factor: {pf:.2f}"""
         current_params: dict,
         strategy_name: str = "ema_crossover",
         symbol: str | None = None,
+        lang: str | None = None,
     ) -> OptimizationResult | None:
         summary = await self.build_performance_summary()
         user_prompt = f"Current performance:\n{summary}\n\nCurrent params: {json.dumps(current_params)}"
 
+        resolved_lang = resolve_llm_lang(None) if lang is None else lang
         result = await self.ai.complete_json_async(
-            OPTIMIZATION_SYSTEM_PROMPT, user_prompt, max_tokens=512, agent_id="optimization"
+            get_optimization_prompt(resolved_lang), user_prompt, max_tokens=512, agent_id="optimization"
         )
         if result is None:
             logger.warning("AI optimization failed")

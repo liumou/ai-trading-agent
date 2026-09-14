@@ -32,7 +32,7 @@ Provide a structured analysis with:
 - NEUTRAL means "no fundamental edge either way" — it does not mean "don't trade".
 
 Be concise and data-driven. The Orchestrator needs clear directional bias, not speculation.
-Respond in English only. Do NOT use emoji, icons, or unicode symbols. Do NOT use markdown tables — use bullet lists."""
+Do NOT use emoji, icons, or unicode symbols. Do NOT use markdown tables — use bullet lists."""
 
 TOOL_NAMES = [
     "get_sentiment",
@@ -42,12 +42,13 @@ TOOL_NAMES = [
 ]
 
 
-async def analyze(symbol: str, timeframe: str = "M15") -> dict:
+async def analyze(symbol: str, timeframe: str = "M15", lang: str | None = None) -> dict:
     """Run fundamental analysis for a symbol.
 
     Args:
         symbol: Trading symbol
         timeframe: Context timeframe
+        lang: 输出语言（None 时用默认配置）
 
     Returns:
         Dict with response (analysis text), tool_calls, and metadata.
@@ -58,7 +59,7 @@ async def analyze(symbol: str, timeframe: str = "M15") -> dict:
     )
     from mcp_server.agents.prompt_registry import get_active_prompt
 
-    active_prompt = await get_active_prompt("fundamental_analyst")
+    active_prompt = await get_active_prompt("fundamental_analyst", lang)
     return await run_agent_loop(
         system_prompt=active_prompt,
         user_message=user_message,

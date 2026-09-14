@@ -169,6 +169,23 @@ async def lifespan(app: FastAPI):
 
     configure_logging()
 
+    # mcp 依赖版本门禁（fail-fast）：venv 若漂移到 mcp 2.x，`mcp.server.fastmcp`
+    # 导入路径失效，AI 分析会以 "Agent error: No module named 'mcp.server.fastmcp'"
+    # 的形式每根 K 线刷屏（2026-09-14 事件之一）——启动即拒绝，避免带病运行。
+    # mcp 完全未安装时不阻断（AI 不可用但交易可跑，沿用既有 warning 语义）。
+    try:
+        import importlib.metadata as _md
+
+        _mcp_ver = _md.version("mcp")
+        if int(_mcp_ver.split(".")[0]) != 1:
+            raise RuntimeError(
+                f"mcp {_mcp_ver} installed but backend requires mcp 1.x "
+                "(mcp.server.fastmcp). Pin mcp>=1.0,<2 and reinstall the venv."
+            )
+        logger.info(f"mcp version gate OK: mcp {_mcp_ver}")
+    except _md.PackageNotFoundError:
+        logger.warning("mcp not installed — AI agent will be unavailable")
+
     logger.info("Starting Trading Bot (multi-symbol)...")
 
     from app.auth import _assert_auth_consistent

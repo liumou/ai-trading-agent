@@ -17,6 +17,9 @@ OpenAI 兼容 Agent Loop — 自研工具循环，让交易决策路径支持任
 依赖 openai 库（requirements.txt: openai>=1.40,<2），函数内懒导入。
 """
 
+from app.ai.circuit_breaker import llm_circuit_breaker
+from app.ai.llm_errors import format_llm_error, is_connection_error
+
 import json
 import time
 from typing import Any
@@ -147,6 +150,18 @@ async def openai_agent_loop(
     tool_names = tool_names if tool_names is not None else allowed_tools
     model = model or settings.llm_model or settings.model_specialist
 
+    # LLM 熔断：端点持续不可达时跳过（返回 HOLD 说明，不刷 "Agent error"）
+    if not llm_circuit_breaker.allow():
+        reason = "LLM circuit open (consecutive connection failures) — analysis skipped"
+        logger.warning(f"[openai_loop] {reason}")
+        return {
+            "response": f"HOLD (AI unavailable): {reason}",
+            "tool_calls": [],
+            "turns": 0,
+            "duration_s": 0,
+            "cost_usd": None,
+        }
+
     start_time = time.time()
     text_parts: list[str] = []
     tool_calls_log: list[dict] = []
@@ -193,6 +208,8 @@ async def openai_agent_loop(
             # 每请求超时取 min(全局配置, 调用方预算)：specialist 传 60s 时
             # 不应被 settings 的 120s 覆盖（否则累计超时会 overshoot 一倍）
             timeout=min(settings.llm_timeout or timeout, timeout),
+            # 连接类失败显式短退避重试（openai SDK 内部指数退避；次数可配）
+            max_retries=settings.llm_max_retries or 2,
         )
 
         messages: list[dict] = [
@@ -218,6 +235,7 @@ async def openai_agent_loop(
                 tools=tools_param,
                 temperature=settings.llm_temperature,
             )
+            llm_circuit_breaker.record_success()
             turns += 1
 
             # usage 累计（各轮相加；保留 cached_tokens 细节 → _extract_tokens 识别）
@@ -328,9 +346,12 @@ async def openai_agent_loop(
             )
 
     except Exception as e:
-        logger.error(f"[openai_loop] agent error: {e}")
+        # 结构化失败日志：分类 + 底层 cause + 端点，替代裸 str(e)（"Connection error."）
+        logger.error(f"[openai_loop] agent error: {format_llm_error(e, settings.llm_base_url)}")
         success = False
         response = f"Agent error: {e}"
+        if is_connection_error(e):
+            llm_circuit_breaker.record_failure()
 
     duration = round(time.time() - start_time, 1)
     logger.info(f"[openai_loop] {turns} turns, {len(tool_calls_log)} tools, {duration}s")

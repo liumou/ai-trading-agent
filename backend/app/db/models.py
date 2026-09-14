@@ -89,6 +89,9 @@ class BotEventType(enum.StrEnum):
     SETTINGS_CHANGED = "SETTINGS_CHANGED"
     STRATEGY_CHANGED = "STRATEGY_CHANGED"
     AI_ANALYSIS = "AI_ANALYSIS"
+    # AI agent 运行失败（LLM 连接错误 / SDK 异常等）——与正常 AI_ANALYSIS 决策区分，
+    # 避免基础设施故障伪装成一次"分析结论"出现在通知中心。
+    AI_AGENT_ERROR = "AI_AGENT_ERROR"
 
 
 class OHLCVData(Base):

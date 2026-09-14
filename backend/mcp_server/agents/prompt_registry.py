@@ -49,7 +49,7 @@ def _load_defaults() -> None:
     single = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
 
     # Utility prompts
-    from app.ai.prompts import OPTIMIZATION_SYSTEM_PROMPT, get_sentiment_prompt
+    from app.ai.prompts import get_optimization_prompt, get_sentiment_prompt
 
     # Sentiment default uses a `{symbol}` placeholder so the /agent-prompts UI
     # displays the generic template instead of a gold-specific variant.
@@ -63,7 +63,7 @@ def _load_defaults() -> None:
             "reflector": REFL,
             "single_agent": single,
             "sentiment": get_sentiment_prompt("{symbol}"),
-            "optimization": OPTIMIZATION_SYSTEM_PROMPT,
+            "optimization": get_optimization_prompt(),
         }
     )
     _defaults_loaded = True
@@ -141,12 +141,16 @@ def _inject_symbols(prompt: str) -> str:
     return prompt.replace("{TRADABLE_SYMBOLS}", _tradable_symbols_str())
 
 
-async def get_active_prompt(agent_id: str) -> str:
+async def get_active_prompt(agent_id: str, lang: str | None = None) -> str:
     """Get custom prompt from Redis, fallback to hardcoded default.
 
     Substitutes {TRADABLE_SYMBOLS} with the current symbol list at call time,
-    so agents always see the live instrument set.
+    so agents always see the live instrument set. Appends the LLM output
+    language instruction so all agents follow the requested locale, including
+    user-customized prompts stored in Redis.
     """
+    from app.ai.language import append_language_instruction, resolve_llm_lang
+
     _load_defaults()
     default = _DEFAULTS.get(agent_id, "")
 
@@ -159,7 +163,8 @@ async def get_active_prompt(agent_id: str) -> str:
         except Exception as e:
             logger.warning(f"Prompt registry Redis read failed for {agent_id}: {e}")
 
-    return _inject_symbols(resolved)
+    resolved = _inject_symbols(resolved)
+    return append_language_instruction(resolved, resolve_llm_lang(None) if lang is None else lang)
 
 
 async def set_custom_prompt(agent_id: str, prompt: str) -> None:

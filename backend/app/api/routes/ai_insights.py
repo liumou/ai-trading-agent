@@ -96,16 +96,19 @@ async def get_ai_context():
 
 
 @router.post("/optimization/run", dependencies=[Depends(require_auth)])
-async def run_optimization():
+async def run_optimization(request: Request):
     bot = _get_engine()
     if not hasattr(bot, "_optimizer") or bot._optimizer is None:
         raise HTTPException(status_code=503, detail="Optimizer not configured")
     if bot.strategy is None:
         raise HTTPException(status_code=400, detail="Cannot optimize in AI Autonomous mode — select a strategy first")
+    from app.ai.language import resolve_llm_lang
+
     result = await bot._optimizer.optimize(
         bot.strategy.get_params(),
         strategy_name=bot.strategy.name,
         symbol=bot.symbol,
+        lang=resolve_llm_lang(request),
     )
     if result is None:
         raise HTTPException(status_code=500, detail="Optimization failed")

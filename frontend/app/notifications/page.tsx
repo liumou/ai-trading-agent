@@ -24,6 +24,7 @@ const EVENT_COLORS: Record<string, string> = {
   TRADE_BLOCKED: "text-orange-600 dark:text-orange-400",
   ORDER_FAILED: "text-red-600 dark:text-red-400",
   ERROR: "text-red-600 dark:text-red-400",
+  AI_AGENT_ERROR: "text-red-600 dark:text-red-400",
   CIRCUIT_BREAKER: "text-red-700 dark:text-red-300",
   SETTINGS_CHANGED: "text-purple-600 dark:text-purple-400",
   STRATEGY_CHANGED: "text-purple-600 dark:text-purple-400",
@@ -84,7 +85,7 @@ export default function NotificationsPage() {
   const eventTypes = [
     "", "STARTED", "STOPPED", "TRADE_OPENED", "TRADE_CLOSED",
     "SIGNAL_DETECTED", "TRADE_BLOCKED", "ORDER_FAILED", "ERROR",
-    "CIRCUIT_BREAKER", "SETTINGS_CHANGED", "STRATEGY_CHANGED",
+    "AI_AGENT_ERROR", "CIRCUIT_BREAKER", "SETTINGS_CHANGED", "STRATEGY_CHANGED",
   ];
 
   return (

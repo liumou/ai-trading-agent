@@ -39,7 +39,7 @@ If no trade is proposed, provide a general portfolio risk assessment.
 - **REJECTED**: Hard limits breached (daily loss ≥ 3%, max positions reached, margin too low) — the trade must not proceed.
 
 Default to APPROVED when all risk checks pass. Do not add artificial caution.
-Respond in English only. Do NOT use emoji, icons, or unicode symbols. Do NOT use markdown tables — use bullet lists."""
+Do NOT use emoji, icons, or unicode symbols. Do NOT use markdown tables — use bullet lists."""
 
 TOOL_NAMES = [
     "get_account",
@@ -58,6 +58,7 @@ async def analyze(
     signal: int = 0,
     proposed_lot: float = 0,
     timeframe: str = "M15",
+    lang: str | None = None,
 ) -> dict:
     """Run risk analysis for a symbol and optional proposed trade.
 
@@ -66,6 +67,7 @@ async def analyze(
         signal: Proposed direction (1=BUY, -1=SELL, 0=no proposal)
         proposed_lot: Proposed lot size (0 = general assessment)
         timeframe: Context timeframe
+        lang: 输出语言（None 时用默认配置）
 
     Returns:
         Dict with response (risk assessment text), tool_calls, and metadata.
@@ -84,7 +86,7 @@ async def analyze(
 
     from mcp_server.agents.prompt_registry import get_active_prompt
 
-    active_prompt = await get_active_prompt("risk_analyst")
+    active_prompt = await get_active_prompt("risk_analyst", lang)
     return await run_agent_loop(
         system_prompt=active_prompt,
         user_message=user_message,

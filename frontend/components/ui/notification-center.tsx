@@ -14,6 +14,13 @@ const eventIcons: Record<string, typeof Info> = {
   error: AlertCircle,
   warning: AlertCircle,
   system: Zap,
+  TRADE_OPENED: TrendingUp,
+  TRADE_CLOSED: TrendingUp,
+  SIGNAL_DETECTED: TrendingUp,
+  ORDER_FAILED: AlertCircle,
+  ERROR: AlertCircle,
+  AI_AGENT_ERROR: AlertCircle,
+  CIRCUIT_BREAKER: AlertCircle,
 };
 
 const eventColors: Record<string, string> = {
@@ -22,6 +29,13 @@ const eventColors: Record<string, string> = {
   error: "text-destructive",
   warning: "text-warning",
   system: "text-muted-foreground",
+  TRADE_OPENED: "text-success",
+  TRADE_CLOSED: "text-success",
+  SIGNAL_DETECTED: "text-primary",
+  ORDER_FAILED: "text-destructive",
+  ERROR: "text-destructive",
+  AI_AGENT_ERROR: "text-destructive",
+  CIRCUIT_BREAKER: "text-destructive",
 };
 
 function getTimeAgo(dateStr: string, t: ReturnType<typeof useTranslations>): string {
