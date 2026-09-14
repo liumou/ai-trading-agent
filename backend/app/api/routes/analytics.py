@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_auth
 from app.cache import cached
+from app.config import get_canonical_symbol
 from app.db.models import Trade
 from app.db.session import get_db
 
@@ -19,6 +20,17 @@ router = APIRouter(
     tags=["analytics"],
     dependencies=[Depends(require_auth)],
 )
+
+
+def _deal_matches_symbol(deal: dict, symbol: str | None) -> bool:
+    """MT5 成交的 symbol 是券商名（GOLD_），symbol 参数是规范名（GOLD）。
+
+    必须归一后比较，否则桥已正确返回 GOLD_ 的成交，却在这里被判为"不匹配"
+    而整体丢弃 —— 表现为"明明有成交却查不到/统计为 0"。
+    """
+    if not symbol:
+        return True
+    return get_canonical_symbol(deal.get("symbol") or "") == symbol
 
 
 @router.get("/performance")
@@ -88,7 +100,7 @@ async def _compute_performance(symbol, days, db, _manager, SimpleNamespace):
                         continue
                     if deal_time < cutoff:
                         continue
-                    if symbol and deal.get("symbol") != symbol:
+                    if not _deal_matches_symbol(deal, symbol):
                         continue
                     deal_profit = deal.get("profit")
                     if deal_profit is None:

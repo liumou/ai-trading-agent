@@ -10,6 +10,7 @@ import httpx
 from loguru import logger
 
 from app.config import settings
+from app.mt5.symbol_resolver import to_broker_alias
 
 
 def _enc(symbol: str) -> str:
@@ -93,15 +94,22 @@ class MT5BridgeConnector:
     async def get_health(self) -> dict:
         return await self._request("get", "/health")
 
+    # ─── 品种名 = 最后一英里：所有请求路径/参数在调用桥前统一转券商别名 ─────
+    # 别名来源是 DB symbol_configs.broker_alias（如 GOLD → GOLD_）。此前每
+    # 个消费方各自转换，MCP 行情工具漏做 → AI 分析拿到 "No OHLCV data" 而 DB
+    # 明明有数据。转换在此收敛为单一强制点：to_broker_alias 幂等且对未知
+    # 符号原样返回，已转换的调用方不会二次改写。
     async def get_tick(self, symbol: str) -> dict:
-        return await self._request_fast("get", f"/tick/{_enc(symbol)}")
+        return await self._request_fast("get", f"/tick/{_enc(to_broker_alias(symbol))}")
 
     async def get_ohlcv(self, symbol: str, timeframe: str = "M15", count: int = 100) -> dict:
-        return await self._request("get", f"/ohlcv/{_enc(symbol)}", params={"timeframe": timeframe, "count": count})
+        return await self._request(
+            "get", f"/ohlcv/{_enc(to_broker_alias(symbol))}", params={"timeframe": timeframe, "count": count}
+        )
 
     async def get_symbol_spec(self, symbol: str) -> dict:
         """Fetch broker-side symbol spec (digits, volume limits, contract size)."""
-        return await self._request("get", f"/symbol-spec/{_enc(symbol)}")
+        return await self._request("get", f"/symbol-spec/{_enc(to_broker_alias(symbol))}")
 
     async def list_symbols(self) -> dict:
         """Fetch all broker-visible symbols with specs (used by catalog dropdown)."""
@@ -161,7 +169,7 @@ class MT5BridgeConnector:
         client = await self._get_client()
         try:
             response = await client.get(
-                f"/ohlcv/{_enc(symbol)}/history",
+                f"/ohlcv/{_enc(to_broker_alias(symbol))}/history",
                 params={"timeframe": timeframe, "from_date": from_date, "to_date": to_date},
                 timeout=30.0,
             )
@@ -178,7 +186,9 @@ class MT5BridgeConnector:
             return {"success": False, "data": None, "error": str(e)}
 
     async def get_history(self, days: int = 1, symbol: str | None = None) -> dict:
+        # 桥端以 deal.symbol（券商名）严格比对过滤，故规范名必须先转别名，
+        # 否则成交历史会被整体过滤为空。
         params: dict = {"days": days}
         if symbol:
-            params["symbol"] = symbol
+            params["symbol"] = to_broker_alias(symbol)
         return await self._request("get", "/history", params=params)

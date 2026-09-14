@@ -78,6 +78,42 @@ async def load_profiles_from_db(db: AsyncSession) -> dict[str, dict]:
     return profiles
 
 
+async def load_profiles_into_memory() -> int:
+    """把 DB symbol profiles 加载到进程内存（SYMBOL_PROFILES）并用日志宣告结果。
+
+    返回生效的 profile 条目数；DB 不可用时返回 0 并保持静态默认值。
+
+    必须在**每个**会调用 MT5 Bridge 的进程中执行 —— 包括 backend 主进程、
+    MCP server stdio 子进程和 agent runner。别名解析 to_broker_alias() 依赖
+    这份内存映射：进程没加载过，别名就全部退化成"原样返回"，行情请求会以
+    规范名打到桥上，得到 "No tick/OHLCV data"（而 DB 里其实有数据）。
+    """
+    from app.config import apply_db_symbol_profiles
+    from app.db.session import async_session
+
+    try:
+        async with async_session() as session:
+            db_profiles = await load_profiles_from_db(session)
+
+        if not db_profiles:
+            # DB 可达但表里没有启用品种 —— 这是配置问题，不是基础设施抖动，
+            # 必须与下面的 except 区分开，否则"DB 没配置"和"DB 挂了"在日志里
+            # 长得一样，排查时会误判为瞬时故障。
+            logger.error(
+                "Symbol profiles: DB reachable but no enabled entries "
+                "(keeping static defaults; check symbol_configs table)"
+            )
+            return 0
+
+        apply_db_symbol_profiles(db_profiles)
+        enabled = [s for s, p in db_profiles.items() if p.get("is_enabled") and "canonical" not in p]
+        logger.info(f"Symbol profiles loaded from DB: {len(db_profiles)} entries, enabled: {enabled}")
+        return len(db_profiles)
+    except Exception as e:
+        logger.warning(f"Symbol profile DB load failed (using static defaults): {e}")
+        return 0
+
+
 async def publish_reload(redis_client: redis.Redis, symbol: str, action: str) -> None:
     """Publish reload event so BotManager and scheduler refresh engines."""
     try:

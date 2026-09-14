@@ -265,16 +265,12 @@ async def lifespan(app: FastAPI):
     # Create a persistent DB session for bot engines
     db_session = async_session()
 
+    # 复用与其它进程（MCP server stdio / agent runner）同一份加载逻辑，
+    # 避免"主进程一套、子进程另一套"漂移出不一致的别名映射。
     try:
-        from app.config import apply_db_symbol_profiles
-        from app.services import symbol_config_service as symbol_svc
+        from app.services.symbol_config_service import load_profiles_into_memory
 
-        async with async_session() as _cfg_session:
-            db_profiles = await symbol_svc.load_profiles_from_db(_cfg_session)
-        if db_profiles:
-            apply_db_symbol_profiles(db_profiles)
-            enabled = [s for s, p in db_profiles.items() if p.get("is_enabled") and "canonical" not in p]
-            logger.info(f"Symbol profiles loaded from DB: {len(db_profiles)} entries, enabled: {enabled}")
+        await load_profiles_into_memory()
     except Exception as e:
         logger.warning(f"Symbol profile DB load failed (using static defaults): {e}")
 

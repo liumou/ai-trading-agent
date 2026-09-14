@@ -34,6 +34,11 @@ def _get_mcp_server_config() -> dict:
     env = {
         "REDIS_URL": os.environ.get("REDIS_URL", "redis://localhost:6379"),
         "MT5_BRIDGE_URL": os.environ.get("MT5_BRIDGE_URL", "http://localhost:8001"),
+        # MCP server 是独立进程，需要 DATABASE_URL 才能加载 symbol_configs 里
+        # 的券商别名（GOLD → GOLD_）。缺了它行情工具会以规范名打桥，AI 分析
+        # 就会报 "No tick/OHLCV data"。
+        # 注意：只在有值时透传 —— 传空字符串会覆盖子进程从 .env 读到的真实值。
+        **({"DATABASE_URL": os.environ["DATABASE_URL"]} if os.environ.get("DATABASE_URL") else {}),
     }
     return {
         MCP_SERVER_NAME: {

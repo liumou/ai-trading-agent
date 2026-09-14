@@ -198,6 +198,26 @@ async def main() -> None:
         _log("error", f"Failed to connect to Redis: {e}")
         sys.exit(1)
 
+    # 加载 DB 品种别名（GOLD → GOLD_ 等）—— runner 是独立进程，不会继承
+    # backend 主进程的 SYMBOL_PROFILES。缺了它，MCP 行情工具会以规范名打到
+    # MT5 桥上，AI 分析就会报 "No tick/OHLCV data"（而 DB 里其实有数据）。
+    # 注：agent 镜像刻意不打包 app/db、app/services，也不注入 DATABASE_URL
+    # （避免 runner 直连主库），故此处的 import 在该镜像里会 ImportError。
+    # 别名为空不影响 runner 自身可用性，仅告警；真正的闭合方案是由 backend
+    # 通过白名单 env 注入别名映射（见 manager._llm_runner_env）。
+    try:
+        from app.services.symbol_config_service import load_profiles_into_memory
+
+        _loaded = await load_profiles_into_memory()
+        if _loaded:
+            _log("info", "Symbol profiles loaded", {"entries": _loaded})
+        else:
+            _log("warning", "Symbol profiles unavailable: no DB access in this image (aliases disabled)")
+    except ImportError:
+        _log("warning", "Symbol alias loading skipped: DB layer not available in agent image")
+    except Exception as e:
+        _log("warning", f"Symbol profile load failed (using static defaults): {e}")
+
     # Initialize MCP tools once at startup (broker, session, etc.)
     if _AGENT_AVAILABLE:
         init_mcp_tools(redis_client)

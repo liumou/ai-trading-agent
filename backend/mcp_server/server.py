@@ -348,11 +348,35 @@ def create_server() -> FastMCP:
 
 
 if __name__ == "__main__":
+    import asyncio
     import os
 
     import redis.asyncio as redis_async
 
     from mcp_server.tools import init_mcp_tools
+
+    async def _load_symbol_profiles() -> None:
+        """MCP server 是独立进程，必须自行加载券商别名映射。
+
+        否则 to_broker_alias() 全部退化成原样返回，行情工具会以规范名（GOLD）
+        打到桥上而券商符号是 GOLD_，AI 分析就会报 "No tick/OHLCV data"。
+        """
+        from loguru import logger
+
+        try:
+            from app.services.symbol_config_service import load_profiles_into_memory
+
+            count = await load_profiles_into_memory()
+            logger.info(f"MCP server symbol profiles loaded: {count} entries")
+        except Exception as e:
+            logger.warning(f"MCP server symbol profile load failed (using static defaults): {e}")
+
+    try:
+        asyncio.run(_load_symbol_profiles())
+    except Exception as e:  # 加载失败不应阻止 stdio server 启动
+        from loguru import logger
+
+        logger.warning(f"Symbol profile preload skipped: {e}")
 
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
     redis_client = redis_async.from_url(redis_url)

@@ -10,8 +10,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_auth
 from app.cache import cached
+from app.config import get_canonical_symbol
 from app.db.models import Trade
 from app.db.session import get_db
+
+
+def _deal_matches_symbol(deal: dict, symbol: str | None) -> bool:
+    """MT5 成交的 symbol 是券商名（GOLD_），symbol 参数是规范名（GOLD）。
+
+    必须归一后比较，否则桥已经正确返回了 GOLD_ 的成交，却在这里被判为
+    "不匹配"而整体丢弃 —— 表现为"明明有成交却查不到/盈亏为 0"。
+    """
+    if not symbol:
+        return True
+    return get_canonical_symbol(deal.get("symbol") or "") == symbol
+
 
 router = APIRouter(
     prefix="/api/history",
@@ -139,7 +152,7 @@ async def get_trades(
                     deal_type = deal.get("type", "").upper()
                     if trade_type and deal_type != trade_type.upper():
                         continue
-                    if symbol and deal.get("symbol") != symbol:
+                    if not _deal_matches_symbol(deal, symbol):
                         continue
                     rows.append(
                         {
@@ -213,7 +226,7 @@ async def _fetch_daily_pnl(symbol, db, _manager):
                     except Exception:
                         continue
                     if deal_time >= today and deal.get("profit") is not None:
-                        if symbol and deal.get("symbol") != symbol:
+                        if not _deal_matches_symbol(deal, symbol):
                             continue
                         mt5_deals.append(deal)
         except Exception:
@@ -294,7 +307,7 @@ async def get_performance(
                         continue
                     if deal_time < cutoff:
                         continue
-                    if symbol and deal.get("symbol") != symbol:
+                    if not _deal_matches_symbol(deal, symbol):
                         continue
                     deal_profit = deal.get("profit")
                     if deal_profit is None:
