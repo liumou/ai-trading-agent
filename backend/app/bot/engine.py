@@ -1262,6 +1262,24 @@ class BotEngine:
             profit_str = f"+${profit:.2f}" if profit >= 0 else f"-${abs(profit):.2f}"
             logger.info(f"Position closed: ticket={ticket} price={close_price} profit={profit_str}")
 
+            # 日亏熔断：把已平仓的真实盈亏写入 Redis circuit:daily_pnl。
+            # 此前 record_trade_result 无任何生产调用点，daily_pnl 恒 0，
+            # 日亏 3% 熔断永不触发（broker 层 validate_order 也读不到真实值）。
+            try:
+                await self.circuit_breaker.record_trade_result(profit)
+            except Exception as cb_err:
+                logger.error(f"Circuit breaker record failed for {ticket}: {cb_err!r}")
+
+            # 连亏熔断：策略引擎平仓也按真实盈亏记录胜负，保证 validate_order
+            # 的 CONSECUTIVE_LOSS_HALT 对两条路径（策略/AI）都生效。
+            try:
+                from mcp_server.guardrails import TradingGuardrails
+
+                gr = TradingGuardrails(self.redis)
+                await gr.record_trade_closed(is_win=profit > 0)
+            except Exception as gr_err:
+                logger.error(f"Guardrail trade-closed record failed for {ticket}: {gr_err!r}")
+
             # Update trade in DB — isolated session so a failure here can never
             # poison the engine's shared session (asyncpg: a failed statement
             # aborts the transaction, breaking every later shared-session op).

@@ -152,6 +152,9 @@ class TradingGuardrails:
         daily_pnl: float,
         spread: float,
         avg_spread: float,
+        entry_price: float | None = None,
+        sl: float | None = None,
+        tp: float | None = None,
     ) -> GuardrailResult:
         """Validate a trade order against all guardrails.
 
@@ -164,6 +167,9 @@ class TradingGuardrails:
             daily_pnl: Today's realized P&L
             spread: Current spread in pips
             avg_spread: Average spread for this symbol
+            entry_price: Reference price for SL/TP validation (None skips)
+            sl: Stop-loss price (None skips validation)
+            tp: Take-profit price (None skips validation)
         """
         # 1. Max lot per trade
         if lot > MAX_LOT_PER_TRADE:
@@ -186,6 +192,29 @@ class TradingGuardrails:
                 False,
                 f"Total positions {len(current_positions)} (max {MAX_CONCURRENT_TOTAL})",
             )
+
+        # 3b. SL/TP sanity validation — AI can place garbage orders (no SL,
+        #     wrong-direction SL/TP). These must be rejected before reaching
+        #     the broker, otherwise a real account runs unprotected.
+        if entry_price is not None and entry_price > 0:
+            if order_type == "BUY":
+                if sl is not None and sl <= 0:
+                    return GuardrailResult(False, f"Invalid SL {sl} for BUY — must be > 0")
+                if tp is not None and tp <= 0:
+                    return GuardrailResult(False, f"Invalid TP {tp} for BUY — must be > 0")
+                if sl is not None and sl >= entry_price:
+                    return GuardrailResult(False, f"BUY SL {sl} >= entry {entry_price} — would lose immediately")
+                if tp is not None and tp <= entry_price:
+                    return GuardrailResult(False, f"BUY TP {tp} <= entry {entry_price} — invalid")
+            elif order_type == "SELL":
+                if sl is not None and sl <= 0:
+                    return GuardrailResult(False, f"Invalid SL {sl} for SELL — must be > 0")
+                if tp is not None and tp <= 0:
+                    return GuardrailResult(False, f"Invalid TP {tp} for SELL — must be > 0")
+                if sl is not None and sl <= entry_price:
+                    return GuardrailResult(False, f"SELL SL {sl} <= entry {entry_price} — would lose immediately")
+                if tp is not None and tp >= entry_price:
+                    return GuardrailResult(False, f"SELL TP {tp} >= entry {entry_price} — invalid")
 
         # 4. Daily loss limit
         if account_balance > 0 and daily_pnl < 0:
@@ -245,11 +274,17 @@ class TradingGuardrails:
     # ─── State Tracking ─────────────────────────────────────────────────────
 
     async def record_trade(self, is_win: bool) -> None:
-        """Record a trade result for consecutive loss tracking."""
-        key = _daily_key("trade_results")
-        await self.redis.rpush(key, "1" if is_win else "0")
-        await self.redis.expire(key, 86400 * 2)  # 2 days TTL
+        """Record a trade for frequency/interval tracking.
 
+        NOTE: ``is_win`` is kept for backward compatibility but the win/loss
+        outcome is recorded separately via :meth:`record_trade_closed`.
+        Calling this with ``is_win=True`` at open time no longer pollutes the
+        consecutive-loss counter with fake wins.
+        """
+        await self.record_order_opened()
+
+    async def record_order_opened(self) -> None:
+        """Record an order open for frequency + interval limits (not P&L outcome)."""
         # Update hourly counter
         hour_key = _hourly_key("trades")
         await self.redis.incr(hour_key)
@@ -257,6 +292,17 @@ class TradingGuardrails:
 
         # Update last trade time
         await self.redis.set(f"{_KEY_PREFIX}:last_trade_time", str(time.time()))
+
+    async def record_trade_closed(self, is_win: bool) -> None:
+        """Record a closed trade outcome for consecutive loss tracking.
+
+        Must be called from the close path with the REAL P&L outcome.
+        Previously this was only ever called with ``is_win=True`` at open time,
+        so CONSECUTIVE_LOSS_HALT could never trigger.
+        """
+        key = _daily_key("trade_results")
+        await self.redis.rpush(key, "1" if is_win else "0")
+        await self.redis.expire(key, 86400 * 2)  # 2 days TTL
 
     async def record_agent_call(self) -> None:
         """Increment daily agent call counter."""

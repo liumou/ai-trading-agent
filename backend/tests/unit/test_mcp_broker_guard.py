@@ -23,6 +23,8 @@ def _profiles():
 
 def _install(monkeypatch, profile: dict, rollout_mode: str = "live"):
     """把 mock 的 connector/guardrails 注入 broker 模块的全局变量。"""
+    from app.config import settings
+
     SYMBOL_PROFILES.clear()
     SYMBOL_PROFILES["GOLD"] = profile
 
@@ -40,13 +42,21 @@ def _install(monkeypatch, profile: dict, rollout_mode: str = "live"):
 
     guardrails = MagicMock()
     guardrails.validate_order = AsyncMock(return_value=SimpleNamespace(allowed=True, reason="ok"))
-    guardrails.get_rollout_mode.return_value = rollout_mode
-    guardrails.record_trade = AsyncMock()
+    guardrails.check_rollout_mode_async = AsyncMock(return_value=SimpleNamespace(allowed=True, reason=""))
+    guardrails.get_persisted_rollout_mode = AsyncMock(return_value=rollout_mode)
+    guardrails.record_order_opened = AsyncMock()
+    guardrails.record_trade_closed = AsyncMock()
 
     monkeypatch.setattr(broker_mod, "_connector", connector)
     monkeypatch.setattr(broker_mod, "_guardrails", guardrails)
     monkeypatch.setattr(broker_mod, "_notifier", None)
     monkeypatch.setattr(broker_mod, "_redis", None)  # daily pnl 回退到 account.profit
+
+    # 测试默认 live 模式需要 LLM_ALLOW_LIVE=true 才能通过 broker 层授权检查
+    prev_allow = settings.llm_allow_live
+    settings.llm_allow_live = True
+    monkeypatch.setattr(settings, "llm_allow_live", True)
+
     return connector, guardrails
 
 

@@ -153,9 +153,9 @@ class TestValidateOrderDailyLoss:
 class TestValidateOrderConsecutiveLosses:
     @pytest.mark.asyncio
     async def test_halt_on_consecutive_losses(self, guardrails):
-        # Record consecutive losses
+        # Record consecutive losses（平仓路径 record_trade_closed）
         for _ in range(CONSECUTIVE_LOSS_HALT):
-            await guardrails.record_trade(is_win=False)
+            await guardrails.record_trade_closed(is_win=False)
 
         result = await guardrails.validate_order(
             symbol="GOLD",
@@ -173,8 +173,8 @@ class TestValidateOrderConsecutiveLosses:
     @pytest.mark.asyncio
     async def test_win_resets_streak(self, guardrails, redis_client):
         for _ in range(3):
-            await guardrails.record_trade(is_win=False)
-        await guardrails.record_trade(is_win=True)
+            await guardrails.record_trade_closed(is_win=False)
+        await guardrails.record_trade_closed(is_win=True)
 
         # Verify consecutive losses reset
         losses = await guardrails._get_consecutive_losses()
@@ -272,14 +272,20 @@ class TestValidateAgentCall:
 class TestRecordAndState:
     @pytest.mark.asyncio
     async def test_record_trade_updates_counters(self, guardrails):
-        await guardrails.record_trade(is_win=True)
-        await guardrails.record_trade(is_win=False)
+        # record_order_opened 只更新频率/间隔计数，不影响连亏
+        await guardrails.record_order_opened()
+        await guardrails.record_order_opened()
 
         losses = await guardrails._get_consecutive_losses()
-        assert losses == 1  # last one was a loss
+        assert losses == 0  # 开仓不记胜负
 
         trades = await guardrails._get_trades_this_hour()
         assert trades == 2
+
+        # record_trade_closed 记录真实胜负，驱动连亏
+        await guardrails.record_trade_closed(is_win=False)
+        losses = await guardrails._get_consecutive_losses()
+        assert losses == 1
 
     @pytest.mark.asyncio
     async def test_record_agent_call(self, guardrails):
@@ -300,20 +306,20 @@ class TestRecordAndState:
 
     @pytest.mark.asyncio
     async def test_consecutive_losses_counting(self, guardrails):
-        await guardrails.record_trade(is_win=True)
-        await guardrails.record_trade(is_win=False)
-        await guardrails.record_trade(is_win=False)
-        await guardrails.record_trade(is_win=False)
+        await guardrails.record_trade_closed(is_win=True)
+        await guardrails.record_trade_closed(is_win=False)
+        await guardrails.record_trade_closed(is_win=False)
+        await guardrails.record_trade_closed(is_win=False)
 
         losses = await guardrails._get_consecutive_losses()
         assert losses == 3
 
     @pytest.mark.asyncio
     async def test_win_breaks_consecutive_losses(self, guardrails):
-        await guardrails.record_trade(is_win=False)
-        await guardrails.record_trade(is_win=False)
-        await guardrails.record_trade(is_win=True)
-        await guardrails.record_trade(is_win=False)
+        await guardrails.record_trade_closed(is_win=False)
+        await guardrails.record_trade_closed(is_win=False)
+        await guardrails.record_trade_closed(is_win=True)
+        await guardrails.record_trade_closed(is_win=False)
 
         losses = await guardrails._get_consecutive_losses()
         assert losses == 1
@@ -355,3 +361,92 @@ class TestRiskTools:
         result = calculate_sl_tp("GOLD", entry_price=2400.0, signal=-1, atr=15.0)
         assert result["sl"] > 2400.0  # SL above entry for SELL
         assert result["tp"] < 2400.0  # TP below entry for SELL
+
+
+class TestValidateOrderSLTP:
+    """SL/TP 方向与有效性校验（AI 下单前必须通过）。"""
+
+    def _base_call(self, guardrails, **kwargs):
+        params = dict(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=0,
+            spread=1.5,
+            avg_spread=1.5,
+            entry_price=2000.0,
+            sl=1900.0,
+            tp=2100.0,
+        )
+        params.update(kwargs)
+        return guardrails.validate_order(**params)
+
+    @pytest.mark.asyncio
+    async def test_buy_valid_sl_tp_passes(self, guardrails):
+        result = await self._base_call(guardrails)
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_buy_sl_above_entry_rejected(self, guardrails):
+        """BUY 单 SL >= 入场价 → 立即亏损，必须拒绝。"""
+        result = await self._base_call(guardrails, sl=2100.0, tp=2200.0)
+        assert result.allowed is False
+        assert "SL" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_buy_tp_below_entry_rejected(self, guardrails):
+        """BUY 单 TP <= 入场价 → 无效。"""
+        result = await self._base_call(guardrails, sl=1900.0, tp=1990.0)
+        assert result.allowed is False
+        assert "TP" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_buy_zero_sl_rejected(self, guardrails):
+        """BUY 单 sl=0（无止损）→ 必须拒绝。"""
+        result = await self._base_call(guardrails, sl=0, tp=2100.0)
+        assert result.allowed is False
+
+    @pytest.mark.asyncio
+    async def test_sell_valid_sl_tp_passes(self, guardrails):
+        result = await self._base_call(
+            guardrails,
+            order_type="SELL",
+            entry_price=2000.0,
+            sl=2100.0,
+            tp=1900.0,
+        )
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_sell_sl_below_entry_rejected(self, guardrails):
+        """SELL 单 SL <= 入场价 → 立即亏损，必须拒绝。"""
+        result = await self._base_call(
+            guardrails,
+            order_type="SELL",
+            entry_price=2000.0,
+            sl=1900.0,
+            tp=1800.0,
+        )
+        assert result.allowed is False
+        assert "SL" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_sell_tp_above_entry_rejected(self, guardrails):
+        """SELL 单 TP >= 入场价 → 无效。"""
+        result = await self._base_call(
+            guardrails,
+            order_type="SELL",
+            entry_price=2000.0,
+            sl=2100.0,
+            tp=2050.0,
+        )
+        assert result.allowed is False
+        assert "TP" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_no_entry_price_skips_sl_tp_check(self, guardrails):
+        """entry_price 未提供时跳过 SL/TP 校验（向后兼容）。"""
+        result = await self._base_call(guardrails, entry_price=None)
+        assert result.allowed is True

@@ -4,6 +4,8 @@ Every order execution MUST pass through TradingGuardrails.validate_order()
 before reaching the MT5 Bridge. The agent cannot bypass this.
 """
 
+import re
+
 import redis.asyncio as redis_lib
 from loguru import logger
 
@@ -102,7 +104,24 @@ async def place_order(
     tick = tick_res["data"]
 
     spread = tick.get("ask", 0) - tick.get("bid", 0)
-    avg_spread = spread  # Simplified — production would track rolling average
+    # rolling avg spread：从 Redis 读最近 N 次点差求均值，替代 avg_spread = spread
+    # 的恒等式 —— 否则 spread 熔断（spread > avg*3）永远不可能触发，高波动/
+    # 流动性枯竭时段 AI 会照常追单。
+    avg_spread = spread
+    if _redis is not None:
+        try:
+            SPREAD_KEY = "guardrails:spread_history"
+            SPREAD_WINDOW = 20
+            await _redis.rpush(SPREAD_KEY, str(spread))
+            await _redis.ltrim(SPREAD_KEY, -SPREAD_WINDOW, -1)
+            await _redis.expire(SPREAD_KEY, 86400)
+            recent = await _redis.lrange(SPREAD_KEY, 0, -1)
+            if recent:
+                vals = [float(v) for v in recent if v]
+                avg_spread = sum(vals) / len(vals) if vals else spread
+        except Exception as e:
+            logger.debug(f"Rolling spread read failed, using current: {e}")
+            avg_spread = spread
 
     # ─── GUARDRAIL CHECK (non-bypassable) ────────────────────────────────
     # daily_pnl must come from CircuitBreaker (closed-trade realized P&L).
@@ -115,6 +134,10 @@ async def place_order(
     else:
         realized_daily_pnl = account.get("profit", 0)
 
+    # 参考价取 tick 中间价（当前 ask/bid 的平均），用于 SL/TP 方向校验。
+    # 避免直接取 ask 或 bid 导致 BUY 单被误判 SL>=entry（ask 高于 bid）。
+    entry_ref = (tick.get("ask", 0) + tick.get("bid", 0)) / 2 if tick.get("ask") and tick.get("bid") else 0
+
     result = await _guardrails.validate_order(
         symbol=symbol,
         lot=lot,
@@ -124,6 +147,9 @@ async def place_order(
         daily_pnl=realized_daily_pnl,
         spread=spread,
         avg_spread=avg_spread,
+        entry_price=entry_ref,
+        sl=sl,
+        tp=tp,
     )
 
     if not result.allowed:
@@ -168,10 +194,12 @@ async def place_order(
         lot = guarded_lot
 
     # ─── ROLLOUT MODE CHECK (Phase F) ────────────────────────────────────
+    # 统一走 Redis 持久化模式（get_persisted_rollout_mode），与 openai_loop
+    # 的 _rollout_allows_trade 口径一致 —— 否则前端把模式降级为 paper 后，
+    # 本工具层仍按进程 env 的 micro/live 执行真实下单（fail-open）。
     from mcp_server.guardrails import MICRO_MAX_LOT
 
-    _guardrails.check_rollout_mode(lot)
-    rollout_mode = _guardrails.get_rollout_mode()
+    rollout_mode = await _guardrails.get_persisted_rollout_mode()
 
     if rollout_mode == "shadow":
         # Shadow: log everything but don't execute
@@ -209,10 +237,40 @@ async def place_order(
         }
 
     if rollout_mode == "micro":
-        # Micro: cap lot at MICRO_MAX_LOT
+        # Micro: cap lot at MICRO_MAX_LOT（Redis 校验已允许，此处统一封顶）
         lot = min(lot, MICRO_MAX_LOT)
+        logger.info(f"place_order [{symbol}]: micro cap applied — lot → {lot}")
+
+    # ─── PROVIDER-AGNOSTIC LIVE AUTHORIZATION ────────────────────────────
+    # 护栏下沉到 broker 层（原仅在 openai_loop 通道存在）：micro/live 真实
+    # 资金执行必须显式 LLM_ALLOW_LIVE=true，否则任何 provider（含 Claude
+    # SDK 通道）都不得越过 shadow/paper。保证 UI 降级与撤权即时生效。
+    from app.config import settings
+
+    if rollout_mode in ("micro", "live") and not settings.llm_allow_live:
+        logger.warning(
+            f"place_order [{symbol}] rejected: rollout={rollout_mode} requires LLM_ALLOW_LIVE=true (provider-agnostic)"
+        )
+        return {
+            "executed": False,
+            "rejected": True,
+            "reason": (
+                f"rollout={rollout_mode}: 需要显式设置 LLM_ALLOW_LIVE=true 才放开真实下单"
+            ),
+        }
 
     # ─── EXECUTE ORDER (live or micro) ───────────────────────────────────
+    # comment 清洗：MT5 ORDER_COMMENT 硬上限 27 字符，且不接受 `[`/`]` 等
+    # 特殊字符（日志曾见 'Invalid "comment" argument' 真实拒单）。
+    # 清洗规则：ASCII 字母数字/下划线/短横线 + 空格，其余剔除；再按
+    # 剩余预算截断（前缀本身占位，留给 AI 文本的只有 27 - len(prefix)）。
+    prefix = "AI"
+    safe_comment = re.sub(r"[^A-Za-z0-9 _-]", "", comment or "")
+    safe_comment = safe_comment.strip()
+    max_comment_len = 27 - len(prefix)
+    safe_comment = safe_comment[:max_comment_len]
+    full_comment = f"{prefix} {safe_comment}".strip() if safe_comment else prefix
+
     logger.info(f"place_order [{broker_symbol}] {order_type} lot={lot} sl={sl} tp={tp} mode={rollout_mode}")
     order_result = await _connector.place_order(
         symbol=broker_symbol,
@@ -220,12 +278,14 @@ async def place_order(
         lot=lot,
         sl=sl,
         tp=tp,
-        comment=f"[Agent:{rollout_mode}] {comment}",
+        comment=full_comment,
     )
     logger.info(f"place_order result [{symbol}]: {order_result}")
 
     if order_result.get("success"):
-        await _guardrails.record_trade(is_win=True)  # Updated on close
+        # 开仓只记频率/间隔，不记胜负 —— 胜负由平仓路径按实际盈亏
+        # record_trade_closed(is_win) 记录，否则连亏熔断永不触发。
+        await _guardrails.record_order_opened()
         data = order_result["data"]
         # Send Telegram notification
         if _notifier:
@@ -276,7 +336,7 @@ async def modify_position(ticket: int, sl: float | None = None, tp: float | None
       dragging SL to zero.
     """
     _require_init()
-    rollout_mode = _guardrails.get_rollout_mode()
+    rollout_mode = await _guardrails.get_persisted_rollout_mode()
     if rollout_mode in ("shadow", "paper"):
         logger.info(f"[{rollout_mode}] modify_position intercepted: ticket={ticket} sl={sl} tp={tp}")
         return {"modified": False, "rollout": rollout_mode, "ticket": ticket}
@@ -317,7 +377,7 @@ async def close_position(ticket: int) -> dict:
     AI agent cannot liquidate a real account while we're still dry-running.
     """
     _require_init()
-    rollout_mode = _guardrails.get_rollout_mode()
+    rollout_mode = await _guardrails.get_persisted_rollout_mode()
 
     # Get position info before closing for notification
     positions_res = await _connector.get_positions()
@@ -334,6 +394,10 @@ async def close_position(ticket: int) -> dict:
 
     result = await _connector.close_position(ticket)
     if result.get("success"):
+        # 平仓按实际盈亏记录胜负，驱动连亏熔断（CONSECUTIVE_LOSS_HALT）
+        if pos_info is not None:
+            close_profit = pos_info.get("profit", 0) or 0
+            await _guardrails.record_trade_closed(is_win=close_profit > 0)
         # Send Telegram notification
         if _notifier and pos_info:
             try:

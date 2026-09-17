@@ -38,9 +38,27 @@
 - 待办：重启后端以加载 B 改动（并确认 V2 chat worker 生效），随后 /health 验证。
 
 ### 待办（部署收尾）
-- [ ] 重启后端（nohup 脱离会话）→ /health OK。
+- [x] 重启命令已就绪，等用户执行（未自动重启：实时交易进程、无 supervisor，需用户拍板）。
+- [ ] 重启后端 → /health OK。
 - [ ] 冒烟 `mode="experts"` run，确认增量事件与专家报告。
 - [ ] 若重启失败，回滚：直接 `./start-backend.sh` 手动拉起并核对日志。
+
+### 重启命令（用户手动执行）
+```bash
+# 1. 优雅停止当前后端（PID 94706，uvicorn :8002）
+kill 94706
+while lsof -iTCP:8002 -sTCP:LISTEN -t; do sleep 1; done
+
+# 2. 从项目根目录、脱离当前会话拉起（start-backend.sh 会自动 alembic upgrade head）
+cd /Users/liumou/PycharmProjects/ai-trading-agent
+nohup ./start-backend.sh > backend/logs/restart.log 2>&1 &
+
+# 3. 验证
+sleep 15
+curl -s http://localhost:8002/health
+tail -n 40 backend/logs/restart.log
+```
+重启后即加载 B 改动（orchestrator 失败语义、预算配置）并确认 V2 chat worker 生效。
 
 ## Session: 2026-09-18（分析报告异常专项诊断）
 
