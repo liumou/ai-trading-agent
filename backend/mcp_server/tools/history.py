@@ -24,7 +24,11 @@ async def get_trade_history(days: int = 7, symbol: str | None = None, limit: int
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{_backend_url()}/api/history/trades", params=params, headers=auth_headers())
             if resp.status_code == 200:
-                return {"trades": resp.json()}
+                # 后端返回 {"trades": [...], "total": n}，直接取 trades 字段，
+                # 否则会把整个包装对象再嵌进 {"trades": ...}，AI 读到畸形嵌套。
+                body = resp.json()
+                trades = body.get("trades", []) if isinstance(body, dict) else body
+                return {"trades": trades, "total": len(trades)}
             return {"error": f"Backend returned {resp.status_code}"}
     except Exception as e:
         return {"error": f"Failed to fetch trade history: {e}"}

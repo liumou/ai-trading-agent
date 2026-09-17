@@ -39,6 +39,11 @@ async def analyze_recent_trades(days: int = 7, symbol: str | None = None) -> dic
             )
 
         trades = trades_resp.json() if trades_resp.status_code == 200 else []
+        # 后端 /api/history/trades 返回 {"trades": [...], "total": n}（包装对象）。
+        # 历史上曾直接把整个 body 当列表用，导致遍历 dict key（字符串）后调用
+        # .get() 抛 'str' object has no attribute 'get'。这里兼容两种形状。
+        if isinstance(trades, dict):
+            trades = trades.get("trades", [])
         performance = perf_resp.json() if perf_resp.status_code == 200 else {}
 
         if not trades:

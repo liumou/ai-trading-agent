@@ -203,3 +203,107 @@ def test_daily_pnl_tool_targets_backend(monkeypatch):
     assert result["daily_pnl"]["daily_pnl"] == 0.0
     assert captured["url"] == "http://localhost:8002/api/history/daily-pnl"
     assert captured["headers"] == {"Authorization": "Bearer jwt-pnl"}
+
+
+# ─── analyze_recent_trades / get_trade_history 响应解析回归（2026-09-18）─────────
+#
+# 背景：后端 /api/history/trades 返回 {"trades": [...], "total": n}（包装对象），
+# 而 analyze_recent_trades 曾把整个 body 当列表用，遍历 dict key（字符串）后调用
+# .get() 抛 "'str' object has no attribute 'get'"，被 except 吞掉后报告出现
+# 「数据缺口提示」。get_trade_history 则是把包装对象再嵌一层，产生畸形嵌套。
+# 这两个用例锁住解析契约：包装对象 / 裸数组两种形状都必须正常工作。
+
+_TRADE = {
+    "id": 1,
+    "ticket": 1001,
+    "symbol": "GOLD_",
+    "type": "SELL",
+    "lot": 0.1,
+    "open_price": 4360.0,
+    "close_price": 4344.0,
+    "profit": 16.0,
+    "strategy_name": "mean_reversion",
+}
+
+def _mock_httpx_client(monkeypatch, trades_body, perf_body):
+    """复用本文件的 mock 模式：替换 httpx.AsyncClient 为同步假客户端。"""
+    import httpx
+
+    responses = {"trades": trades_body, "performance": perf_body}
+
+    class _Resp:
+        status_code = 200
+        def __init__(self, body):
+            self._body = body
+        def json(self):
+            return self._body
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, url, headers=None, params=None):
+            key = "trades" if "history/trades" in url else "performance"
+            return _Resp(responses[key])
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Client())
+
+
+def test_analyze_recent_trades_parses_wrapped_response(monkeypatch):
+    """后端标准响应 {"trades": [...], "total": n} 必须被正确解包，不得抛 .get 错误。"""
+    import asyncio
+
+    from mcp_server.tools import learning
+
+    _mock_httpx_client(monkeypatch, {"trades": [_TRADE], "total": 1}, {"total_trades": 1, "win_rate": 1.0, "total_profit": 16.0})
+
+    result = asyncio.run(learning.analyze_recent_trades(days=7))
+
+    assert result["trade_count"] == 1
+    assert result["wins"] == 1
+    assert result["win_rate"] == 1.0
+    assert "error" not in result
+    assert result["strategy_performance"]["mean_reversion"]["wins"] == 1
+
+
+def test_analyze_recent_trades_tolerates_bare_list(monkeypatch):
+    """若接口未来改成裸数组（向后兼容防御），也必须能正常解析。"""
+    import asyncio
+
+    from mcp_server.tools import learning
+
+    _mock_httpx_client(monkeypatch, [_TRADE], {"total_trades": 1, "win_rate": 1.0, "total_profit": 16.0})
+
+    result = asyncio.run(learning.analyze_recent_trades(days=7))
+
+    assert result["trade_count"] == 1
+    assert "error" not in result
+
+
+def test_get_trade_history_unwraps_wrapped_response(monkeypatch):
+    """get_trade_history 必须返回扁平 {"trades": [...]}，不得嵌套成 {"trades": {"trades": ...}}。"""
+    import asyncio
+
+    from mcp_server.tools import history
+
+    _mock_httpx_client(monkeypatch, {"trades": [_TRADE], "total": 1}, {})
+
+    result = asyncio.run(history.get_trade_history(days=7))
+
+    assert result["trades"] == [_TRADE]
+    assert result["total"] == 1
+
+
+def test_get_trade_history_tolerates_bare_list(monkeypatch):
+    """裸数组形状也兼容。"""
+    import asyncio
+
+    from mcp_server.tools import history
+
+    _mock_httpx_client(monkeypatch, [_TRADE], {})
+
+    result = asyncio.run(history.get_trade_history(days=7))
+
+    assert result["trades"] == [_TRADE]
+    assert result["total"] == 1
