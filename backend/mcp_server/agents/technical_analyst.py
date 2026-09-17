@@ -56,6 +56,7 @@ async def analyze(symbol: str, timeframe: str = "M15", lang: str | None = None) 
         f"Analyze {symbol} on the {timeframe} timeframe. "
         f"Use run_full_analysis to get all indicators, then provide your technical assessment."
     )
+    from app.config import settings
     from mcp_server.agents.prompt_registry import get_active_prompt
 
     active_prompt = await get_active_prompt("technical_analyst", lang)
@@ -63,7 +64,7 @@ async def analyze(symbol: str, timeframe: str = "M15", lang: str | None = None) 
         system_prompt=active_prompt,
         user_message=user_message,
         tool_names=TOOL_NAMES,
-        max_turns=8,
-        timeout=60,
+        max_turns=settings.multi_agent_specialist_max_turns,
+        timeout=settings.multi_agent_specialist_timeout_s,
         agent_id="technical_analyst",
     )

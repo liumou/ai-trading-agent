@@ -243,3 +243,119 @@ class TestMultiAgentIntegration:
 
         assert "decision" in result
         assert result.get("errors") is not None
+
+
+class TestSpecialistFailureSemantics:
+    """An analysis timeout/error must never be presented as a neutral market signal."""
+
+    def test_specialist_failed_detects_fallback_text(self):
+        from mcp_server.agents.orchestrator import _specialist_failed
+
+        # The exact fallback the OpenAI loop returns on budget exhaustion.
+        failed = {
+            "response": "Agent loop terminated (timeout/max_turns)",
+            "error": "agent loop failed (timeout or exception)",
+            "tool_calls": [],
+            "turns": 4,
+        }
+        assert _specialist_failed(failed) is not None
+        # Empty response is a failure too.
+        assert _specialist_failed({"response": "", "tool_calls": []}) is not None
+        # A real report is not a failure.
+        assert _specialist_failed({"response": "bullish 0.7 confidence", "tool_calls": []}) is None
+
+    @pytest.mark.asyncio
+    async def test_timeout_specialist_not_reported_as_neutral(self):
+        from app.config import settings
+        from mcp_server.agents.orchestrator import run_multi_agent
+
+        with (
+            patch(
+                "mcp_server.agents.orchestrator.reflector.reflect",
+                AsyncMock(return_value={"response": "65% win rate", "tool_calls": [], "turns": 1}),
+            ),
+            patch(
+                "mcp_server.agents.orchestrator.technical_analyst.analyze",
+                AsyncMock(return_value={
+                    "response": "Agent loop terminated (timeout/max_turns)",
+                    "error": "agent loop failed (timeout or exception)",
+                    "tool_calls": [], "turns": 4,
+                }),
+            ),
+            patch(
+                "mcp_server.agents.orchestrator.fundamental_analyst.analyze",
+                AsyncMock(return_value={"response": "neutral", "tool_calls": [], "turns": 1}),
+            ),
+            patch(
+                "mcp_server.agents.orchestrator.risk_analyst.analyze",
+                AsyncMock(return_value={"response": "approved", "tool_calls": [], "turns": 1}),
+            ),
+            patch(
+                "mcp_server.agents.orchestrator.run_agent_loop",
+                AsyncMock(return_value={
+                    "response": "HOLD", "tool_calls": [], "turns": 1, "duration_s": 1,
+                }),
+            ),
+        ):
+            result = await run_multi_agent(job_type="candle_analysis", job_input={"symbol": "GOLD"})
+
+        tech_report = result["specialists"]["technical"]["report"]
+        assert "分析未完成" in tech_report          # surfaced as failure
+        assert "无任何技术信号" not in tech_report   # NOT treated as a neutral signal
+        assert "technical" in (result.get("errors") or {})
+        assert result["specialists"]["fundamental"]["report"] == "neutral"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_uses_configured_budget(self):
+        from app.config import settings
+        from mcp_server.agents.orchestrator import run_multi_agent
+
+        mock_loop = AsyncMock(return_value={"response": "HOLD", "tool_calls": [], "turns": 1, "duration_s": 1})
+        with (
+            patch(
+                "mcp_server.agents.orchestrator.reflector.reflect",
+                AsyncMock(return_value={"response": "ok", "tool_calls": [], "turns": 1}),
+            ),
+            patch(
+                "mcp_server.agents.orchestrator.technical_analyst.analyze",
+                AsyncMock(return_value={"response": "b", "tool_calls": [], "turns": 1}),
+            ),
+            patch(
+                "mcp_server.agents.orchestrator.fundamental_analyst.analyze",
+                AsyncMock(return_value={"response": "n", "tool_calls": [], "turns": 1}),
+            ),
+            patch(
+                "mcp_server.agents.orchestrator.risk_analyst.analyze",
+                AsyncMock(return_value={"response": "a", "tool_calls": [], "turns": 1}),
+            ),
+            patch("mcp_server.agents.orchestrator.run_agent_loop", mock_loop),
+        ):
+            await run_multi_agent(job_type="candle_analysis", job_input={"symbol": "GOLD"})
+
+        kwargs = mock_loop.await_args.kwargs
+        assert kwargs["max_turns"] == settings.multi_agent_orchestrator_max_turns
+        assert kwargs["timeout"] == settings.multi_agent_orchestrator_timeout_s
+
+
+class TestSynthesisFailureNote:
+    def test_failure_note_present(self):
+        from mcp_server.agents.orchestrator import _build_synthesis_message
+
+        msg = _build_synthesis_message(
+            job_type="candle_analysis", job_input={"symbol": "GOLD"}, symbol="GOLD",
+            timeframe="M15", technical_report="[technical 分析未完成...]",
+            fundamental_report="neutral", risk_report="approved",
+            failed_specialists={"technical"},
+        )
+        assert "IMPORTANT: analyst failures" in msg
+        assert "technical" in msg
+        assert "Do NOT interpret a failed analysis as a neutral" in msg
+
+    def test_no_failure_note_when_all_succeeded(self):
+        from mcp_server.agents.orchestrator import _build_synthesis_message
+
+        msg = _build_synthesis_message(
+            job_type="candle_analysis", job_input={"symbol": "GOLD"}, symbol="GOLD",
+            timeframe="M15", technical_report="b", fundamental_report="n", risk_report="a",
+        )
+        assert "IMPORTANT: analyst failures" not in msg

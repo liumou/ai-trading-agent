@@ -84,6 +84,7 @@ async def analyze(
             f"Check account state, current exposure, and any risk concerns."
         )
 
+    from app.config import settings
     from mcp_server.agents.prompt_registry import get_active_prompt
 
     active_prompt = await get_active_prompt("risk_analyst", lang)
@@ -91,7 +92,7 @@ async def analyze(
         system_prompt=active_prompt,
         user_message=user_message,
         tool_names=TOOL_NAMES,
-        max_turns=10,
-        timeout=60,
+        max_turns=settings.multi_agent_specialist_max_turns,
+        timeout=settings.multi_agent_specialist_timeout_s,
         agent_id="risk_analyst",
     )

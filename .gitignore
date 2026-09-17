@@ -54,3 +54,4 @@ backend/uv.lock
 .omc/
 .history/
 .zcode/
+.omo/

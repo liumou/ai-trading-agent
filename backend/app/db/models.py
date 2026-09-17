@@ -12,6 +12,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -469,6 +470,8 @@ class AgentChatSession(Base):
     title: Mapped[str] = mapped_column(String(200), default="新会话", server_default="新会话")
     symbol: Mapped[str] = mapped_column(String(30))
     timeframe: Mapped[str] = mapped_column(String(8), default="M15", server_default="M15")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    active_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     mode: Mapped[str] = mapped_column(String(20), default="free", server_default="free")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -484,3 +487,45 @@ class AgentChatMessage(Base):
     tool_calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AgentChatRun(Base):
+    """Durable queue; single-owner scope, not a multi-tenant ownership model."""
+    __tablename__ = "agent_chat_runs"
+    __table_args__ = (UniqueConstraint("session_id", "request_id", name="uq_chat_request"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    request_id: Mapped[str] = mapped_column(String(36))
+    mode: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input: Mapped[dict] = mapped_column(JSON)
+    budget: Mapped[dict] = mapped_column(JSON)
+    response: Mapped[str] = mapped_column(Text, default="")
+    partial_response: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    turns: Mapped[int] = mapped_column(Integer, default=0)
+    duration_s: Mapped[float] = mapped_column(Float, default=0)
+    sequence: Mapped[int] = mapped_column(Integer, default=0)
+    worker_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AgentChatEvent(Base):
+    """Append-only bounded audit. Agent reports are derived from these events."""
+    __tablename__ = "agent_chat_events"
+    __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_chat_event_sequence"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(64))
+    agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    execution_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+

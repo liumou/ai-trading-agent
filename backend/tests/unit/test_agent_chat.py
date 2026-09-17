@@ -115,11 +115,13 @@ class TestRunChatTurn:
 
 @pytest_asyncio.fixture
 async def chat_db(monkeypatch, db_engine):
-    """用内存 SQLite 替换路由内的 async_session。"""
+    """用内存 SQLite 替换路由与 store 的 async_session（绝不触真实 DB）。"""
     factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     import app.api.routes.agent_chat as mod
+    import app.services.chat_runs as store_mod
 
     monkeypatch.setattr(mod, "async_session", factory)
+    monkeypatch.setattr(store_mod, "async_session", factory)
 
     # 屏蔽护栏（无 Redis 环境）
     async def _noop():
@@ -190,6 +192,27 @@ class TestChatRoutes:
         assert mock_run.call_args.kwargs.get("preset") == "trading_plan"
 
     @pytest.mark.asyncio
+    async def test_loop_termination_is_not_a_successful_reply(self, chat_db, created_session):
+        """Regression: exact user-visible failure must not be saved as a report."""
+        from fastapi import HTTPException
+        from app.api.routes.agent_chat import MessageSendRequest, send_message
+
+        with patch(
+            "mcp_server.agents.chat_agent.run_chat_turn",
+            new=AsyncMock(return_value={
+                "response": "Agent loop terminated (timeout/max_turns)",
+                "error": "agent loop failed (timeout or exception)",
+                "tool_calls": [], "turns": 4, "duration_s": 142.8,
+            }),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await send_message(created_session, MessageSendRequest(message="生成计划"))
+        assert exc.value.status_code == 502
+        detail = await chat_db.get_session(created_session)
+        assert not any(m["role"] == "assistant" for m in detail["messages"])
+
+
+    @pytest.mark.asyncio
     async def test_agent_error_normalized_to_502(self, chat_db, created_session):
         from fastapi import HTTPException
 
@@ -204,26 +227,29 @@ class TestChatRoutes:
         assert exc.value.status_code == 502
 
     @pytest.mark.asyncio
-    async def test_delete_session_cascades(self, chat_db, created_session):
+    async def test_delete_session_archives_and_preserves_audit(self, chat_db, created_session):
+        """V2 起 DELETE = 归档：会话隐藏但消息/审计保留（不再物理删除）。"""
         from fastapi import HTTPException
         from sqlalchemy import select
 
-        from app.api.routes.agent_chat import delete_session, get_session
+        from app.api.routes.agent_chat import delete_session, get_session, list_sessions
         from app.db.models import AgentChatMessage
 
-        # 先塞一条消息
         async with chat_db.async_session() as db:
             db.add(AgentChatMessage(session_id=created_session, role="user", content="hi"))
             await db.commit()
 
         resp = await delete_session(created_session)
-        assert resp["success"] is True
+        assert resp["success"] is True and resp["status"] == "archived"
 
+        # 归档后：列表不显示、详情 404，但历史消息仍在库中
+        assert (await list_sessions())["sessions"] == []
         with pytest.raises(HTTPException):
             await get_session(created_session)
 
         async with chat_db.async_session() as db:
-            left = (await db.execute(
+            kept = (await db.execute(
                 select(AgentChatMessage).where(AgentChatMessage.session_id == created_session)
             )).scalars().all()
-        assert left == []
+        assert [m.content for m in kept] == ["hi"]
+

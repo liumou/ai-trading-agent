@@ -17,8 +17,31 @@ import time
 
 from loguru import logger
 
+from app.config import settings
 from mcp_server.agents import fundamental_analyst, reflector, risk_analyst, technical_analyst
 from mcp_server.agents.base import run_agent_loop
+
+# Fallback texts produced by the OpenAI loop on timeout / max_turns exhaustion.
+# Downstream must never read these as a real (neutral) market signal.
+_FALLBACK_FAILURE_MARKERS = ("Agent loop terminated", "Agent analysis failed", "Agent error:")
+_SPECIALIST_FAILURE_REPORT = "分析未完成（超时或失败），该维度本次无有效信号；这不是市场中性结论。"
+
+
+def _specialist_failed(result: dict) -> str | None:
+    """Return a failure reason if a specialist produced no usable report.
+
+    The auto loop can exhaust its budget and fall back to a generic message with no
+    text; that must be surfaced as a failure, not mistaken for neutral/no-signal.
+    """
+    error = result.get("error")
+    if error and isinstance(error, str) and error.strip():
+        return error
+    response = result.get("response") or ""
+    if not response.strip():
+        return "empty response"
+    if any(m in response for m in _FALLBACK_FAILURE_MARKERS):
+        return response.strip()
+    return None
 
 SYSTEM_PROMPT = """You are the Orchestrator of a multi-agent trading system for {TRADABLE_SYMBOLS}.
 
@@ -107,6 +130,7 @@ async def run_multi_agent(
 
     results: dict[str, dict] = {}
     specialist_errors: dict[str, str] = {}
+    failed_specialists: set[str] = set()
 
     # ─── Phase 0: Reflection (Phase E) ──────────────────────────────────
     # Reflector reviews past trades and provides context before analysis
@@ -123,6 +147,17 @@ async def run_multi_agent(
             logger.warning(f"[Orchestrator] Reflector failed (non-critical): {e}")
             specialist_errors["reflector"] = str(e)
             results["reflector"] = {"response": f"ERROR: {e}", "tool_calls": [], "turns": 0}
+        refl_fail = _specialist_failed(results.get("reflector") or {})
+        if refl_fail is None and str(results.get("reflector", {}).get("response", "")).startswith("ERROR:"):
+            refl_fail = str(results["reflector"]["response"])
+        if refl_fail:
+            failed_specialists.add("reflector")
+            specialist_errors["reflector"] = specialist_errors.get("reflector") or refl_fail
+            results["reflector"]["_failed"] = True
+            reflection_report = (
+                f"[Reflector 复盘未完成：{refl_fail}] 本次无过拟合等级数据可用；"
+                "原因是分析超时/失败，不是市场中性。"
+            )
 
     # ─── Phase 1: Run specialists in parallel ────────────────────────────
 
@@ -141,6 +176,16 @@ async def run_multi_agent(
             specialist_errors[name] = str(e)
             results[name] = {"response": f"ERROR: {e}", "tool_calls": [], "turns": 0}
 
+    for name in ("technical", "fundamental", "risk"):
+        fail = _specialist_failed(results.get(name) or {})
+        if fail is None and str(results.get(name, {}).get("response", "")).startswith("ERROR:"):
+            fail = str(results[name]["response"])
+        if fail:
+            failed_specialists.add(name)
+            specialist_errors[name] = specialist_errors.get(name) or fail
+            results[name]["_failed"] = True
+            results[name]["response"] = f"[{name} {_SPECIALIST_FAILURE_REPORT}（{fail}）]"
+
     specialist_duration = round(time.time() - start_time, 1)
     logger.info(f"[Orchestrator] Specialists completed in {specialist_duration}s")
 
@@ -155,6 +200,7 @@ async def run_multi_agent(
         fundamental_report=results["fundamental"]["response"],
         risk_report=results["risk"]["response"],
         reflection_report=reflection_report,
+        failed_specialists=failed_specialists,
     )
 
     from mcp_server.agents.prompt_registry import get_active_prompt
@@ -164,8 +210,8 @@ async def run_multi_agent(
         system_prompt=active_prompt,
         user_message=synthesis_message,
         tool_names=ORCHESTRATOR_TOOL_NAMES,
-        max_turns=10,
-        timeout=120,
+        max_turns=settings.multi_agent_orchestrator_max_turns,
+        timeout=settings.multi_agent_orchestrator_timeout_s,
         oauth_token=oauth_token,
         agent_id="orchestrator",
     )
@@ -212,8 +258,14 @@ def _build_synthesis_message(
     fundamental_report: str,
     risk_report: str,
     reflection_report: str = "",
+    failed_specialists: set[str] | None = None,
 ) -> str:
-    """Build the user message for the orchestrator with all specialist reports."""
+    """Build the user message for the orchestrator with all specialist reports.
+
+    ``failed_specialists`` lists agents that did not complete (timeout/error).
+    Their sections contain an explicit failure marker so the orchestrator never
+    reads an analysis timeout as a neutral market signal.
+    """
     job_context = ""
     if job_type == "candle_analysis":
         job_context = f"A new {timeframe} candle has closed for {symbol}."
@@ -233,8 +285,19 @@ def _build_synthesis_message(
 {reflection_report}
 """
 
+    failure_note = ""
+    if failed_specialists:
+        failure_note = (
+            "\n\n## IMPORTANT: analyst failures\n"
+            f"The following agent(s) FAILED to complete their analysis (timeout or error): "
+            f"{', '.join(sorted(failed_specialists))}. Their report section states this "
+            "explicitly. Do NOT interpret a failed analysis as a neutral market signal or "
+            "as 'no news'.\n"
+        )
+
     return f"""{job_context}
 {reflection_section}
+{failure_note}
 Your specialist analysts have completed their assessments:
 
 ---

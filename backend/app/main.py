@@ -2,8 +2,9 @@
 AI Trading Agent — FastAPI Main Application (multi-symbol)
 """
 
+import asyncio
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as redis_lib
 from fastapi import Depends, FastAPI
@@ -444,6 +445,17 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Runner manager init failed (non-fatal): {e}")
         logger.warning("Runner features disabled — run 'alembic upgrade head' to create runner tables")
 
+    # Chat V2 worker (non-fatal). Chat runs stay queued until the tables exist,
+    # so a pending `alembic upgrade head` degrades safely instead of dropping work.
+    chat_stop = asyncio.Event()
+    try:
+        from app.services.chat_runs import chat_worker
+
+        app.state.chat_worker_task = asyncio.create_task(chat_worker(chat_stop))
+        logger.info("Chat run worker started")
+    except Exception as e:
+        logger.warning(f"Chat worker init failed (non-fatal): {e}")
+
     # Start symbol-config hot-reload subscriber
     await manager.start_reload_subscriber()
 
@@ -469,6 +481,12 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down...")
+    chat_stop.set()
+    task = getattr(app.state, "chat_worker_task", None)
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
     if hasattr(app.state, "runner_manager"):
         await app.state.runner_manager.shutdown()
     if "runner_db_session" in dir():

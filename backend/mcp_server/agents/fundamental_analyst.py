@@ -57,6 +57,7 @@ async def analyze(symbol: str, timeframe: str = "M15", lang: str | None = None) 
         f"Provide a fundamental analysis for {symbol}. "
         f"Check current sentiment, recent performance, and today's P&L to form a directional bias."
     )
+    from app.config import settings
     from mcp_server.agents.prompt_registry import get_active_prompt
 
     active_prompt = await get_active_prompt("fundamental_analyst", lang)
@@ -64,7 +65,7 @@ async def analyze(symbol: str, timeframe: str = "M15", lang: str | None = None) 
         system_prompt=active_prompt,
         user_message=user_message,
         tool_names=TOOL_NAMES,
-        max_turns=8,
-        timeout=60,
+        max_turns=settings.multi_agent_specialist_max_turns,
+        timeout=settings.multi_agent_specialist_timeout_s,
         agent_id="fundamental_analyst",
     )

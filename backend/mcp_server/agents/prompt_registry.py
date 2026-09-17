@@ -39,6 +39,7 @@ def _load_defaults() -> None:
     # Single agent (file-based)
     from pathlib import Path
 
+    from mcp_server.agents.chat_agent import SYSTEM_PROMPT as CHAT
     from mcp_server.agents.fundamental_analyst import SYSTEM_PROMPT as FUND
     from mcp_server.agents.orchestrator import SYSTEM_PROMPT as ORCH
     from mcp_server.agents.reflector import SYSTEM_PROMPT as REFL
@@ -61,6 +62,7 @@ def _load_defaults() -> None:
             "fundamental_analyst": FUND,
             "risk_analyst": RISK,
             "reflector": REFL,
+            "chat_agent": CHAT,
             "single_agent": single,
             "sentiment": get_sentiment_prompt("{symbol}"),
             "optimization": get_optimization_prompt(),
@@ -201,6 +203,7 @@ async def get_all_prompts() -> list[dict]:
     agent_model = {
         "orchestrator": orch_model,
         "single_agent": orch_model,
+        "chat_agent": orch_model,
     }
 
     for agent_id, meta in AGENT_META.items():

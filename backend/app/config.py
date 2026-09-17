@@ -1,6 +1,6 @@
 import json
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 # Per-symbol trading profiles
@@ -185,6 +185,25 @@ class Settings(BaseSettings):
     llm_timeout: int = 120  # per-request timeout (seconds)
     # 连接类失败（APIConnectionError/超时/拒绝）的请求内重试次数（openai SDK retries）
     llm_max_retries: int = 2
+
+    # Chat-only budgets; never change autonomous trading loop deadlines.
+    chat_total_timeout_s: int = Field(600, ge=30, le=1800)
+    chat_request_timeout_s: int = Field(180, ge=5, le=600)
+    chat_tool_timeout_s: int = Field(60, ge=1, le=300)
+    chat_heavy_tool_timeout_s: int = Field(300, ge=1, le=600)
+    chat_max_turns: int = Field(15, ge=2, le=30)
+    chat_worker_poll_s: float = Field(2, ge=0.1, le=30)
+    chat_lease_s: int = Field(30, ge=10, le=300)
+    # Multi-agent（旧 run_multi_agent）循环预算：reflector / 分析师 / orchestrator。
+    # 默认值对齐此前硬编码值；慢 LLM 端点可在 .env 里调高（不要悄悄放宽自动交易时限）。
+    # 预算耗尽会让 openai_loop 返回兜底失败文案——下游必须把它当「分析失败」而非「无信号」。
+    multi_agent_specialist_timeout_s: int = Field(60, ge=10, le=600)
+    multi_agent_specialist_max_turns: int = Field(8, ge=1, le=30)
+    multi_agent_reflector_timeout_s: int = Field(90, ge=10, le=600)
+    multi_agent_reflector_max_turns: int = Field(10, ge=1, le=30)
+    multi_agent_orchestrator_timeout_s: int = Field(120, ge=10, le=900)
+    multi_agent_orchestrator_max_turns: int = Field(10, ge=1, le=30)
+
     # LLM 熔断：连续连接失败达到阈值 → 冷却期内跳过 LLM 调用（避免每 15 分钟刷屏）
     llm_circuit_threshold: int = 3
     llm_circuit_cooldown_s: int = 300

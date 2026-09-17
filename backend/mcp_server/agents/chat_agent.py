@@ -163,11 +163,27 @@ async def run_chat_turn(
     active_prompt = await get_active_prompt("chat_agent", lang)
     composed = _build_user_message(symbol, timeframe, user_message, history, preset)
 
-    return await run_agent_loop(
-        system_prompt=active_prompt,
-        user_message=composed,
-        tool_names=CHAT_TOOL_NAMES,
-        max_turns=15,
-        timeout=120,
-        agent_id="chat_agent",
-    )
+    import asyncio
+    import time
+    from app.config import settings
+
+    started = time.monotonic()
+    try:
+        # Includes blocked provider/tool awaits, not just loop boundaries.
+        async with asyncio.timeout(settings.chat_total_timeout_s):
+            return await run_agent_loop(
+                system_prompt=active_prompt,
+                user_message=composed,
+                tool_names=CHAT_TOOL_NAMES,
+                max_turns=settings.chat_max_turns,
+                timeout=settings.chat_total_timeout_s,
+                agent_id="chat_agent",
+            )
+    except TimeoutError:
+        return {
+            "status": "timed_out", "reason_code": "total_timeout",
+            "response": "", "partial_response": "", "tool_calls": [],
+            "turns": 0, "duration_s": round(time.monotonic() - started, 3),
+            "error": "chat total time budget exceeded",
+        }
+

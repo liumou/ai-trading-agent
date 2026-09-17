@@ -96,6 +96,7 @@ async def reflect(symbol: str, timeframe: str = "M15", lang: str | None = None) 
         f"recall previous learnings, and provide an actionable briefing for the Orchestrator. "
         f"Save any new insights to session context and learnings."
     )
+    from app.config import settings
     from mcp_server.agents.prompt_registry import get_active_prompt
 
     active_prompt = await get_active_prompt("reflector", lang)
@@ -103,7 +104,7 @@ async def reflect(symbol: str, timeframe: str = "M15", lang: str | None = None) 
         system_prompt=active_prompt,
         user_message=user_message,
         tool_names=TOOL_NAMES,
-        max_turns=10,
-        timeout=90,
+        max_turns=settings.multi_agent_reflector_max_turns,
+        timeout=settings.multi_agent_reflector_timeout_s,
         agent_id="reflector",
     )

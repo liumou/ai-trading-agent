@@ -33,6 +33,13 @@ class PresetRequest(BaseModel):
     preset: str = Field(..., pattern="^(trading_plan|report)$")
 
 
+class RunCreateRequest(BaseModel):
+    message: str | None = Field(None, max_length=8000)
+    preset: str | None = Field(None, pattern="^(trading_plan|report)$")
+    mode: str = Field("single", pattern="^(single|experts)$")
+    request_id: str = Field(..., min_length=8, max_length=36)
+
+
 _guardrails = None  # lazy TradingGuardrails 单例（进程内）
 
 
@@ -66,7 +73,7 @@ async def _record_agent_call() -> None:
 async def _get_session_or_404(session_id: int) -> AgentChatSession:
     async with async_session() as db:
         session = await db.get(AgentChatSession, session_id)
-        if not session:
+        if not session or session.archived:
             raise HTTPException(status_code=404, detail=f"Chat session {session_id} not found")
         return session
 
@@ -102,10 +109,12 @@ async def create_session(req: SessionCreateRequest):
 
 @router.get("/sessions", dependencies=[Depends(require_auth)])
 async def list_sessions():
-    """会话列表（按最近更新倒序）。"""
+    """会话列表（归档会话不显示，按最近更新倒序）。"""
     async with async_session() as db:
         rows = (await db.execute(
-            AgentChatSession.__table__.select().order_by(
+            AgentChatSession.__table__.select()
+            .where(AgentChatSession.archived.is_(False))
+            .order_by(
                 AgentChatSession.updated_at.desc().nullslast(), AgentChatSession.id.desc()
             )
         )).fetchall()
@@ -142,17 +151,61 @@ async def get_session(session_id: int):
 
 @router.delete("/sessions/{session_id}", dependencies=[Depends(require_auth)])
 async def delete_session(session_id: int):
-    """删除会话及其全部消息。"""
-    async with async_session() as db:
-        session = await db.get(AgentChatSession, session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail=f"Chat session {session_id} not found")
-        await db.execute(
-            AgentChatMessage.__table__.delete().where(AgentChatMessage.session_id == session_id)
-        )
-        await db.delete(session)
-        await db.commit()
-    return {"success": True, "session_id": session_id}
+    """归档会话（保留运行记录与审计事件，不物理删除）。"""
+    from app.services.chat_runs import ChatRunStore
+
+    return await ChatRunStore().archive(session_id)
+
+
+@router.get("/config", dependencies=[Depends(require_auth)])
+async def get_chat_config():
+    """Active chat budgets (no secrets). Terminal status is per-run, not HTTP-level."""
+    from mcp_server.agents.chat_workflow import chat_budget
+
+    return {"budget": chat_budget()}
+
+
+@router.post("/sessions/{session_id}/runs", status_code=202, dependencies=[Depends(require_auth)])
+async def create_run(session_id: int, req: RunCreateRequest):
+    """Enqueue a chat run; returns 202 with the durable run record."""
+    if not req.message and not req.preset:
+        raise HTTPException(status_code=422, detail="message or preset is required")
+    await _record_agent_call()
+    from app.services.chat_runs import ChatRunStore
+
+    run = await ChatRunStore().create(session_id, req.message or "", req.preset, req.mode, req.request_id)
+    return {"run": run}
+
+
+@router.get("/sessions/{session_id}/runs", dependencies=[Depends(require_auth)])
+async def list_session_runs(session_id: int):
+    from app.services.chat_runs import ChatRunStore
+
+    return {"runs": await ChatRunStore().list_for_session(session_id)}
+
+
+@router.get("/runs/{run_id}", dependencies=[Depends(require_auth)])
+async def get_run(run_id: str, after: int = 0, limit: int = 100):
+    """Run + ordered events + derived agent reports; poll with next_cursor."""
+    from app.services.chat_runs import ChatRunStore
+
+    return await ChatRunStore().events(run_id, max(0, after), min(max(1, limit), 500))
+
+
+@router.post("/runs/{run_id}/cancel", dependencies=[Depends(require_auth)])
+async def cancel_run(run_id: str):
+    """Cancel a run. Stops local waiting; remote provider work may still finish."""
+    from app.services.chat_runs import ChatRunStore
+
+    return {"run": await ChatRunStore().cancel(run_id)}
+
+
+@router.post("/runs/{run_id}/requeue", dependencies=[Depends(require_auth)])
+async def requeue_run(run_id: str):
+    """Explicit retry for an interrupted run. Never triggered automatically."""
+    from app.services.chat_runs import ChatRunStore
+
+    return {"run": await ChatRunStore().requeue(run_id)}
 
 
 async def _run_and_store_turn(session: AgentChatSession, user_message: str, preset: str | None):
@@ -171,6 +224,9 @@ async def _run_and_store_turn(session: AgentChatSession, user_message: str, pres
     )
 
     reply = result.get("response", "")
+    # Structured failures must not masquerade as successful assistant reports.
+    if result.get("error"):
+        raise HTTPException(status_code=502, detail=str(result["error"]))
     if isinstance(reply, str) and reply.startswith("Agent error:"):
         raise HTTPException(status_code=502, detail=reply[len("Agent error:"):].strip())
 

@@ -401,14 +401,107 @@ export interface AgentChatMessage {
   duration_s: number | null;
   created_at: string;
 }
+
+// ---------- Agent Chat V2 (background runs + incremental events) ----------
+export type AgentChatMode = "single" | "experts";
+export type AgentChatPreset = "trading_plan" | "report";
+
+/** Terminal + in-flight statuses of a chat run (see chat-v2 plan: 统一终态). */
+export type AgentChatRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "incomplete"
+  | "failed"
+  | "timed_out"
+  | "cancelled"
+  | "interrupted";
+
+export interface AgentChatBudget {
+  total_timeout_s?: number;
+  request_timeout_s?: number;
+  tool_timeout_s?: number;
+  heavy_tool_timeout_s?: number;
+  max_turns?: number;
+  max_retries?: number;
+  [key: string]: unknown;
+}
+
+export interface AgentChatRun {
+  id: string;
+  session_id: number;
+  mode: AgentChatMode | string;
+  status: AgentChatRunStatus | string;
+  reason_code?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  budget?: AgentChatBudget | null;
+  response?: string | null;
+  partial_response?: string | null;
+  turns?: number | null;
+  duration_s?: number | null;
+  /** Prompt submitted for the run (used for explicit retry; optional from backend). */
+  message?: string | null;
+  preset?: AgentChatPreset | null;
+  error?: string | null;
+  request_id?: string | null;
+}
+
+/** One run-scoped participant (identity/report can also be event-derived). */
+export interface AgentChatRunAgent {
+  agent_id?: string | null;
+  role?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  status?: string | null;
+  report?: string | null;
+  summary?: string | null;
+  [key: string]: unknown;
+}
+
+export interface AgentChatEvent {
+  sequence: number;
+  event_type: string;
+  payload?: Record<string, unknown> | null;
+  created_at?: string | null;
+  agent_id?: string | null;
+  execution_id?: string | null;
+}
+
+export interface AgentChatRunDetail {
+  run: AgentChatRun;
+  events: AgentChatEvent[];
+  agents?: AgentChatRunAgent[] | null;
+  /** number => resume polling from this sequence; null => no new pages yet. */
+  next_cursor?: number | null;
+}
+
 export const listChatSessions = () => api.get("/api/agent-chat/sessions");
 export const createChatSession = (data: { symbol: string; timeframe?: string; mode?: string; title?: string }) =>
   api.post("/api/agent-chat/sessions", data);
 export const getChatSession = (id: number) => api.get(`/api/agent-chat/sessions/${id}`);
+/** Archive (soft-delete) a session; backend rejects with 409 while runs are active. */
 export const deleteChatSession = (id: number) => api.delete(`/api/agent-chat/sessions/${id}`);
+
+// --- V1 message sync endpoints retained for existing sessions/messages ---
 export const sendChatMessage = (id: number, message: string) =>
   api.post(`/api/agent-chat/sessions/${id}/messages`, { message }, { timeout: 150000 });
 export const sendChatPreset = (id: number, preset: "trading_plan" | "report") =>
   api.post(`/api/agent-chat/sessions/${id}/preset`, { preset }, { timeout: 150000 });
+
+// --- V2 run endpoints (202 + poll, see .planning/2026-09-17-agent/chat-v2-plan.md P2) ---
+export const startChatRun = (
+  id: number,
+  body: { message?: string; preset?: AgentChatPreset; mode: AgentChatMode; request_id: string },
+) => api.post(`/api/agent-chat/sessions/${id}/runs`, body, { timeout: 30000 });
+export const listSessionRuns = (id: number) =>
+  api.get<{ runs: AgentChatRun[] }>(`/api/agent-chat/sessions/${id}/runs`);
+export const getChatRun = (runId: string, after = 0, limit = 100, signal?: AbortSignal) =>
+  api.get<AgentChatRunDetail>(`/api/agent-chat/runs/${runId}`, { params: { after, limit }, signal });
+export const cancelChatRun = (runId: string) =>
+  api.post<{ run: AgentChatRun }>(`/api/agent-chat/runs/${runId}/cancel`, undefined, { timeout: 30000 });
+export const getChatRunConfig = () =>
+  api.get<{ budget?: AgentChatBudget } | AgentChatBudget>("/api/agent-chat/config");
 
 export default api;
