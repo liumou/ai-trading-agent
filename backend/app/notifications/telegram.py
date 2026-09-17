@@ -9,6 +9,12 @@ from app.config import SYMBOL_PROFILES, settings
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
+
+def telegram_proxy() -> str | None:
+    """Return configured proxy URL or None (direct connection)."""
+    return (getattr(settings, "telegram_proxy_url", "") or "").strip() or None
+
+
 SENTIMENT_TH = {"bullish": "ขาขึ้น", "bearish": "ขาลง", "neutral": "ทรงตัว"}
 
 # Optional Thai overrides for well-known canonicals. Any symbol not listed
@@ -32,7 +38,7 @@ class TelegramNotifier:
         if not self.enabled:
             return
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, proxy=telegram_proxy()) as client:
                 await client.post(
                     TELEGRAM_API.format(token=self.token),
                     json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},

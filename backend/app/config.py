@@ -249,6 +249,7 @@ class Settings(BaseSettings):
     # Notifications
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    telegram_proxy_url: str = ""  # e.g. "http://127.0.0.1:7897"; empty = direct connection
 
     # FRED API (macro data)
     fred_api_key: str = ""

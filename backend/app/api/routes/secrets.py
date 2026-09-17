@@ -308,8 +308,12 @@ async def _test_anthropic(token: str) -> dict:
 
 async def _test_telegram(token: str) -> dict:
     """Test Telegram bot token via getMe."""
-    async with httpx.AsyncClient(timeout=10) as client:
+    from app.notifications.telegram import telegram_proxy
+
+    async with httpx.AsyncClient(timeout=10, proxy=telegram_proxy()) as client:
         resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+        if resp.status_code == 404:
+            return {"ok": False, "message": "404 Not Found — Bot token 无效（请检查 TELEGRAM_BOT_TOKEN）"}
         data = resp.json()
         if data.get("ok"):
             bot_name = data.get("result", {}).get("username", "unknown")

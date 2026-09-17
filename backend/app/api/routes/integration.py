@@ -115,13 +115,22 @@ async def _test_telegram() -> dict:
     if not token:
         return {"name": "Telegram", "status": "not_configured", "latency_ms": 0, "detail": "No bot token configured"}
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        from app.notifications.telegram import telegram_proxy
+
+        async with httpx.AsyncClient(timeout=5, proxy=telegram_proxy()) as client:
             resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
         latency = int((time.time() - start) * 1000)
         if resp.status_code == 200:
             data = resp.json()
             bot_name = data.get("result", {}).get("username", "unknown")
             return {"name": "Telegram", "status": "connected", "latency_ms": latency, "detail": f"Bot: @{bot_name}"}
+        if resp.status_code == 404:
+            return {
+                "name": "Telegram",
+                "status": "error",
+                "latency_ms": latency,
+                "detail": "404 Not Found — Bot token 无效（请检查 TELEGRAM_BOT_TOKEN）",
+            }
         return {"name": "Telegram", "status": "error", "latency_ms": latency, "detail": f"HTTP {resp.status_code}"}
     except Exception as e:
         return {"name": "Telegram", "status": "error", "latency_ms": 0, "detail": str(e)}
