@@ -306,3 +306,86 @@ class TestOpenAIAgentLoop:
         sent_names = {t["function"]["name"] for t in sent_tools}
         assert "place_order" not in sent_names
         assert sent_names == {"get_tick", "run_full_analysis"}
+
+
+class TestRetryBackoff:
+    """指数退避重试（2026-09-18）：间隔按次数递增、慢超时纳入重试、预算联动。"""
+
+    @pytest.mark.asyncio
+    async def test_timeout_retried_then_succeeds(self, monkeypatch):
+        """APITimeoutError 首次抛出 → 指数退避重试 → 成功。"""
+        import asyncio
+
+        from openai import APITimeoutError
+
+        server = _fake_server([_fake_tool("get_tick")], {})
+        responses = [_fake_chat_response(content="done")]
+        patches, mock_client, _ = _patch_env(server, responses)
+        # 首抛超时，第二次成功
+        mock_client.chat.completions.create.side_effect = [
+            APITimeoutError("slow"), _fake_chat_response(content="done"),
+        ]
+        sleeps: list[float] = []
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock(side_effect=lambda s: sleeps.append(s)))
+        with patches[0], patches[1], patches[2], \
+             patch("app.config.settings.llm_max_retries", 2), \
+             patch("app.config.settings.llm_retry_base_s", 0.05), \
+             patch("app.config.settings.llm_retry_max_s", 0.2):
+            result = await openai_agent_loop(
+                system_prompt="sys", user_message="a", tool_names=["get_tick"], agent_id="test",
+                timeout=100,
+            )
+        assert result["response"] == "done"
+        assert mock_client.chat.completions.create.await_count == 2
+        # 第 1 次失败后等待 0.05s（attempt=0，间隔递增生效）
+        assert sleeps == [pytest.approx(0.05, abs=0.01)]
+
+    @pytest.mark.asyncio
+    async def test_retry_uses_exponential_intervals(self, monkeypatch):
+        """连续失败两次后成功：间隔按 0.05 → 0.1 递增。"""
+        import asyncio
+
+        from openai import APITimeoutError
+
+        server = _fake_server([_fake_tool("get_tick")], {})
+        responses = [_fake_chat_response(content="done")]
+        patches, mock_client, _ = _patch_env(server, responses)
+        mock_client.chat.completions.create.side_effect = [
+            APITimeoutError("slow"), APITimeoutError("slow"), _fake_chat_response(content="done"),
+        ]
+        sleeps: list[float] = []
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock(side_effect=lambda s: sleeps.append(s)))
+        with patches[0], patches[1], patches[2], \
+             patch("app.config.settings.llm_max_retries", 3), \
+             patch("app.config.settings.llm_retry_base_s", 0.05), \
+             patch("app.config.settings.llm_retry_max_s", 0.2):
+            result = await openai_agent_loop(
+                system_prompt="sys", user_message="a", tool_names=["get_tick"], agent_id="test",
+                timeout=100,
+            )
+        assert result["response"] == "done"
+        # 2 次失败 → 2 次退避：0.05（attempt=0）+ 0.1（attempt=1）
+        assert sleeps == [pytest.approx(0.05, abs=0.01), pytest.approx(0.1, abs=0.01)]
+
+    @pytest.mark.asyncio
+    async def test_retry_not_triggered_when_zero(self, monkeypatch):
+        """llm_max_retries=0 → 超时不重试，直接失败。"""
+        import asyncio
+
+        from openai import APITimeoutError
+
+        server = _fake_server([_fake_tool("get_tick")], {})
+        responses = [_fake_chat_response(content="done")]
+        patches, mock_client, _ = _patch_env(server, responses)
+        mock_client.chat.completions.create.side_effect = APITimeoutError("slow")
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        with patches[0], patches[1], patches[2], \
+             patch("app.config.settings.llm_max_retries", 0), \
+             patch("app.config.settings.llm_retry_base_s", 0.05), \
+             patch("app.config.settings.llm_retry_max_s", 0.2):
+            result = await openai_agent_loop(
+                system_prompt="sys", user_message="a", tool_names=["get_tick"], agent_id="test",
+                timeout=100,
+            )
+        assert mock_client.chat.completions.create.await_count == 1
+        assert result.get("error")  # 结构化失败标记

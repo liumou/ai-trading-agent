@@ -183,8 +183,12 @@ class Settings(BaseSettings):
     llm_model: str = ""  # global fallback model name; empty = per-agent defaults below
     llm_temperature: float = 0.2  # low by default — trading decisions favour determinism
     llm_timeout: int = 120  # per-request timeout (seconds)
-    # 连接类失败（APIConnectionError/超时/拒绝）的请求内重试次数（openai SDK retries）
+    # 连接类失败（APIConnectionError/超时/拒绝）的请求内重试次数
     llm_max_retries: int = 2
+    # 指数退避重试：基础间隔与封顶（秒）。间隔按次数递增 base*2^attempt 封顶 max_s。
+    # 放宽默认值以规避平台限流（ARK 等对高频重试返回 429）。
+    llm_retry_base_s: float = Field(15, ge=1, le=300)
+    llm_retry_max_s: float = Field(120, ge=5, le=600)
 
     # Chat-only budgets; never change autonomous trading loop deadlines.
     chat_total_timeout_s: int = Field(600, ge=30, le=1800)

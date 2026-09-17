@@ -17,6 +17,8 @@ def chat_budget() -> dict:
         "heavy_tool_timeout_s": settings.chat_heavy_tool_timeout_s,
         "max_turns": settings.chat_max_turns,
         "max_retries": max(0, settings.llm_max_retries),
+        # 绝对保留时间（秒）：最终 summary 的兜底，避免按比例在总预算大时过早强制总结
+        "reserve_s": 30.0,
     }
 
 
@@ -96,16 +98,20 @@ async def run_workflow(run: dict, emit) -> dict:
             if run.get("mode", "single") == "single":
                 return await agent("chat_agent", question, [], budget["total_timeout_s"])
             total = budget["total_timeout_s"]
-            await agent("reflector", question, [], total * 0.15)
-            # TaskGroup cancels siblings on audit failure; no orphan expert tasks.
+            # Phase 1 并行：reflector 复盘 + 技术/基本面分析互不依赖。
+            # （reflector 输出供 plan_drafter 参考，不是技术分析的前提 —— 并行省一个串行段，
+            #   且技术/基本面 analyst 的 allocation 不再被 reflector 耗时挤压。）
+            # 注意 allocation 总和 >100% 是刻意的：每个 agent 拿到「理想时间片」，
+            # 实际仍受全局 deadline 约束，串行拖慢不再让后续 agent 分配到 0。
             async with asyncio.TaskGroup() as group:
-                for role in ("technical_analyst", "fundamental_analyst"):
-                    group.create_task(agent(role, context_for(["reflector"]), [executions["reflector"]], total * 0.25))
+                group.create_task(agent("reflector", question, [], total * 0.15))
+                group.create_task(agent("technical_analyst", question, [], total * 0.20))
+                group.create_task(agent("fundamental_analyst", question, [], total * 0.20))
             roles = ["reflector", "technical_analyst", "fundamental_analyst"]
             await agent("plan_drafter", context_for(roles), [executions[r] for r in roles], total * 0.15)
             await agent("risk_analyst", context_for(["plan_drafter"]), [executions["plan_drafter"]], total * 0.20)
             roles += ["plan_drafter", "risk_analyst"]
-            result = await agent("chat_synthesizer", context_for(roles), [executions[r] for r in roles], total * 0.25)
+            result = await agent("chat_synthesizer", context_for(roles), [executions[r] for r in roles], total * 0.20)
             if any(reports[r].get("status") != "completed" for r in roles) and result.get("status") == "completed":
                 result = {**result, "status": "incomplete", "reason_code": "specialist_incomplete",
                           "partial_response": result.get("response", ""), "response": ""}

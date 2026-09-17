@@ -20,6 +20,7 @@ OpenAI 兼容 Agent Loop — 自研工具循环，让交易决策路径支持任
 from app.ai.circuit_breaker import llm_circuit_breaker
 from app.ai.llm_errors import format_llm_error, is_connection_error
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -129,6 +130,54 @@ async def _rollout_allows_trade() -> tuple[bool, str]:
     return True, mode
 
 
+async def _call_with_retry(
+    client: Any,
+    *,
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None,
+    temperature: float,
+    cumulative_deadline: float,
+) -> Any:
+    """OpenAI 兼容请求 + 指数退避重试（替代 SDK 内部不可控重试）。
+
+    与 chat_runtime 共享同一套退避策略（``app.ai.llm_retry``）：
+    - 慢请求超时（APITimeoutError）与端点可达性问题（连接/超时/拒绝/限流）都可重试；
+    - 间隔按次数指数递增（base*2^attempt 封顶 max_s），429 用封顶间隔；
+    - 剩余累计预算不足下一次退避 → 放弃重试，抛原异常让调用方统一判定超时。
+    """
+    from openai import APITimeoutError
+
+    from app.ai.llm_retry import compute_retry_delay, has_retry_budget, is_retryable_error
+    from app.config import settings
+
+    max_retries = settings.llm_max_retries or 0
+    base_s = settings.llm_retry_base_s
+    max_s = settings.llm_retry_max_s
+
+    for attempt in range(max_retries + 1):
+        try:
+            return await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                temperature=temperature,
+            )
+        except Exception as exc:
+            retryable, tag = is_retryable_error(exc)
+            is_slow_timeout = isinstance(exc, APITimeoutError)
+            if not (retryable or is_slow_timeout) or attempt == max_retries:
+                raise
+            delay = compute_retry_delay(attempt, base_s, max_s, is_rate_limit=(tag == "rate_limit"))
+            if not has_retry_budget(cumulative_deadline, delay, 0.0):
+                raise
+            logger.warning(
+                f"[openai_loop] LLM call failed (attempt {attempt + 1}/{max_retries}, "
+                f"{tag}), retrying in {delay:.0f}s"
+            )
+            await asyncio.sleep(delay)
+
+
 async def openai_agent_loop(
     system_prompt: str,
     user_message: str | None = None,
@@ -205,11 +254,13 @@ async def openai_agent_loop(
         client = AsyncOpenAI(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key or "not-needed",
-            # 每请求超时取 min(全局配置, 调用方预算)：specialist 传 60s 时
-            # 不应被 settings 的 120s 覆盖（否则累计超时会 overshoot 一倍）
-            timeout=min(settings.llm_timeout or timeout, timeout),
-            # 连接类失败显式短退避重试（openai SDK 内部指数退避；次数可配）
-            max_retries=settings.llm_max_retries or 2,
+            # 单请求超时用全局 LLM_TIMEOUT 兜底，不被子预算 clamp：
+            # 慢模型（deepseek-v4-flash）一个请求可能就 200s+，子预算（如 specialist
+            # 180s）不应把单请求掐死 —— 累计超时由 while 轮次边界判定，单请求
+            # 若跑满 LLM_TIMEOUT 超出累计预算，在轮次末尾统一算超时。
+            timeout=settings.llm_timeout or timeout,
+            # 重试由本模块自研指数退避控制（见 _call_with_retry），SDK 内不再隐式重试
+            max_retries=0,
         )
 
         messages: list[dict] = [
@@ -229,11 +280,13 @@ async def openai_agent_loop(
                 success = False
                 break
 
-            resp = await client.chat.completions.create(
+            resp = await _call_with_retry(
+                client,
                 model=model,
                 messages=messages,
                 tools=tools_param,
                 temperature=settings.llm_temperature,
+                cumulative_deadline=start_time + timeout,
             )
             llm_circuit_breaker.record_success()
             turns += 1

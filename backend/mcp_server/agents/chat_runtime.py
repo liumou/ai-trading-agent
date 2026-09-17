@@ -27,7 +27,7 @@ READONLY_TOOLS = frozenset({
 HEAVY_TOOLS = frozenset({"compute_overfitting_score", "get_volatility_forecast", "get_var_analysis"})
 DEFAULT_BUDGET = dict(total_timeout_s=600, request_timeout_s=180, tool_timeout_s=60,
                       heavy_tool_timeout_s=300, max_turns=15, max_retries=0,
-                      reserve_fraction=0.15)
+                      reserve_fraction=0.15, reserve_s=30.0)
 SUMMARY_PROMPT = (
     "Tool/time budget is exhausted. Give a final summary using only the public text "
     "and tool evidence already available. Do not call tools. Explicitly identify "
@@ -81,7 +81,12 @@ class _Run:
                     raise ValueError(f"Invalid budget: {key}")
         self.started = time.monotonic()
         self.deadline = self.started + self.budget["total_timeout_s"]
-        self.reserve = min(self.budget["request_timeout_s"], self.budget["total_timeout_s"] * self.budget["reserve_fraction"])
+        # 保留时间：绝对秒数（reserve_s）优先，否则按比例 reserve_fraction。
+        # 绝对兜底避免 total 很大时 15% 过大（如 900s → 135s 提前 summary）。
+        self.reserve = budget.get("reserve_s") or min(
+            self.budget["request_timeout_s"],
+            self.budget["total_timeout_s"] * self.budget["reserve_fraction"]
+        )
         self.identity = dict(agent_id=agent_id, model=model, provider=provider)
         self.callback = emit
         self.parts, self.calls = [], []
@@ -167,22 +172,59 @@ class _Run:
 
 
 async def _openai_request(run, client, params):
-    from openai import APIConnectionError, APIStatusError, APITimeoutError
+    """单次 LLM 请求 + 指数退避重试。
 
-    async def request():
-        for attempt in range(run.budget["max_retries"] + 1):
-            try:
-                return await client.chat.completions.create(**params)
-            except Exception as exc:
-                retryable = isinstance(exc, APIConnectionError) or (
-                    isinstance(exc, APIStatusError) and (exc.status_code == 429 or exc.status_code >= 500))
-                if not retryable or attempt == run.budget["max_retries"]:
-                    if isinstance(exc, APITimeoutError):
-                        raise RuntimeStop("timed_out", "llm_request_timeout") from exc
-                    raise
-                await run.emit("provider_retry", attempt=attempt + 1)
-                await asyncio.sleep(min(.25 * 2 ** attempt, 2))
-    return await run.wait(request, run.budget["request_timeout_s"], "llm_request_timeout")
+    重试序列整体受调用方总预算（``run.deadline``）约束，而不是被单请求
+    ``request_timeout_s`` 一把梭住 —— 每次实际请求单独用 ``request_timeout_s``
+    包裹，退避间隔计入剩余预算：
+
+    - 慢请求超时（RuntimeStop llm_request_timeout / APITimeoutError）纳入可重试，
+      这是 ARK/deepseek 慢模型最常遇到的失败；
+    - 间隔按次数指数递增（base*2^attempt，封顶 max_s），429 用封顶间隔尊重平台限流；
+    - 剩余预算不足下一次退避 + 保留时间 → 放弃重试（fail-closed，不把分析无限拉长）。
+    """
+    from openai import APIStatusError
+
+    from app.ai.llm_retry import compute_retry_delay, has_retry_budget, is_retryable_error
+    from app.config import settings
+
+    max_retries = run.budget["max_retries"]
+    base_s = settings.llm_retry_base_s
+    max_s = settings.llm_retry_max_s
+
+    for attempt in range(max_retries + 1):
+        try:
+            return await run.wait(
+                lambda: client.chat.completions.create(**params),
+                run.budget["request_timeout_s"], "llm_request_timeout",
+            )
+        except RuntimeStop as exc:
+            # 只有单请求超时可重试；total_timeout / 其他 RuntimeStop 直接抛
+            if exc.reason != "llm_request_timeout" or attempt == max_retries:
+                raise
+            delay = compute_retry_delay(attempt, base_s, max_s)
+            if not has_retry_budget(run.deadline, delay, run.reserve):
+                raise RuntimeStop("timed_out", "total_timeout") from exc
+            await run.emit("provider_retry", attempt=attempt + 1)
+            await asyncio.sleep(delay)
+        except Exception as exc:
+            from openai import APITimeoutError
+
+            # 5xx 服务器错误与端点可达性问题一起纳入可重试
+            is_server_error = isinstance(exc, APIStatusError) and exc.status_code >= 500
+            retryable, tag = is_retryable_error(exc)
+            if not (retryable or is_server_error) or attempt == max_retries:
+                # 慢请求超时在不可重试/耗尽时转成结构化 RuntimeStop（不是 provider_error）
+                if isinstance(exc, APITimeoutError):
+                    raise RuntimeStop("timed_out", "llm_request_timeout") from exc
+                raise
+            delay = compute_retry_delay(
+                attempt, base_s, max_s, is_rate_limit=(tag == "rate_limit")
+            )
+            if not has_retry_budget(run.deadline, delay, run.reserve):
+                raise RuntimeStop("timed_out", "total_timeout") from exc
+            await run.emit("provider_retry", attempt=attempt + 1)
+            await asyncio.sleep(delay)
 
 
 async def _run_openai(run, system_prompt, user_message, model):
