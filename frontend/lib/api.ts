@@ -383,4 +383,32 @@ export const getAIUsageBreakdown = (days: number) =>
 export const getAIUsageRecent = (limit = 50) =>
   api.get("/api/ai-usage/recent", { params: { limit } });
 
+// Agent Chat — 对话式交易计划/报告（只读分析）
+export interface AgentChatSession {
+  id: number;
+  title: string;
+  symbol: string;
+  timeframe: string;
+  mode: string;
+  created_at: string;
+  updated_at: string | null;
+}
+export interface AgentChatMessage {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  tool_calls: unknown[] | null;
+  duration_s: number | null;
+  created_at: string;
+}
+export const listChatSessions = () => api.get("/api/agent-chat/sessions");
+export const createChatSession = (data: { symbol: string; timeframe?: string; mode?: string; title?: string }) =>
+  api.post("/api/agent-chat/sessions", data);
+export const getChatSession = (id: number) => api.get(`/api/agent-chat/sessions/${id}`);
+export const deleteChatSession = (id: number) => api.delete(`/api/agent-chat/sessions/${id}`);
+export const sendChatMessage = (id: number, message: string) =>
+  api.post(`/api/agent-chat/sessions/${id}/messages`, { message }, { timeout: 150000 });
+export const sendChatPreset = (id: number, preset: "trading_plan" | "report") =>
+  api.post(`/api/agent-chat/sessions/${id}/preset`, { preset }, { timeout: 150000 });
+
 export default api;

@@ -27,6 +27,7 @@ import {
   Zap,
   Database,
   CandlestickChart,
+  MessagesSquare,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -49,6 +50,7 @@ const navGroups: NavGroup[] = [
     labelKey: "trading",
     items: [
       { href: "/symbols", labelKey: "symbols", icon: CandlestickChart },
+      { href: "/chat", labelKey: "agentChat", icon: MessagesSquare },
       { href: "/backtest", labelKey: "backtest", icon: BarChart3 },
       { href: "/history", labelKey: "history", icon: History },
     ],

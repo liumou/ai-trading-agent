@@ -1,0 +1,15 @@
+{
+  "title": "Agent 对话",
+  "subtitle": "与 AI 交易顾问对话，生成交易计划或市场报告（只读分析，不可交易）",
+  "newSession": "新会话",
+  "delete": "删除会话",
+  "sessionCreated": "会话已创建",
+  "tradingPlan": "生成交易计划",
+  "report": "生成报告",
+  "inputPlaceholder": "输入问题，例如：现在 GOLD 适合做多吗？",
+  "emptyHint": "选择品种后开始提问，或点击上方按钮一键生成交易计划/报告",
+  "thinking": "Agent 正在分析数据…",
+  "sendFailed": "发送失败，请稍后重试",
+  "loadFailed": "加载失败，请检查后端连接",
+  "disclaimer": "本对话内容仅为 AI 分析参考，不构成投资建议；Agent 无法执行任何交易。"
+}

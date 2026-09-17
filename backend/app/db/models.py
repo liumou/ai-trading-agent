@@ -457,3 +457,30 @@ class AIUsageLog(Base):
     tool_calls_count: Mapped[int] = mapped_column(Integer, default=0)
     success: Mapped[bool] = mapped_column(Boolean, default=True)
     raw_usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+# ─── Agent Chat（对话式交易计划/报告，只读分析，不可交易）────────────────────
+
+
+class AgentChatSession(Base):
+    __tablename__ = "agent_chat_sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(200), default="新会话", server_default="新会话")
+    symbol: Mapped[str] = mapped_column(String(30))
+    timeframe: Mapped[str] = mapped_column(String(8), default="M15", server_default="M15")
+    mode: Mapped[str] = mapped_column(String(20), default="free", server_default="free")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AgentChatMessage(Base):
+    __tablename__ = "agent_chat_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
+    content: Mapped[str] = mapped_column(Text)
+    tool_calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

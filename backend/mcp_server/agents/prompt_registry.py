@@ -97,6 +97,11 @@ AGENT_META: dict[str, dict[str, str]] = {
         "model": "claude-haiku-4-5-20251001",
         "description": "ทบทวนผลเทรด — เรียนรู้จากอดีต, ตรวจจับ regime, แนะนำกลยุทธ์",
     },
+    "chat_agent": {
+        "name": "Chat Agent",
+        "model": "claude-sonnet-4-20250514",
+        "description": "对话式交易顾问 — 与用户多轮对话，生成交易计划/市场报告（只读，不可交易）",
+    },
     "single_agent": {
         "name": "Single Agent",
         "model": "claude-sonnet-4-20250514",

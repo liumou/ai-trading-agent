@@ -18,6 +18,7 @@ from app.ai.strategy_optimizer import StrategyOptimizer
 from app.api.routes import (
     activity,
     admin,
+    agent_chat,
     agent_prompts,
     ai_insights,
     ai_usage,
@@ -594,6 +595,7 @@ app.include_router(integration.router)
 app.include_router(webhooks.router)
 app.include_router(activity.router)
 app.include_router(agent_prompts.router)
+app.include_router(agent_chat.router)
 app.include_router(ai_usage.router)
 app.include_router(memory_routes.router)
 app.include_router(quant.router)
