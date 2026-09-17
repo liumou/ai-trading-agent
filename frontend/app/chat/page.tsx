@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/select";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FileText, Loader2, Menu, Plus, Send, Trash2, Users } from "lucide-react";
+import { FileText, Loader2, Menu, Plus, Send, Trash2 } from "lucide-react";
 import {
   cancelChatRun,
   createChatSession,
@@ -71,7 +71,6 @@ export default function AgentChatPage() {
   const [runId, setRunId] = useState<string | null>(null);
   const [config, setConfig] = useState<Record<string, number | undefined> | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const pendingRef = useRef<{ requestId: string } | null>(null);
 
   const onRunUpdate = useCallback((run: AgentChatRun) => {
     if (!isActiveRun(run)) {
@@ -187,9 +186,7 @@ export default function AgentChatPage() {
       }
       // 幂等键：网络歧义时前端重试可复用同一 request_id，后端不产生重复任务
       const requestId = createRequestId();
-      pendingRef.current = { requestId };
       const res = await startChatRun(sid as number, { ...payload, mode, request_id: requestId });
-      pendingRef.current = null;
       setRunId(res.data.run.id);
       saveSelection(sid as number, res.data.run.id);
       await loadMessages(sid as number);
@@ -230,9 +227,10 @@ export default function AgentChatPage() {
   };
 
   const handleRetry = () => {
-    const message = detail?.run.message;
-    if (!message || submitting) return;
-    void submit({ message });
+    const message = detail?.run.message ?? undefined;
+    const preset = detail?.run.preset as AgentChatPreset | undefined;
+    if ((!message && !preset) || submitting) return;
+    void submit({ message, preset });
   };
 
 

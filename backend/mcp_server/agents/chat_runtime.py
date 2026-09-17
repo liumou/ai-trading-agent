@@ -26,7 +26,8 @@ READONLY_TOOLS = frozenset({
 })
 HEAVY_TOOLS = frozenset({"compute_overfitting_score", "get_volatility_forecast", "get_var_analysis"})
 DEFAULT_BUDGET = dict(total_timeout_s=600, request_timeout_s=180, tool_timeout_s=60,
-                      heavy_tool_timeout_s=300, max_turns=15, max_retries=0)
+                      heavy_tool_timeout_s=300, max_turns=15, max_retries=0,
+                      reserve_fraction=0.15)
 SUMMARY_PROMPT = (
     "Tool/time budget is exhausted. Give a final summary using only the public text "
     "and tool evidence already available. Do not call tools. Explicitly identify "
@@ -80,7 +81,7 @@ class _Run:
                     raise ValueError(f"Invalid budget: {key}")
         self.started = time.monotonic()
         self.deadline = self.started + self.budget["total_timeout_s"]
-        self.reserve = min(self.budget["request_timeout_s"], self.budget["total_timeout_s"] * .15)
+        self.reserve = min(self.budget["request_timeout_s"], self.budget["total_timeout_s"] * self.budget["reserve_fraction"])
         self.identity = dict(agent_id=agent_id, model=model, provider=provider)
         self.callback = emit
         self.parts, self.calls = [], []

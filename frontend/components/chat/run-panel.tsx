@@ -83,7 +83,7 @@ export function RunPanel({
   const reason = run.reason_code
     ? `${t(REASON_KEY[run.reason_code] || "reasonCodePrefix")} (${run.reason_code})`
     : "";
-  const events = [...(detail.events || [])].reverse();
+  const events = [...(detail.events || [])].toReversed();
   const agents = detail.agents || [];
   const active = isActiveRun({ status });
 

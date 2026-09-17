@@ -17,6 +17,7 @@ export function useRunDetail(runId: string | null, onUpdate: (run: AgentChatRun)
     let cursor = 0;
     let accumulated: AgentChatRunDetail["events"] = [];
     let failures = 0;
+    const MAX_FAILURES = 20; // ~5 min at exponential backoff before giving up
     const poll = async () => {
       try {
         const { data } = await getChatRun(runId, cursor, 100, controller.signal);
@@ -38,6 +39,10 @@ export function useRunDetail(runId: string | null, onUpdate: (run: AgentChatRun)
         if (controller.signal.aborted) return;
         setDisconnected(true);
         failures += 1;
+        if (failures >= MAX_FAILURES) {
+          console.warn("[useRunDetail] Max polling failures reached, stopping.");
+          return;
+        }
         timer = setTimeout(poll, Math.min(15000, 2000 * failures));
       }
     };

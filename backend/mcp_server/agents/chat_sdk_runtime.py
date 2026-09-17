@@ -101,7 +101,7 @@ async def run_sdk(run, system_prompt, user_message, model):
             permission_mode="default", can_use_tool=deny_permission,
             hooks={"PreToolUse": [HookMatcher(hooks=[pre_tool])]},
             setting_sources=[], plugins=[],
-            extra_args={"strict-mcp-config": None, "disable-slash-commands": None},
+            extra_args={},
         )
         async def prompts():
             yield {"type": "user", "message": {"role": "user", "content": prompt}}

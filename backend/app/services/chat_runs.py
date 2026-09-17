@@ -23,6 +23,8 @@ from app.db.session import async_session
 ACTIVE = ("queued", "running")
 TERMINAL = {"completed", "failed", "timed_out", "incomplete", "cancelled", "interrupted"}
 
+_SECRET_PATTERN = re.compile(r"(?i)(api.?key|authorization|password|secret|token|cookie)")
+
 
 def now():
     return datetime.now(UTC).replace(tzinfo=None)
@@ -30,12 +32,11 @@ def now():
 
 def sanitize(value, limit=24000):
     """Bound JSON after recursive credential redaction, including free text."""
-    secret = re.compile(r"(?i)(api.?key|authorization|password|secret|token|cookie)")
     def clean(v, depth=0):
         if depth > 12:
             return "[truncated:depth]"
         if isinstance(v, dict):
-            return {str(k)[:100]: "[REDACTED]" if secret.search(str(k)) else clean(x, depth+1)
+            return {str(k)[:100]: "[REDACTED]" if _SECRET_PATTERN.search(str(k)) else clean(x, depth+1)
                     for k, x in list(v.items())[:200]}
         if isinstance(v, (list, tuple)):
             return [clean(x, depth+1) for x in v[:200]]
