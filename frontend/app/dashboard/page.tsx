@@ -192,14 +192,16 @@ export default function DashboardPage() {
     subscribe("position_update", (data) => {
       const d = data as { symbol?: string; positions: typeof positions };
       if (d.positions) {
-        // Each engine pushes only its own symbol's positions — merge, don't replace
-        const sym = d.symbol || (d.positions.length > 0 ? d.positions[0].symbol : null);
-        if (sym) {
-          setPositions([
-            ...useBotStore.getState().positions.filter((p) => p.symbol !== sym),
-            ...d.positions,
-          ]);
-        }
+        // 按 ticket 去重合并：每个引擎只推送自己的持仓，保留其它品种的旧持仓。
+        // 用 ticket 作唯一键而非 symbol —— MT5 持仓的 symbol 可能是券商别名
+        // （如 GOLD_），与引擎符号（GOLD）不一致时按 symbol 过滤会漏掉旧持仓
+        // 导致叠加。
+        setPositions([
+          ...useBotStore.getState().positions.filter(
+            (p) => !d.positions.some((np) => np.ticket === p.ticket)
+          ),
+          ...d.positions,
+        ]);
       }
     });
     subscribe("sentiment_update", (data) => { if (data) setSentiment(data as NonNullable<typeof sentiment>); });

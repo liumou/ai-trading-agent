@@ -7,6 +7,7 @@ import asyncio
 from loguru import logger
 
 from app.constants import MT5_MAGIC_NUMBER
+from app.config import get_canonical_symbol
 from app.mt5.connector import MT5BridgeConnector
 from app.mt5.symbol_resolver import to_broker_alias
 
@@ -85,6 +86,11 @@ class OrderExecutor:
         if symbol:
             broker = to_broker_alias(symbol)
             positions = [p for p in positions if p.get("symbol") in (symbol, broker)]
+        # 归一化 symbol 为规范名（券商名 → 引擎名）。MT5 Bridge 返回的持仓
+        # symbol 是券商原始名（如 GOLD_），而引擎/前端按规范名（GOLD）过滤，
+        # 不做归一化会导致前端 position_update 合并时旧持仓永不被清除（叠加）。
+        for p in positions:
+            p["symbol"] = get_canonical_symbol(p.get("symbol") or "")
         return positions
 
     async def modify_position(self, ticket: int, sl: float | None = None, tp: float | None = None) -> dict:
