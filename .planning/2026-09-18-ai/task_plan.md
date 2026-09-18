@@ -12,7 +12,7 @@
 向用户提交根因分析与优化计划，等待批准后执行。
 
 ## Current Phase
-Phase 3 实施完成，Phase 4 验证中
+Phase 3 实施完成 + 代码审查修复完成，Phase 4 验证中
 
 ## 根因（一句话）
 慢 LLM（deepseek-v4-flash @ ARK，单请求 120–300s）超过了各级预算的**单请求 clamp 值**：
@@ -77,9 +77,21 @@ Phase 3 实施完成，Phase 4 验证中
 - [ ] 手动：chat 页 experts 模式跑 GOLD 报告，5 路 agent 全部完成（需部署后）
 - [ ] 观察日志：重试事件（provider_retry）按 15s/30s/60s/… 递增（需部署后）
 
-### Phase 5: 交付 — ⬜ pending
-- [ ] 提交代码 + 更新 .env 配置
-- [ ] 向用户报告部署验证结果
+### Phase 5: 交付 — ✅ complete
+- [x] 提交代码（f60c49f）+ 提交规划文档（5f67322）
+- [x] .env 配置已更新（本地未跟踪文件，直接生效）
+- [x] 代码审查（superpowers:requesting-code-review）+ 修复提交（43fa2dc）
+- [ ] 部署后手动验证 chat experts + 自动交易（待用户部署）
+
+### Phase 6: 代码审查修复 — ✅ complete（2026-09-18）
+- [x] C1(CRITICAL)：openai_loop 时间基准不一致 → 重试预算闸门恒真。改 start_mono=monotonic
+- [x] I1：reserve_s=30 无差别复制进小 allocation 专家 → 按 allocation 缩放
+- [x] I2：5xx 两条路径不一致 → 下沉到 llm_retry.is_retryable_error()
+- [x] I3：剩余预算 <=0 硬跑 0.001s → 跳过并返回结构化失败
+- [x] I4：预算耗尽 reason_code 保留标签 → retry_budget_exhausted:<tag>
+- [x] M2/M3/M7：max(0,..) 统一 / reserve_s 显式判断 / 删冗余
+- [x] M5：补测试（5xx 可重试、monotonic 契约、openai_loop 预算闸门）
+- 结果：697 passed 无回归（commit 43fa2dc）
 
 ## Decisions Made
 | Decision | Rationale |

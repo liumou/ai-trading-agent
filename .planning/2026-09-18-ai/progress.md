@@ -67,3 +67,22 @@
 | Error | Resolution |
 |-------|------------|
 | venv 无 ruff | py_compile 语法验证 + CI 覆盖 lint |
+
+## Session: 2026-09-18（代码审查修复）— superpowers:requesting-code-review
+
+### 审查发现与修复（commit 43fa2dc）
+| 级别 | 问题 | 修复 |
+|------|------|------|
+| CRITICAL | C1：openai_loop 用 time.time()(wall-clock) 构造 deadline，llm_retry 用 time.monotonic() → 剩余预算恒 ~17.9 亿秒，重试预算闸门失效 | start_mono=time.monotonic()，统一 monotonic 基准 |
+| IMPORTANT | I1：reserve_s=30 复制进小 allocation 专家（reflector 90s 占 33%）吃掉重试空间 | reserve 按 allocation 缩放（min(全局, alloc*fraction)） |
+| IMPORTANT | I2：5xx 两条路径行为不一致（chat_runtime 有分支，openai_loop 没有） | 5xx 判定下沉到 llm_retry.is_retryable_error() 返回 server_error |
+| IMPORTANT | I3：剩余预算 clamp 到 0.001s → synthesizer 拿 0.001s 预算整个分析被清空 | left<=0 时跳过该专家返回结构化失败 |
+| IMPORTANT | I4：重试预算耗尽 reason_code 一律 total_timeout 掩盖真实原因 | retry_budget_exhausted:<tag> |
+| MINOR | M2/M3/M7 | max(0,..) 统一 / reserve_s 显式 None 判断 / 删冗余 is_slow_timeout |
+| MINOR | M5 测试缺口 | 新增 5xx 可重试、monotonic 契约、openai_loop 预算闸门防护 |
+
+### Test Results（审查修复后）
+| 测试集 | 结果 |
+|--------|------|
+| test_llm_retry / chat_runtime / openai_loop / chat_workflow | 53/53 ✅ |
+| 全量 unit（排除 test_multi_agent 环境失败） | 697 passed ✅ |
