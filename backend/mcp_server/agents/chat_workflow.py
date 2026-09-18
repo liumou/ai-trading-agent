@@ -19,6 +19,7 @@ def chat_budget() -> dict:
         "max_retries": max(0, settings.llm_max_retries),
         # 绝对保留时间（秒）：最终 summary 的兜底，避免按比例在总预算大时过早强制总结
         "reserve_s": 30.0,
+        "reserve_fraction": 0.15,
     }
 
 
@@ -76,7 +77,17 @@ async def run_workflow(run: dict, emit) -> dict:
 
         await event("agent_started", {"model": model, "provider": settings.llm_provider,
                                      "input": context, "depends_on": dependencies})
-        local_budget = {**budget, "total_timeout_s": max(0.001, min(allocation, deadline-time.monotonic()))}
+        left = deadline - time.monotonic()
+        # 全局 deadline 已耗尽 → 跳过该专家，返回结构化失败（不硬跑 0.001s）
+        if left <= 0:
+            reports[role] = {"status": "timed_out", "reason_code": "total_timeout",
+                             "response": "",
+                             "partial_response": f"[{role} 未执行：全局预算已耗尽]"}
+            return reports[role]
+        alloc_secs = max(0.0, min(allocation, left))
+        # reserve 按 allocation 缩放：小时间片专家不被全局 reserve_s=30 吃掉重试空间
+        scaled_reserve = min(budget.get("reserve_s") or 30.0, alloc_secs * budget.get("reserve_fraction", 0.15))
+        local_budget = {**budget, "total_timeout_s": alloc_secs, "reserve_s": scaled_reserve}
         result = await run_chat_runtime(
             system_prompt=prompt, user_message=context, tool_names=list(tools),
             agent_id=role, model=model, provider=settings.llm_provider,
@@ -105,8 +116,10 @@ async def run_workflow(run: dict, emit) -> dict:
             # 实际仍受全局 deadline 约束，串行拖慢不再让后续 agent 分配到 0。
             async with asyncio.TaskGroup() as group:
                 group.create_task(agent("reflector", question, [], total * 0.15))
-                group.create_task(agent("technical_analyst", question, [], total * 0.20))
-                group.create_task(agent("fundamental_analyst", question, [], total * 0.20))
+                # tech/fund 与 reflector 并行，输入不依赖 reflector 内容（工具集不重叠），
+                # 但审计上标注依赖 reflector 存在性（同 phase 并行，非内容依赖）。
+                group.create_task(agent("technical_analyst", question, ["reflector"], total * 0.20))
+                group.create_task(agent("fundamental_analyst", question, ["reflector"], total * 0.20))
             roles = ["reflector", "technical_analyst", "fundamental_analyst"]
             await agent("plan_drafter", context_for(roles), [executions[r] for r in roles], total * 0.15)
             await agent("risk_analyst", context_for(["plan_drafter"]), [executions["plan_drafter"]], total * 0.20)

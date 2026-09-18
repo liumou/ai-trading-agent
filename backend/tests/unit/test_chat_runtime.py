@@ -219,11 +219,12 @@ async def test_retry_skipped_when_budget_exhausted(harness, monkeypatch):
     client, _, events, run = harness
     client.chat.completions.create.side_effect = APITimeoutError("slow")
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
-    # 小总预算 + 大退避间隔：第一次失败后剩余已不够退避 → 直接 total_timeout
+    # 小总预算 + 大退避间隔：第一次失败后剩余已不够退避 → 放弃重试
     with patch("app.config.settings.llm_retry_base_s", 5), \
          patch("app.config.settings.llm_retry_max_s", 10):
         result = await run(budget={"max_retries": 2, "total_timeout_s": 0.03})
     assert result["status"] == "timed_out"
-    assert result["reason_code"] == "total_timeout"
+    # 保留触发原因标签（retry_budget_exhausted:timeout），不掩盖为 total_timeout
+    assert result["reason_code"] == "retry_budget_exhausted:timeout"
     assert client.chat.completions.create.await_count == 1
     assert not any(k == "provider_retry" for k, _ in events)

@@ -142,16 +142,14 @@ async def _call_with_retry(
     """OpenAI 兼容请求 + 指数退避重试（替代 SDK 内部不可控重试）。
 
     与 chat_runtime 共享同一套退避策略（``app.ai.llm_retry``）：
-    - 慢请求超时（APITimeoutError）与端点可达性问题（连接/超时/拒绝/限流）都可重试；
+    - 慢请求超时（APITimeoutError）与端点可达性问题（连接/超时/拒绝/限流/5xx）都可重试；
     - 间隔按次数指数递增（base*2^attempt 封顶 max_s），429 用封顶间隔；
-    - 剩余累计预算不足下一次退避 → 放弃重试，抛原异常让调用方统一判定超时。
+    - 剩余累计预算不足下一次退避 → 放弃重试（fail-closed，返回 None 让调用方判定超时）。
     """
-    from openai import APITimeoutError
-
     from app.ai.llm_retry import compute_retry_delay, has_retry_budget, is_retryable_error
     from app.config import settings
 
-    max_retries = settings.llm_max_retries or 0
+    max_retries = max(0, settings.llm_max_retries)
     base_s = settings.llm_retry_base_s
     max_s = settings.llm_retry_max_s
 
@@ -165,8 +163,7 @@ async def _call_with_retry(
             )
         except Exception as exc:
             retryable, tag = is_retryable_error(exc)
-            is_slow_timeout = isinstance(exc, APITimeoutError)
-            if not (retryable or is_slow_timeout) or attempt == max_retries:
+            if not retryable or attempt == max_retries:
                 raise
             delay = compute_retry_delay(attempt, base_s, max_s, is_rate_limit=(tag == "rate_limit"))
             if not has_retry_budget(cumulative_deadline, delay, 0.0):
@@ -211,6 +208,9 @@ async def openai_agent_loop(
             "cost_usd": None,
         }
 
+    # 累计超时判定与重试 deadline 用单调时钟（monotonic），避免 NTP 校时/改时钟干扰；
+    # duration_s 显示用 wall-clock（time.time()）在返回处单独计算。
+    start_mono = time.monotonic()
     start_time = time.time()
     text_parts: list[str] = []
     tool_calls_log: list[dict] = []
@@ -269,8 +269,8 @@ async def openai_agent_loop(
         ]
 
         while True:
-            # 累计超时判定（不依赖单请求 timeout）
-            if time.time() - start_time > timeout:
+            # 累计超时判定（不依赖单请求 timeout；monotonic 基准）
+            if time.monotonic() - start_mono > timeout:
                 logger.warning(f"[openai_loop] cumulative timeout after {timeout}s")
                 success = False
                 break
@@ -286,7 +286,7 @@ async def openai_agent_loop(
                 messages=messages,
                 tools=tools_param,
                 temperature=settings.llm_temperature,
-                cumulative_deadline=start_time + timeout,
+                cumulative_deadline=start_mono + timeout,
             )
             llm_circuit_breaker.record_success()
             turns += 1

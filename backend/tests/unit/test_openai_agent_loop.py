@@ -389,3 +389,31 @@ class TestRetryBackoff:
             )
         assert mock_client.chat.completions.create.await_count == 1
         assert result.get("error")  # 结构化失败标记
+
+    @pytest.mark.asyncio
+    async def test_retry_budget_exhausted_stops_retrying(self, monkeypatch):
+        """累计预算不足下一次退避 → 放弃重试（C1 防护：闸门必须受 monotonic 基准约束）。
+
+        timeout=1 + base=5：第一次请求超时后已超预算，不应再退避重试。
+        此前 C1 bug（wall-clock deadline 传入 monotonic 基准）会让闸门恒真、
+        重试被无限放大；此用例锁定「预算不足即放弃」。
+        """
+        import asyncio
+
+        from openai import APITimeoutError
+
+        server = _fake_server([_fake_tool("get_tick")], {})
+        patches, mock_client, _ = _patch_env(server, [])
+        mock_client.chat.completions.create.side_effect = APITimeoutError("slow")
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        with patches[0], patches[1], patches[2], \
+             patch("app.config.settings.llm_max_retries", 3), \
+             patch("app.config.settings.llm_retry_base_s", 5), \
+             patch("app.config.settings.llm_retry_max_s", 10):
+            result = await openai_agent_loop(
+                system_prompt="sys", user_message="a", tool_names=["get_tick"], agent_id="test",
+                timeout=1,  # 累计预算 1s，第一次请求就耗尽
+            )
+        # 只尝试一次（预算不足 → 放弃重试）
+        assert mock_client.chat.completions.create.await_count == 1
+        assert result.get("error")

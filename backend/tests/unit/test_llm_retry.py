@@ -90,3 +90,58 @@ class TestBudget:
     def test_has_retry_budget_false_at_deadline(self):
         deadline = time.monotonic()
         assert has_retry_budget(deadline, next_delay_s=15, reserve_s=0) is False
+
+
+class TestServerErrorRetryable:
+    """5xx 服务器错误应纳入可重试（两条路径统一经 helper 判定）。"""
+
+    def test_api_status_500_retryable(self):
+        from openai import APIStatusError
+        import httpx
+
+        req = httpx.Request("POST", "http://x")
+        e = APIStatusError("boom", response=httpx.Response(500, request=req), body=None)
+        retryable, tag = is_retryable_error(e)
+        assert retryable is True
+        assert tag == "server_error"
+
+    def test_api_status_502_retryable(self):
+        from openai import APIStatusError
+        import httpx
+
+        req = httpx.Request("POST", "http://x")
+        e = APIStatusError("bad gateway", response=httpx.Response(502, request=req), body=None)
+        retryable, _ = is_retryable_error(e)
+        assert retryable is True
+
+    def test_api_status_400_not_retryable(self):
+        from openai import APIStatusError
+        import httpx
+
+        req = httpx.Request("POST", "http://x")
+        e = APIStatusError("bad request", response=httpx.Response(400, request=req), body=None)
+        retryable, tag = is_retryable_error(e)
+        assert retryable is False
+        assert tag != "server_error"
+
+
+class TestMonotonicClockGuard:
+    """预算闸门的时间基准契约（C1 防护）。
+
+    关键：调用方（openai_loop / chat_runtime）必须用 time.monotonic() 构造 deadline，
+    与 helper 内部的 now 基准一致。若误用 wall-clock（time.time()），remaining 会
+    变成约 17.9 亿秒、闸门恒真、预算约束失效。helper 本身是纯函数无法拒绝 wall-clock，
+    真正的防护在调用方测试（见 test_openai_agent_loop 的
+    test_retry_budget_exhausted_stops_retrying）—— 这里锁定 helper 的单调基准语义。
+    """
+
+    def test_monotonic_deadline_correct(self):
+        d = time.monotonic() + 60
+        assert remaining_retry_time(d) == pytest.approx(60, abs=2)
+
+    def test_has_retry_budget_uses_monotonic_base(self):
+        """deadline 与内部 now 同基准（monotonic）时，剩余预算正确。"""
+        import time as _t
+
+        d = _t.monotonic() + 30
+        assert has_retry_budget(d, next_delay_s=15, reserve_s=10) is True

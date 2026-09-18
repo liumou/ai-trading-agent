@@ -40,9 +40,21 @@ def is_retryable_error(e: BaseException) -> tuple[bool, str]:
     - timeout / connect / refused / dns：端点可达性问题，重试有意义。
     - rate_limit：平台限流，重试有意义但必须用更长间隔（调用方按
       ``is_rate_limit=True`` 走封顶退避）。
+    - 5xx 服务器错误（``APIStatusError`` status >= 500）：临时故障，重试有意义。
     其余（auth / 4xx 业务错误 / 其他）不可重试。
     """
     from app.ai.llm_errors import classify_llm_error
+
+    # 5xx 服务器错误：classify_llm_error 无法识别（落到 "other"），这里显式补上
+    try:
+        from openai import APIStatusError
+
+        is_server_error = isinstance(e, APIStatusError) and e.status_code >= 500
+    except Exception:
+        is_server_error = False
+
+    if is_server_error:
+        return True, "server_error"
 
     tag = classify_llm_error(e)
     retryable = tag in ("timeout", "connect", "refused", "dns", "rate_limit")

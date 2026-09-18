@@ -75,18 +75,21 @@ class _Run:
                 minimum = 0 if key == "max_retries" else 1 if key == "max_turns" else 0
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                     raise ValueError(f"Invalid budget: {key}")
-                if value < minimum or (key.endswith("_s") and value == 0):
+                if value < minimum or (key.endswith("_s") and value == 0 and key != "reserve_s"):
                     raise ValueError(f"Invalid budget: {key}")
                 if key in {"max_turns", "max_retries"} and not isinstance(value, int):
                     raise ValueError(f"Invalid budget: {key}")
         self.started = time.monotonic()
         self.deadline = self.started + self.budget["total_timeout_s"]
-        # 保留时间：绝对秒数（reserve_s）优先，否则按比例 reserve_fraction。
+        # 保留时间：显式 reserve_s（可为 0=不预留）优先；未提供时按比例 reserve_fraction。
         # 绝对兜底避免 total 很大时 15% 过大（如 900s → 135s 提前 summary）。
-        self.reserve = budget.get("reserve_s") or min(
-            self.budget["request_timeout_s"],
-            self.budget["total_timeout_s"] * self.budget["reserve_fraction"]
-        )
+        reserve_s = budget.get("reserve_s")
+        if reserve_s is None:
+            reserve_s = min(
+                self.budget["request_timeout_s"],
+                self.budget["total_timeout_s"] * self.budget["reserve_fraction"],
+            )
+        self.reserve = reserve_s
         self.identity = dict(agent_id=agent_id, model=model, provider=provider)
         self.callback = emit
         self.parts, self.calls = [], []
@@ -183,8 +186,6 @@ async def _openai_request(run, client, params):
     - 间隔按次数指数递增（base*2^attempt，封顶 max_s），429 用封顶间隔尊重平台限流；
     - 剩余预算不足下一次退避 + 保留时间 → 放弃重试（fail-closed，不把分析无限拉长）。
     """
-    from openai import APIStatusError
-
     from app.ai.llm_retry import compute_retry_delay, has_retry_budget, is_retryable_error
     from app.config import settings
 
@@ -204,16 +205,16 @@ async def _openai_request(run, client, params):
                 raise
             delay = compute_retry_delay(attempt, base_s, max_s)
             if not has_retry_budget(run.deadline, delay, run.reserve):
+                # 预算不足放弃重试：保留「总预算」语义（单请求超时是触发原因）
                 raise RuntimeStop("timed_out", "total_timeout") from exc
             await run.emit("provider_retry", attempt=attempt + 1)
             await asyncio.sleep(delay)
         except Exception as exc:
             from openai import APITimeoutError
 
-            # 5xx 服务器错误与端点可达性问题一起纳入可重试
-            is_server_error = isinstance(exc, APIStatusError) and exc.status_code >= 500
+            # 5xx 服务器错误与端点可达性问题统一由 helper 判定（含 server_error 标签）
             retryable, tag = is_retryable_error(exc)
-            if not (retryable or is_server_error) or attempt == max_retries:
+            if not retryable or attempt == max_retries:
                 # 慢请求超时在不可重试/耗尽时转成结构化 RuntimeStop（不是 provider_error）
                 if isinstance(exc, APITimeoutError):
                     raise RuntimeStop("timed_out", "llm_request_timeout") from exc
@@ -222,7 +223,9 @@ async def _openai_request(run, client, params):
                 attempt, base_s, max_s, is_rate_limit=(tag == "rate_limit")
             )
             if not has_retry_budget(run.deadline, delay, run.reserve):
-                raise RuntimeStop("timed_out", "total_timeout") from exc
+                # 预算不足放弃重试：保留触发原因标签（如 retry_budget_exhausted:server_error），
+                # 不再掩盖成 total_timeout
+                raise RuntimeStop("timed_out", f"retry_budget_exhausted:{tag}") from exc
             await run.emit("provider_retry", attempt=attempt + 1)
             await asyncio.sleep(delay)
 
