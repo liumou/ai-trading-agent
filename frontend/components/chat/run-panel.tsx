@@ -1,11 +1,16 @@
 "use client";
 
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Ban, Check, Loader2, RotateCw, Wrench, X } from "lucide-react";
-import type { AgentChatEvent, AgentChatRun, AgentChatRunDetail } from "@/lib/api";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Ban, Check, ChevronDown, Clock, Loader2, RotateCw, X, WifiOff,
+} from "lucide-react";
+import type { AgentChatRun, AgentChatRunAgent, AgentChatRunDetail } from "@/lib/api";
 import { isActiveRun } from "./run-state";
+import { RunEvents } from "./run-events";
 
 const STATUS_KEY: Record<string, string> = {
   queued: "statusQueued", running: "statusRunning", completed: "statusCompleted",
@@ -22,11 +27,7 @@ const REASON_KEY: Record<string, string> = {
   lease_lost: "reasonLeaseLost",
 };
 
-const EVENT_KEY: Record<string, string> = {
-  tool_started: "toolStart", tool_finished: "toolEnd", tool_error: "toolError",
-  assistant_text: "agentText",
-};
-
+/** 状态分层着色：完成=绿，运行中=蓝，失败/中断/超时=红。 */
 const tone = (status: string) =>
   status === "completed"
     ? "text-green-600 dark:text-green-400"
@@ -34,32 +35,86 @@ const tone = (status: string) =>
       ? "text-blue-600 dark:text-blue-400"
       : "text-red-600 dark:text-red-400";
 
-function EventRow({ event }: { event: AgentChatEvent }) {
+/** 单个 Agent 贡献卡：默认显示角色/状态/模型/summary，展开才 mount report。 */
+function AgentCard({ agent }: { agent: AgentChatRunAgent }) {
   const t = useTranslations("agentChat");
-  const payload = (event.payload || {}) as Record<string, unknown>;
-  const failed = payload.status === "failed" || Boolean(payload.reason_code);
-  const label = t(EVENT_KEY[event.event_type] || "executionTrace");
-  const name = (payload.tool || payload.agent_id) as string | undefined;
-  const output = typeof payload.output === "string" ? payload.output : "";
-  const text = typeof payload.text === "string" ? payload.text : "";
+  const [open, setOpen] = useState(false);
+  const id = String(agent.agent_id || agent.role || t("agentLabel"));
+  const hasReport = typeof agent.report === "string" && agent.report.length > 0;
+  const summary = typeof agent.summary === "string" && agent.summary.length > 0
+    ? agent.summary
+    : hasReport
+      ? undefined
+      : t("agentStepWaiting");
+
   return (
-    <div className="flex gap-2 border-l-2 border-muted pl-2 py-0.5 text-[11px]">
-      <span className="text-muted-foreground shrink-0">#{event.sequence}</span>
-      <span className={failed ? "text-red-600 dark:text-red-400" : "text-foreground"}>
-        {label}
-        {name ? ` · ${name}` : ""}
-        {typeof payload.duration_s === "number" ? ` · ${payload.duration_s.toFixed(2)}s` : ""}
-      </span>
-      {(text || output) && (
-        <span className="text-muted-foreground truncate max-w-[38ch]">
-          {text || output}
-          {payload.truncated ? ` · ${t("truncated")}` : ""}
-        </span>
+    <li className="rounded-lg bg-muted/50 p-2">
+      <div className="flex items-center gap-1.5">
+        <span className="font-medium truncate">{id}</span>
+        {agent.status === "completed" ? (
+          <Check className="size-3 text-green-600 dark:text-green-400 shrink-0" />
+        ) : agent.status === "running" || agent.status === "queued" ? (
+          <Loader2 className="size-3 animate-spin text-blue-600 dark:text-blue-400 shrink-0" />
+        ) : (
+          <X className="size-3 text-red-600 dark:text-red-400 shrink-0" />
+        )}
+        {agent.model ? <span className="text-muted-foreground truncate">· {agent.model}</span> : null}
+        {hasReport && (
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="ml-auto flex items-center gap-1 text-[11px] text-muted-foreground hover:text-primary transition-colors shrink-0"
+          >
+            <ChevronDown className={`size-3 transition-transform ${open ? "rotate-180" : ""}`} />
+            {open ? t("collapseAgents") : t("expandAgents")}
+          </button>
+        )}
+      </div>
+      {summary && <p className="text-muted-foreground whitespace-pre-wrap mt-0.5">{summary}</p>}
+      {open && hasReport && (
+        <p className="whitespace-pre-wrap mt-1.5 animate-fade-in">{agent.report}</p>
       )}
-    </div>
+    </li>
   );
 }
 
+/** 运行预算说明：徽章 + Tooltip 展开，不再平铺一行 10px 数字。 */
+function BudgetBadge({ config }: { config: Record<string, number | undefined> | null }) {
+  const t = useTranslations("agentChat");
+  if (!config) return null;
+  const items: Array<[string, string]> = [
+    [t("budgetTotal"), `${config.total_timeout_s ?? "?"} ${t("secondsUnit")}`],
+    [t("budgetRequest"), `${config.request_timeout_s ?? "?"} ${t("secondsUnit")}`],
+    [t("budgetTool"), `${config.tool_timeout_s ?? "?"} ${t("secondsUnit")}`],
+    [t("budgetHeavyTool"), `${config.heavy_tool_timeout_s ?? "?"} ${t("secondsUnit")}`],
+    [t("budgetMaxTurns"), `${config.max_turns ?? "?"} ${t("turnsUnit")}`],
+    [t("budgetMaxRetries"), `${config.max_retries ?? "?"} ${t("timesUnit")}`],
+  ];
+  return (
+    <Tooltip>
+      <TooltipTrigger>
+        <button
+          type="button"
+          aria-label={t("budgetTitle")}
+          className="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Clock className="size-3" />
+          {t("budgetTitle")}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="flex !w-44 flex-col items-stretch gap-1 py-2">
+        <span className="font-medium mb-0.5">{t("budgetTitle")}</span>
+        {items.map(([label, value]) => (
+          <span key={label} className="flex justify-between gap-2 text-[11px]">
+            <span className="opacity-70">{label}</span>
+            <span>{value}</span>
+          </span>
+        ))}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function RunPanel({
   detail,
@@ -77,18 +132,21 @@ export function RunPanel({
   onRetry: () => void;
 }) {
   const t = useTranslations("agentChat");
-  if (!detail) return <p className="text-xs text-muted-foreground pt-2">{t("newRunHint")}</p>;
+  // 无 run 时不渲染：空态已给出引导，newRunHint 与 EmptyState 叠加自相矛盾。
+  if (!detail) return null;
+
   const run: AgentChatRun = detail.run;
   const status = String(run.status || "");
+  const active = isActiveRun({ status });
+  const failed = Boolean(run.reason_code);
   const reason = run.reason_code
     ? `${t(REASON_KEY[run.reason_code] || "reasonCodePrefix")} (${run.reason_code})`
     : "";
   const events = [...(detail.events || [])].toReversed();
   const agents = detail.agents || [];
-  const active = isActiveRun({ status });
 
   return (
-    <div className="rounded-xl border p-3 space-y-3 text-xs">
+    <div className="rounded-xl border p-3 space-y-3 text-xs animate-fade-in">
       <div className="flex items-center gap-2 flex-wrap">
         <Badge variant="outline" className={tone(status)}>
           {active && <Loader2 className="size-3 mr-1 animate-spin" />}
@@ -98,6 +156,7 @@ export function RunPanel({
         <span className="text-muted-foreground">
           {t("turnsLabel")} {run.turns ?? 0} · {t("durationLabel")} {(run.duration_s ?? 0).toFixed(1)}s
         </span>
+        <BudgetBadge config={config} />
         {active && (
           <Button size="sm" variant="ghost" className="h-6 px-2" onClick={onCancel}>
             <Ban className="size-3 mr-1" /> {t("cancel")}
@@ -108,8 +167,15 @@ export function RunPanel({
             <RotateCw className="size-3 mr-1" /> {t("retry")}
           </Button>
         )}
-        {disconnected && <span className="text-amber-600 dark:text-amber-400">{t("loadFailed")}</span>}
       </div>
+
+      {/* 断线单独分层：轮询/网络失败，与「取消/中断」语义区分 */}
+      {disconnected && (
+        <div className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-600 dark:text-amber-400">
+          <WifiOff className="size-3.5" />
+          {t("loadFailed")}
+        </div>
+      )}
 
       {reason && <p className="text-red-600 dark:text-red-400">{t("runFailed")}: {reason}</p>}
 
@@ -122,54 +188,39 @@ export function RunPanel({
         </div>
       )}
 
-      <div>
-        <p className="font-medium mb-1">{t("agentsLabel")}</p>
-        {agents.length === 0 ? (
-          <p className="text-muted-foreground">{t("noAgentsYet")}</p>
-        ) : (
-          <ul className="space-y-1">
-            {agents.map((agent, index) => (
-              <li key={String(agent.execution_id || agent.agent_id || index)} className="rounded-lg bg-muted/50 p-2">
-                <div className="flex items-center gap-1">
-                  <span className="font-medium">{agent.agent_id}</span>
-                  {agent.status === "completed" ? (
-                    <Check className="size-3 text-green-600" />
-                  ) : agent.status === "running" ? (
-                    <Loader2 className="size-3 animate-spin" />
-                  ) : (
-                    <X className="size-3 text-red-600" />
-                  )}
-                  {agent.model ? <span className="text-muted-foreground">· {agent.model}</span> : null}
-                </div>
-                {(agent.report || agent.summary) && (
-                  <p className="text-muted-foreground whitespace-pre-wrap mt-0.5">{agent.report || agent.summary}</p>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {events.length > 0 && (
-        <div>
-          <p className="font-medium mb-1 flex items-center gap-1">
-            <Wrench className="size-3" /> {t("executionTrace")}
-            <span className="text-muted-foreground">({events.length})</span>
-          </p>
-          <div className="max-h-44 overflow-y-auto space-y-0.5">
-            {events.map((event) => (
-              <EventRow key={event.sequence} event={event} />
-            ))}
-          </div>
-        </div>
+      {agents.length > 0 && (
+        <AgentsSection agents={agents} />
       )}
 
-      {config && (
-        <p className="text-[10px] text-muted-foreground">
-          {t("budgetTitle")}: {t("budgetTotal")} {config.total_timeout_s}s · {t("budgetRequest")}{" "}
-          {config.request_timeout_s}s · {t("budgetTool")} {config.tool_timeout_s}s · {t("budgetMaxTurns")}{" "}
-          {config.max_turns}
-        </p>
+      <RunEvents events={events} defaultOpen={active || failed} />
+    </div>
+  );
+}
+
+/** 参与 Agent 区：整体折叠，展开才 mount 卡片列表。 */
+function AgentsSection({ agents }: { agents: AgentChatRunAgent[] }) {
+  const t = useTranslations("agentChat");
+  const [open, setOpen] = useState(false);
+  const done = agents.filter((a) => a.status === "completed").length;
+  return (
+    <div className="space-y-1.5">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 text-left text-xs font-medium hover:text-primary transition-colors"
+      >
+        {t("agentsLabel")}
+        <span className="text-muted-foreground">({done}/{agents.length})</span>
+        <span className="text-muted-foreground ml-auto">{open ? t("collapseAgents") : t("expandAgents")}</span>
+        <ChevronDown className={`size-3.5 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <ul className="space-y-1 animate-fade-in">
+          {agents.map((agent, index) => (
+            <AgentCard key={String(agent.execution_id || agent.agent_id || index)} agent={agent} />
+          ))}
+        </ul>
       )}
     </div>
   );

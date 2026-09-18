@@ -7,7 +7,6 @@
   "tradingPlan": "生成交易计划",
   "report": "生成报告",
   "inputPlaceholder": "输入问题，例如：现在 GOLD 适合做多吗？",
-  "emptyHint": "选择品种后开始提问，或点击上方按钮一键生成交易计划/报告",
   "thinking": "Agent 正在分析数据…",
   "sendFailed": "发送失败，请稍后重试",
   "loadFailed": "加载失败，请检查后端连接",
@@ -91,5 +90,18 @@
   "submittedRun": "已提交后台任务，正在排队执行…",
   "runCancelled": "任务已取消",
   "tickFallback": "运行中",
-  "cancelRun": "取消本次任务"
+  "cancelRun": "取消本次任务",
+  "emptyHeading": "向 AI 策略顾问提问",
+  "emptyDesc": "询问任意交易策略、市场观点或风险分析",
+  "suggestTitle": "试试这样问",
+  "suggestItems": [
+    "GOLD 现在适合做多吗？",
+    "USDJPY H1 趋势如何？",
+    "评估一下 BTC 的风险"
+  ],
+  "expandTrace": "展开时间线",
+  "collapseTrace": "收起时间线",
+  "expandAgents": "展开 Agent",
+  "collapseAgents": "收起 Agent",
+  "sendHint": "⏎ 发送"
 }

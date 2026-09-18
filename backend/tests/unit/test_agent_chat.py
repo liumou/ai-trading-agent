@@ -145,6 +145,28 @@ async def created_session(chat_db):
 
 class TestChatRoutes:
     @pytest.mark.asyncio
+    async def test_create_session_accepts_v1_mode(self, chat_db):
+        """SessionCreateRequest.mode 接受 V1 会话层枚举（free），拒绝 run 层枚举（single）。
+
+        回归 422：前端 createChatSession 传 "free"（session.mode 已废弃、不承载 UI
+        语义，真实模式在 run.mode）。create_session 端点此前零覆盖。
+        """
+        from pydantic import ValidationError
+
+        from app.api.routes.agent_chat import SessionCreateRequest, create_session
+
+        # 1) pydantic 层：会话层合法值 "free" 通过，run 层枚举 "single" 被 pattern 拒绝
+        assert SessionCreateRequest(symbol="GOLD", mode="free").mode == "free"
+        with pytest.raises(ValidationError):
+            SessionCreateRequest(symbol="GOLD", mode="single")
+
+        # 2) 路由层：直接调用 create_session（借用 fixture 的异步会话）确认不 422。
+        resp = await create_session(SessionCreateRequest(symbol="GOLD", timeframe="M15", mode="free"))
+        assert resp["session"]["symbol"] == "GOLD"
+        assert resp["session"]["mode"] == "free"
+        assert isinstance(resp["session"]["id"], int)
+
+    @pytest.mark.asyncio
     async def test_create_and_get_session(self, chat_db, created_session):
         from app.api.routes.agent_chat import get_session
 

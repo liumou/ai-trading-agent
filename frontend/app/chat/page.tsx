@@ -3,17 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Menu, Plus } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Skeleton } from "@/components/ui/skeleton";
-import { FileText, Loader2, Menu, Plus, Send, Trash2 } from "lucide-react";
 import {
   cancelChatRun,
   createChatSession,
@@ -30,31 +21,15 @@ import {
   type AgentChatMessage as ChatMsg,
 } from "@/lib/api";
 import { RunPanel } from "@/components/chat/run-panel";
+import { ConversationThread } from "@/components/chat/conversation-thread";
+import { MessageBubble } from "@/components/chat/message-bubble";
+import { SessionList, type SessionListItem } from "@/components/chat/session-list";
+import { ChatToolbar } from "@/components/chat/chat-toolbar";
+import { InputComposer } from "@/components/chat/input-composer";
+import { ChatEmptyState } from "@/components/chat/chat-empty-state";
 import { useRunDetail } from "@/components/chat/use-run-detail";
 import { createRequestId, isActiveRun, loadSelection, saveSelection } from "@/components/chat/run-state";
 import { showError, showSuccess } from "@/lib/toast";
-
-interface SessionListItem {
-  id: number;
-  title: string;
-  symbol: string;
-  updated_at: string | null;
-}
-
-function ChatMessageBubble({ msg }: { msg: ChatMsg }) {
-  const isUser = msg.role === "user";
-  return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed ${
-          isUser ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
-        }`}
-      >
-        {msg.content}
-      </div>
-    </div>
-  );
-}
 
 export default function AgentChatPage() {
   const t = useTranslations("agentChat");
@@ -71,8 +46,12 @@ export default function AgentChatPage() {
   const [runId, setRunId] = useState<string | null>(null);
   const [config, setConfig] = useState<Record<string, number | undefined> | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // 轮询驱动的滚动信号：每次 run 状态更新递增，供消息流自动滚到底部
+  const [scrollSignal, setScrollSignal] = useState(0);
+  const [focusSignal, setFocusSignal] = useState(0);
 
   const onRunUpdate = useCallback((run: AgentChatRun) => {
+    setScrollSignal((n) => n + 1);
     if (!isActiveRun(run)) {
       // 终态：刷新消息列表，把最终报告并入会话
       setMessages((prev) => (run.response
@@ -141,7 +120,9 @@ export default function AgentChatPage() {
     if (submitting) return;
     setSubmitting(true);
     try {
-      const res = await createChatSession({ symbol, timeframe, mode });
+      // session.mode 已废弃、不承载 UI 语义（真实模式在 run.mode）。
+      // 后端 SessionCreateRequest 只接受 free/trading_plan/report，传 "free" 避免 422。
+      const res = await createChatSession({ symbol, timeframe, mode: "free" });
       await refreshSessions();
       setActiveId(res.data.session.id);
       setRunId(null);
@@ -179,7 +160,8 @@ export default function AgentChatPage() {
     try {
       let sid = activeId;
       if (sid === null) {
-        const res = await createChatSession({ symbol, timeframe, mode });
+        // session.mode 已废弃、不承载 UI 语义（真实模式在 run.mode），传 "free" 避免 422。
+        const res = await createChatSession({ symbol, timeframe, mode: "free" });
         sid = res.data.session.id;
         setActiveId(sid);
         await refreshSessions();
@@ -198,6 +180,12 @@ export default function AgentChatPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  /** 空态建议卡：填入输入框而非直接发送，保留用户确认权；聚焦让光标就位。 */
+  const handleSuggest = (text: string) => {
+    setInput(text);
+    setFocusSignal((n) => n + 1);
   };
 
   const handleSend = () => {
@@ -233,35 +221,8 @@ export default function AgentChatPage() {
     void submit({ message, preset });
   };
 
-
-  const sessionItems = sessions.map((s) => (
-    <div
-      key={s.id}
-      className={`group flex items-center justify-between rounded-lg px-3 py-2 cursor-pointer text-sm ${
-        activeId === s.id ? "bg-primary/10 font-medium" : "hover:bg-muted"
-      }`}
-      onClick={() => openSession(s.id)}
-    >
-      <div className="min-w-0">
-        <div className="truncate">{s.title}</div>
-        <div className="text-[10px] text-muted-foreground">{s.symbol}</div>
-      </div>
-      <button
-        type="button"
-        aria-label={t("delete")}
-        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-500"
-        onClick={(e) => {
-          e.stopPropagation();
-          removeSession(s.id);
-        }}
-      >
-        <Trash2 className="size-4" />
-      </button>
-    </div>
-  ));
-
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
+    <div className="flex flex-col h-[calc(100dvh-4rem)]">
       <PageHeader title={t("title")} subtitle={t("subtitle")} />
       <div className="flex flex-1 min-h-0 gap-4">
         {/* 桌面端会话列表 */}
@@ -269,7 +230,13 @@ export default function AgentChatPage() {
           <Button variant="outline" size="sm" onClick={newSession} disabled={submitting}>
             <Plus className="size-4 mr-1" /> {t("newSession")}
           </Button>
-          {loading ? <Skeleton className="h-16" /> : sessionItems}
+          <SessionList
+            sessions={sessions}
+            activeId={activeId}
+            loading={loading}
+            onSelect={openSession}
+            onDelete={removeSession}
+          />
         </aside>
 
         {/* 移动端会话历史抽屉 */}
@@ -286,64 +253,45 @@ export default function AgentChatPage() {
               <button type="button" className="text-left text-sm text-muted-foreground mb-1" onClick={() => setHistoryOpen(false)}>
                 {t("closeHistory")}
               </button>
-              {loading ? <Skeleton className="h-16" /> : sessionItems}
+              <SessionList
+                sessions={sessions}
+                activeId={activeId}
+                loading={loading}
+                onSelect={openSession}
+                onDelete={removeSession}
+              />
             </aside>
           </div>
         )}
 
         {/* 聊天区 */}
         <section className="flex flex-1 min-h-0 flex-col">
-          <div className="flex items-center gap-2 pb-3 flex-wrap">
-            <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setHistoryOpen(true)} aria-label={t("history")}>
-              <Menu className="size-4" />
-            </Button>
-            <Select value={symbol} onValueChange={(v) => v && setSymbol(v)}>
-              <SelectTrigger className="w-28">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(symbols.length ? symbols : ["GOLD"]).map((s) => (
-                  <SelectItem key={s} value={s}>{s}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={timeframe} onValueChange={(v) => v && setTimeframe(v)}>
-              <SelectTrigger className="w-24">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {["M15", "H1", "H4", "D1"].map((tf) => (
-                  <SelectItem key={tf} value={tf}>{tf}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={mode} onValueChange={(v) => v && setMode(v as AgentChatMode)}>
-              <SelectTrigger className="w-28">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="single">{t("modeSingle")}</SelectItem>
-                <SelectItem value="experts">{t("modeExperts")}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button variant="secondary" size="sm" onClick={() => handlePreset("trading_plan")} disabled={submitting}>
-              <FileText className="size-4 mr-1" /> {t("tradingPlan")}
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => handlePreset("report")} disabled={submitting}>
-              <FileText className="size-4 mr-1" /> {t("report")}
-            </Button>
-          </div>
-          {mode === "experts" && <p className="text-[11px] text-muted-foreground pb-2">{t("expertsHint")}</p>}
-
+          <ChatToolbar
+            symbols={symbols}
+            symbol={symbol}
+            timeframe={timeframe}
+            mode={mode}
+            submitting={submitting}
+            leading={
+              <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setHistoryOpen(true)} aria-label={t("history")}>
+                <Menu className="size-4" />
+              </Button>
+            }
+            onSymbolChange={(v) => v && setSymbol(v)}
+            onTimeframeChange={(v) => v && setTimeframe(v)}
+            onModeChange={(v) => setMode(v)}
+            onPreset={handlePreset}
+          />
 
           {/* 消息流 + 运行面板 */}
-          <div className="flex-1 min-h-0 overflow-y-auto space-y-3 rounded-xl border p-4">
-            {messages.length === 0 && !detail && !submitting && (
-              <p className="text-sm text-muted-foreground text-center pt-10">{t("emptyHint")}</p>
-            )}
-            {messages.map((m) => (
-              <ChatMessageBubble key={m.id} msg={m} />
-            ))}
+          <ConversationThread
+            showEmpty={messages.length === 0 && !detail && !submitting}
+            empty={<ChatEmptyState onSuggest={handleSuggest} />}
+            thinking={submitting}
+            thinkingText={t("thinking")}
+            messages={messages.map((m) => <MessageBubble key={m.id} msg={m} />)}
+            scrollSignal={scrollSignal}
+          >
             <RunPanel
               detail={detail}
               config={config}
@@ -352,32 +300,24 @@ export default function AgentChatPage() {
               onCancel={handleCancel}
               onRetry={handleRetry}
             />
-            {submitting && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" /> {t("thinking")}
-              </div>
-            )}
-          </div>
+          </ConversationThread>
 
           {/* 输入区 */}
-          <div className="flex gap-2 pt-3">
-            <Input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSend();
-              }}
-              placeholder={t("inputPlaceholder")}
-              disabled={submitting}
-            />
-            <Button onClick={handleSend} disabled={submitting || !input.trim()}>
-              {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-            </Button>
+          <InputComposer
+            value={input}
+            placeholder={t("inputPlaceholder")}
+            submitting={submitting}
+            onChange={setInput}
+            onSend={handleSend}
+            focusSignal={focusSignal}
+          />
+          <div className="flex items-center gap-2 pt-1 text-[10px] text-muted-foreground">
+            <span className="caption shrink-0">{t("sendHint")}</span>
+            <span className="opacity-40 select-none">·</span>
+            <span className="min-w-0 truncate">{t("disclaimer")}</span>
           </div>
-          <p className="pt-1 text-[10px] text-muted-foreground">{t("disclaimer")}</p>
         </section>
       </div>
     </div>
   );
 }
-

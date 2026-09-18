@@ -7,7 +7,6 @@
   "tradingPlan": "Trading plan",
   "report": "Report",
   "inputPlaceholder": "Ask anything, e.g. Is GOLD good to buy now?",
-  "emptyHint": "Pick a symbol and start asking, or use the buttons above to generate a plan/report",
   "thinking": "Agent is analyzing data…",
   "sendFailed": "Send failed, please try again",
   "loadFailed": "Load failed, check backend connection",
@@ -91,5 +90,18 @@
   "submittedRun": "Run submitted and queued…",
   "runCancelled": "Run cancelled",
   "tickFallback": "Running",
-  "cancelRun": "Cancel this run"
+  "cancelRun": "Cancel this run",
+  "emptyHeading": "Ask the AI strategy advisor",
+  "emptyDesc": "Ask about any trading strategy, market view, or risk analysis",
+  "suggestTitle": "Try asking",
+  "suggestItems": [
+    "Is GOLD a good long right now?",
+    "How is the USDJPY H1 trend?",
+    "Assess BTC risk"
+  ],
+  "expandTrace": "Expand timeline",
+  "collapseTrace": "Collapse timeline",
+  "expandAgents": "Expand agents",
+  "collapseAgents": "Collapse agents",
+  "sendHint": "⏎ Send"
 }

@@ -19,6 +19,9 @@ build/
 # Claude Code
 .claude/
 
+# Serena (IDE 索引，不入库)
+.serena/
+
 # Test scripts
 mt5_bridge/test_mt5.py
 
