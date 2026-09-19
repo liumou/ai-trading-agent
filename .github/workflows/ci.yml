@@ -39,6 +39,28 @@ jobs:
       - name: Run tests with coverage
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=30
 
+  bridge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mt5_bridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # MetaTrader5 仅 Windows 可安装，此处不装它——测试通过 conftest 的
+      # sys.modules 注入 mock 覆盖（M3）。真实 SDK 行为由 Phase 0 spike
+      # 在 VPS 上验证。
+      - name: Install dependencies
+        run: pip install fastapi uvicorn python-dotenv loguru pydantic pytest httpx
+
+      - name: Run bridge tests
+        run: python -m pytest tests/ -v
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

@@ -21,6 +21,7 @@
   "macro": "Macro Data",
   "quant": "Quant",
   "agentPrompts": "Agent Prompts",
+  "accounts": "MT5 Accounts",
   "integration": "Integration",
   "dbHealth": "DB Health",
   "notifications": "Notifications",

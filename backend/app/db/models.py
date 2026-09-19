@@ -112,9 +112,13 @@ class OHLCVData(Base):
 
 class Trade(Base):
     __tablename__ = "trades"
+    __table_args__ = (UniqueConstraint("account_login", "ticket", name="uq_trades_account_ticket"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    ticket: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    ticket: Mapped[int] = mapped_column(BigInteger, index=True)  # 全局唯一改复合唯一 (H4)
+    account_login: Mapped[str] = mapped_column(
+        String(32), default="0", server_default="0", index=True
+    )  # 所属 MT5 账号（H4：跨账号 ticket 可重复）
     symbol: Mapped[str] = mapped_column(String(20))
     type: Mapped[str] = mapped_column(String(10))  # BUY / SELL
     lot: Mapped[float] = mapped_column(Float)
@@ -137,6 +141,29 @@ class Trade(Base):
     post_trade_analysis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class MT5Account(Base):
+    """MT5 交易账号（Phase 4，账号实时切换）。
+
+    凭据独立于 `secrets` 表存储（H5：secrets 表会被 runner 注入到沙箱进程），
+    密码用 VaultService AES-256-GCM 加密存 password_encrypted/password_nonce。
+    """
+
+    __tablename__ = "mt5_accounts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    login: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    password_encrypted: Mapped[bytes] = mapped_column(LargeBinary)
+    password_nonce: Mapped[bytes] = mapped_column(LargeBinary)  # 12 bytes AES-GCM
+    server: Mapped[str] = mapped_column(String(100), default="", server_default="")
+    broker_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
+    last_switched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class NewsSentiment(Base):
@@ -210,6 +237,7 @@ class BotEvent(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     event_type: Mapped[BotEventType] = mapped_column(Enum(BotEventType))
     message: Mapped[str] = mapped_column(Text)
+    account_login: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

@@ -28,6 +28,7 @@ import {
   Database,
   CandlestickChart,
   MessagesSquare,
+  Wallet,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -70,6 +71,7 @@ const navGroups: NavGroup[] = [
     labelKey: "system",
     items: [
       { href: "/agent-prompts", labelKey: "agentPrompts", icon: Settings2 },
+      { href: "/accounts", labelKey: "accounts", icon: Wallet },
       { href: "/integration", labelKey: "integration", icon: Plug },
       { href: "/db-health", labelKey: "dbHealth", icon: Database },
       { href: "/notifications", labelKey: "notifications", icon: Bell },

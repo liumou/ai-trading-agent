@@ -118,6 +118,16 @@ class MT5BridgeConnector:
     async def get_account(self) -> dict:
         return await self._request("get", "/account")
 
+    async def switch_account(self, login: int, password: str, server: str | None = None) -> dict:
+        """同终端切换 MT5 账号（Phase 3 Bridge /account/switch 端点的后端调用）。
+
+        返回 Bridge 响应（success=True 含新账号快照；False 含 error + current）。
+        """
+        body: dict = {"login": login, "password": password}
+        if server:
+            body["server"] = server
+        return await self._request("post", "/account/switch", json=body)
+
     async def get_positions(self) -> dict:
         return await self._request("get", "/positions")
 

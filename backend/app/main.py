@@ -17,6 +17,7 @@ from app.ai.client import AIClient
 from app.ai.news_sentiment import NewsSentimentAnalyzer
 from app.ai.strategy_optimizer import StrategyOptimizer
 from app.api.routes import (
+    accounts,
     activity,
     admin,
     agent_chat,
@@ -278,6 +279,12 @@ async def lifespan(app: FastAPI):
 
     # Initialize BotManager (creates one engine per symbol)
     manager = BotManager(connector, db_session, redis_client)
+
+    # Initialize AccountSwitchService (Phase 5) — 挂到 app.state 供 /switch 端点调用
+    from app.bot.account_switch import AccountSwitchService
+
+    account_switch_service = AccountSwitchService(manager, connector, db_session, redis_client)
+    app.state.account_switch_service = account_switch_service
 
     # Initialize sentiment analyzer (shared)
     sentiment_analyzer = NewsSentimentAnalyzer(ai_client, db_session, redis_client)
@@ -591,6 +598,7 @@ app.add_middleware(
 
 # Routes
 app.include_router(admin.router)
+app.include_router(accounts.router)
 app.include_router(auth_router)
 app.include_router(webauthn_router)
 app.include_router(bot.router)

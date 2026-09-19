@@ -259,6 +259,22 @@ async def place_order(
             ),
         }
 
+    # ─── 账号切换门禁（H2） ──────────────────────────────────────────────
+    # 切换期间（AccountSwitchService 置 Redis `switching:in_progress`）拒绝
+    # 下单，防止 MCP/AI 通道在账号切换瞬间把订单落在错误账号上。
+    if _redis is not None:
+        try:
+            switching = await _redis.get("switching:in_progress")
+            if switching:
+                logger.warning(f"place_order [{symbol}] rejected: account switch in progress")
+                return {
+                    "executed": False,
+                    "rejected": True,
+                    "reason": "Account switch in progress — retry after switch completes",
+                }
+        except Exception:  # noqa: BLE001
+            pass  # Redis 不可用时放行（门禁 best-effort，不阻塞正常下单）
+
     # ─── EXECUTE ORDER (live or micro) ───────────────────────────────────
     # comment 清洗：MT5 ORDER_COMMENT 硬上限 27 字符，且不接受 `[`/`]` 等
     # 特殊字符（日志曾见 'Invalid "comment" argument' 真实拒单）。

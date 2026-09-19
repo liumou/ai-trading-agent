@@ -26,13 +26,25 @@ def _asset_class_for(symbol: str) -> str | None:
 
 class CircuitBreaker:
     def __init__(
-        self, redis_client: redis.Redis, symbol: str = "GOLD", cooldown_minutes: int = DEFAULT_COOLDOWN_MINUTES
+        self,
+        redis_client: redis.Redis,
+        symbol: str = "GOLD",
+        cooldown_minutes: int = DEFAULT_COOLDOWN_MINUTES,
+        account_login: str | None = None,
     ):
+        """每日 P&L 熔断。
+
+        H3 修复：所有 key 带账号维度前缀。``account_login=None`` 保持旧 key
+        （向后兼容，现有调用不受影响）；切换服务传入当前账号后按账号隔离，
+        避免跨账号日损/回撤污染。
+        """
         self.redis = redis_client
         self.symbol = symbol
-        self.pnl_key = f"circuit:daily_pnl:{symbol}"
-        self.trade_count_key = f"circuit:trade_count:{symbol}"
-        self.triggered_key = f"circuit:triggered_at:{symbol}"
+        self.account_login = account_login
+        prefix = f"circuit:acc:{account_login}:" if account_login else "circuit:"
+        self.pnl_key = f"{prefix}daily_pnl:{symbol}"
+        self.trade_count_key = f"{prefix}trade_count:{symbol}"
+        self.triggered_key = f"{prefix}triggered_at:{symbol}"
         self.cooldown_minutes = cooldown_minutes
 
     async def record_trade_result(self, profit: float) -> None:
@@ -65,7 +77,7 @@ class CircuitBreaker:
 
         # Early warning at 80% of daily loss limit (once per day)
         if not triggered and daily_pnl <= -(max_loss * 0.8):
-            warn_key = f"circuit:drawdown_warned:{self.symbol}"
+            warn_key = f"{self.pnl_key.removesuffix(f'daily_pnl:{self.symbol}')}drawdown_warned:{self.symbol}"
             already_warned = await self.redis.get(warn_key)
             if not already_warned:
                 ttl = self._seconds_until_reset(self.symbol)
@@ -113,18 +125,27 @@ class CircuitBreaker:
         logger.info(f"Circuit breaker [{self.symbol}] reset")
 
     @staticmethod
-    async def get_global_daily_pnl(redis_client, symbols: list[str]) -> float:
+    def _acc_key(account_login: str | None, suffix: str) -> str:
+        """生成带账号维度的 key。account_login 为 None 时保持旧 key（向后兼容）。"""
+        return f"circuit:acc:{account_login}:{suffix}" if account_login else f"circuit:{suffix}"
+
+    @staticmethod
+    async def get_global_daily_pnl(redis_client, symbols: list[str], account_login: str | None = None) -> float:
         """Sum daily PnL across all symbols for portfolio-level risk check."""
-        keys = [f"circuit:daily_pnl:{symbol}" for symbol in symbols]
+        keys = [CircuitBreaker._acc_key(account_login, f"daily_pnl:{symbol}") for symbol in symbols]
         values = await redis_client.mget(keys)
         return sum(float(v) for v in values if v)
 
     @staticmethod
     async def is_global_triggered(
-        redis_client, symbols: list[str], balance: float, max_portfolio_loss: float = DEFAULT_PORTFOLIO_MAX_LOSS
+        redis_client,
+        symbols: list[str],
+        balance: float,
+        max_portfolio_loss: float = DEFAULT_PORTFOLIO_MAX_LOSS,
+        account_login: str | None = None,
     ) -> bool:
         """Check if total daily loss across all symbols exceeds portfolio limit."""
-        total_pnl = await CircuitBreaker.get_global_daily_pnl(redis_client, symbols)
+        total_pnl = await CircuitBreaker.get_global_daily_pnl(redis_client, symbols, account_login)
         max_loss = balance * max_portfolio_loss
         triggered = total_pnl <= -max_loss
         if triggered:
@@ -132,9 +153,12 @@ class CircuitBreaker:
         return triggered
 
     @staticmethod
-    async def update_peak_balance(redis_client, balance: float) -> float:
-        """Track peak balance in Redis (no TTL — persists across restarts)."""
-        key = "circuit:peak_balance"
+    async def update_peak_balance(redis_client, balance: float, account_login: str | None = None) -> float:
+        """Track peak balance in Redis (no TTL — persists across restarts).
+
+        H3：peak_balance 按账号分键，避免切换账号制造不可恢复的全局回撤停盘。
+        """
+        key = CircuitBreaker._acc_key(account_login, "peak_balance")
         current = await redis_client.get(key)
         peak = float(current) if current else 0.0
         if balance > peak:
@@ -147,9 +171,10 @@ class CircuitBreaker:
         redis_client,
         balance: float,
         max_drawdown_pct: float = DEFAULT_MAX_DRAWDOWN_FROM_PEAK,
+        account_login: str | None = None,
     ) -> bool:
         """Check if balance dropped > X% from peak. Returns True to halt trading."""
-        peak = await CircuitBreaker.update_peak_balance(redis_client, balance)
+        peak = await CircuitBreaker.update_peak_balance(redis_client, balance, account_login)
         if peak <= 0:
             return False
         drawdown_pct = (peak - balance) / peak

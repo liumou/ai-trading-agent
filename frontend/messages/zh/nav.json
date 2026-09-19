@@ -21,6 +21,7 @@
   "macro": "宏观数据",
   "quant": "量化分析",
   "agentPrompts": "Agent 提示词",
+  "accounts": "MT5 账号",
   "integration": "集成服务",
   "dbHealth": "数据库健康",
   "notifications": "通知中心",

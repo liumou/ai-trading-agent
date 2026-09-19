@@ -49,9 +49,14 @@ async def verify_api_key(x_bridge_key: str = Header(...)):
 
 # --- MT5 connection helpers ---
 def ensure_connected() -> bool:
-    if mt5.terminal_info() is not None:
+    """确保终端已初始化且已登录账号。
+
+    C2 修复：仅 `terminal_info()` 存活不代表已登录账号（切换失败/被登出时
+    终端可能存活但 `account_info()` 为 None）。此时视为未连接，尝试重连。
+    """
+    if mt5.terminal_info() is not None and mt5.account_info() is not None:
         return True
-    logger.warning("MT5 disconnected, attempting reconnect...")
+    logger.warning("MT5 disconnected or not logged in, attempting reconnect...")
     if not mt5.initialize(MT5_PATH):
         logger.error(f"MT5 initialize failed: {mt5.last_error()}")
         return False
@@ -60,6 +65,31 @@ def ensure_connected() -> bool:
         return False
     logger.info("MT5 reconnected successfully")
     return True
+
+
+def switch_account(login: int, password: str, server: str | None = None) -> tuple[bool, dict | None, str]:
+    """在同一终端内切换到另一个账号（Phase 0 spike 已验证可行）。
+
+    返回 (success, account_snapshot, error)。切换失败时返回 False，
+    由调用方决定是否回滚到原账号。
+    """
+    if not mt5.terminal_info() is not None:
+        if not mt5.initialize(MT5_PATH):
+            return False, None, f"MT5 initialize failed: {mt5.last_error()}"
+    ok = mt5.login(login, password=password, server=server or None)
+    if not ok:
+        return False, None, f"MT5 login failed: {mt5.last_error()}"
+    info = mt5.account_info()
+    if info is None:
+        return False, None, f"Login returned True but account_info() is None: {mt5.last_error()}"
+    snapshot = {
+        "login": info.login,
+        "server": info.server,
+        "balance": info.balance,
+        "equity": info.equity,
+        "currency": info.currency,
+    }
+    return True, snapshot, ""
 
 
 def mt5_response(success: bool, data=None, error: str | None = None):
@@ -112,13 +142,22 @@ async def shutdown():
 # --- Endpoints ---
 @app.get("/health")
 async def health():
-    connected = mt5.terminal_info() is not None
-    account = None
-    if connected:
-        info = mt5.account_info()
-        if info:
-            account = {"login": info.login, "server": info.server}
-    return {"status": "ok" if connected else "disconnected", "mt5": account}
+    """健康检查。C2 修复：status 必须同时反映"终端存活 + 账号已登录"。
+
+    切换失败后终端可能存活但未登录账号——此时返回 degraded（而非 ok），
+    让后端 HealthMonitor 不会把无账号状态误判为健康并自动恢复交易。
+    """
+    terminal_ok = mt5.terminal_info() is not None
+    info = mt5.account_info() if terminal_ok else None
+    logged_in = info is not None
+    account = {"login": info.login, "server": info.server} if logged_in else None
+    if not terminal_ok:
+        status = "disconnected"
+    elif not logged_in:
+        status = "degraded"
+    else:
+        status = "ok"
+    return {"status": status, "mt5": account, "logged_in": logged_in}
 
 
 @app.get("/tick/{symbol}", dependencies=[Depends(verify_api_key)])
@@ -228,12 +267,58 @@ async def get_account():
     if info is None:
         return mt5_response(False, error="Cannot get account info")
     return mt5_response(True, data={
+        "login": info.login,
+        "server": info.server,
         "balance": info.balance,
         "equity": info.equity,
         "margin": info.margin,
         "free_margin": info.margin_free,
         "profit": info.profit,
         "currency": info.currency,
+    })
+
+
+class SwitchAccountRequest(BaseModel):
+    """切换账号请求（Phase 3）。login/password 必填，server 可选（默认当前）。"""
+    login: int
+    password: str
+    server: str | None = None
+
+
+@app.post("/account/switch", dependencies=[Depends(verify_api_key)])
+async def switch_account_endpoint(req: SwitchAccountRequest):
+    """在同一终端内切换账号（Phase 0 spike 已验证可行）。
+
+    成功后返回新账号快照；失败返回错误与**当前账号状态**。
+
+    回滚策略说明：Bridge 端不持有账号凭据库（只有 env 初始账号密码），
+    因此失败时**不做自动回滚**——`mt5.login()` 失败通常是原子操作，终端
+    保持在原账号；即使落入半切换态，也由后端的 AccountSwitchService
+    （持有所有账号凭据）决定如何恢复。C2 语义（/health 返回 logged_in）
+    保证后端能检测到"终端存活但未登录"并介入。
+    """
+    previous = None
+    info = mt5.account_info()
+    if info is not None:
+        previous = {"login": info.login, "server": info.server}
+
+    ok, snapshot, error = switch_account(req.login, req.password, req.server)
+    if not ok:
+        # 报告失败 + 当前终端账号状态，供后端决定回滚
+        current = None
+        info_after = mt5.account_info()
+        if info_after is not None:
+            current = {"login": info_after.login, "server": info_after.server}
+        return mt5_response(False, error=f"Account switch failed: {error}", data={
+            "previous": previous,
+            "current": current,
+        })
+
+    logger.info(f"Account switched: {previous['login'] if previous else '?'} -> {req.login} @ {req.server or 'default'}")
+    return mt5_response(True, data={
+        "switched": True,
+        "account": snapshot,
+        "previous": previous,
     })
 
 

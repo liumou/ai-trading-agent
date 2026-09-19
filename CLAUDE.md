@@ -38,8 +38,9 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `bot/engine.py` — main trading engine (refactored: process_candle → sub-methods)
   - `bot/scheduler.py` — APScheduler jobs (candle, sentiment, sync, health, retrain)
   - `bot/health_monitor.py` — MT5 Bridge heartbeat + auto-pause/resume
+  - `bot/account_switch.py` — **MT5 账号切换服务**：安全暂停 → Bridge `/account/switch` → 刷新规格 → 显式恢复引擎；Redis `switching:in_progress` 门禁 + asyncio 锁（防止切换瞬间错账号下单）；失败不恢复引擎；审计日志
   - `strategy/` — 11 strategies (EMA, RSI, Breakout, Mean Reversion, ML, DCA, Grid, MomentumRank, PairSpread, RiskParity, Ensemble) + MTF filter + regime detection
-  - `risk/` — risk manager, circuit breaker, correlation filter
+  - `risk/` — risk manager, circuit breaker (H3: circuit key 按账号隔离), correlation filter
   - `ml/` — LightGBM trainer, features (40+), predictor, drift detection, sentiment features
   - `backtest/` — engine, optimizer, walk_forward, monte_carlo, overfitting (composite score)
   - `data/` — collector, macro data, macro events
@@ -64,6 +65,7 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `api/routes/activity.py` — AI activity log
   - `api/routes/agent_prompts.py` — agent prompt CRUD
   - `api/routes/rollout.py` — rollout mode + deploy readiness
+  - `api/routes/accounts.py` — MT5 账号 CRUD + 切换（`/api/accounts`，Vault 加密凭据，独立于 secrets 表）
   - `api/routes/integration.py` — service connectivity diagnostics
   - `api/routes/memory.py` — session memory management
   - `api/ws_runners.py` — WebSocket live log streaming per runner
@@ -81,7 +83,8 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `sdk_client.py` — Claude Code SDK client
   - `server.py` — MCP server entry
   - `agent_config.py` — agent entry point
-- `frontend/` — Next.js App Router (18 pages: dashboard, backtest, history, insights, ai-usage, ml, macro, quant, activity, agent-prompts, integration, notifications, settings, db-health, symbols, login, setup, root)
+- `frontend/` — Next.js App Router (19 pages: dashboard, backtest, history, insights, ai-usage, ml, macro, quant, activity, agent-prompts, accounts, integration, notifications, settings, db-health, symbols, login, setup, root)
+  - `app/accounts/` — MT5 账号管理页（列表/新增/切换/删除，实时切换）
   - `app/dashboard/` — main trading dashboard
   - `app/backtest/` — backtest, optimizer, walk-forward analysis
   - `app/history/` — trade history/journal

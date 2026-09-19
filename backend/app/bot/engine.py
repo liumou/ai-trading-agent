@@ -216,6 +216,9 @@ class BotEngine:
 
         self.state = BotState.STOPPED
         self._manager = None  # BotManager ref (set in manager.py)
+        # H4: 所属 MT5 账号。默认 "0"（"未知/切换前"），切换服务更新
+        # manager.current_account_login 后，reconcile/_save_trade 按此限定。
+        self.account_login: str = "0"
         self._known_tickets: set[int] = set()  # Track open tickets for close detection
 
         # Lot sizing mode: None = auto (AI/Kelly/risk-based), float = fixed lot
@@ -1649,6 +1652,9 @@ class BotEngine:
         """Save trade to DB with retry and Redis fallback."""
         import asyncio as _asyncio
 
+        # H4: 统一注入当前账号，避免调用方遗漏；默认 "0"（切换前/未知）。
+        trade.account_login = getattr(self, "account_login", "0") or "0"
+
         for attempt in range(max_retries):
             try:
                 self.db.add(trade)
@@ -1916,8 +1922,13 @@ class BotEngine:
         positions = await self.executor.get_open_positions(self.symbol)
         mt5_tickets = {p["ticket"] for p in positions}
 
-        # 2. Get DB trades that should be open (no close_time)
-        stmt = select(Trade).where(Trade.symbol == self.symbol, Trade.close_time.is_(None))
+        # 2. Get DB trades that should be open (no close_time), scoped to this account (H4)
+        account_login = getattr(self, "account_login", "0") or "0"
+        stmt = select(Trade).where(
+            Trade.symbol == self.symbol,
+            Trade.close_time.is_(None),
+            Trade.account_login == account_login,
+        )
         result = await self.db.execute(stmt)
         db_trades = result.scalars().all()
         db_tickets = {t.ticket for t in db_trades}
@@ -1939,6 +1950,7 @@ class BotEngine:
                     )
                     trade = Trade(
                         ticket=ticket,
+                        account_login=account_login,  # H4: orphan 归属当前账号
                         symbol=self.symbol,
                         type=p.get("type", "BUY"),
                         lot=p.get("lot", 0.01),

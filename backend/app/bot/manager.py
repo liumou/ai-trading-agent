@@ -47,6 +47,9 @@ class BotManager:
         self._positions_cache_time: float = 0
         self._positions_lock = asyncio.Lock()
         self._engines_lock = asyncio.Lock()
+        # H4/H3: 当前活跃 MT5 账号（"0" = 未知/切换前）。切换服务更新，
+        # 新引擎/现有引擎据此设置 account_login 与风控隔离 key。
+        self.current_account_login: str = "0"
         self._reload_task: asyncio.Task | None = None
         self._sentiment_analyzer = None
         self._notifier = None
@@ -168,6 +171,18 @@ class BotManager:
         for (sym, _), result in zip(engines, results, strict=True):
             if isinstance(result, Exception):
                 logger.warning(f"BotManager.stop [{sym}] failed: {result!r}")
+
+    async def set_current_account(self, account_login: str) -> None:
+        """切换服务调用：更新当前账号 + 同步所有引擎 + 清持仓缓存。
+
+        - H4：引擎 account_login 同步为新账号，reconcile/_save_trade 据此限定。
+        - M5：清 positions 缓存，避免切换后首个组合杠杆/风控判断用旧账号持仓。
+        """
+        self.current_account_login = account_login or "0"
+        for engine in self.engines.values():
+            engine.account_login = self.current_account_login
+        self._positions_cache = {}
+        self._positions_cache_time = 0
 
     async def emergency_stop(self, symbol: str | None = None) -> dict:
         """Emergency stop — close all positions for one or all symbols."""
