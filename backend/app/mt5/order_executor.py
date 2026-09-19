@@ -12,7 +12,17 @@ from app.mt5.connector import MT5BridgeConnector
 from app.mt5.symbol_resolver import to_broker_alias
 
 # Errors that should NOT be retried (permanent failures)
-_NO_RETRY_ERRORS = {"margin", "insufficient", "invalid volume", "market closed", "symbol not found"}
+_NO_RETRY_ERRORS = {
+    "margin",
+    "insufficient",
+    "invalid volume",
+    "market closed",
+    "symbol not found",
+    # 超时属于歧义失败：订单可能已到达桥并成交，重试 = 双开仓。
+    # 漏一单可由对账/人工补，双开仓直接击穿风险预算。
+    "timeout",
+    "timed out",
+}
 
 
 class OrderExecutor:

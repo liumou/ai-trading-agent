@@ -50,6 +50,7 @@ const navGroups: NavGroup[] = [
   {
     labelKey: "trading",
     items: [
+      { href: "/trading", labelKey: "manualTrading", icon: CandlestickChart },
       { href: "/symbols", labelKey: "symbols", icon: CandlestickChart },
       { href: "/chat", labelKey: "agentChat", icon: MessagesSquare },
       { href: "/backtest", labelKey: "backtest", icon: BarChart3 },

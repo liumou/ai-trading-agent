@@ -67,6 +67,66 @@ export const getPositions = (symbol?: string) =>
 export const closePosition = (ticket: number) =>
   api.delete(`/api/positions/${ticket}`);
 
+// ─── Manual trading (手动交易面板,经 Agent 风控防火墙) ──────────────────────
+
+export interface ManualOrderRequest {
+  symbol: string;
+  order_kind: "market" | "pending";
+  order_type: "BUY" | "SELL" | "BUY_LIMIT" | "SELL_LIMIT" | "BUY_STOP" | "SELL_STOP";
+  lot: number;
+  sl?: number;
+  tp?: number;
+  price?: number;
+  comment?: string;
+  modify_ticket?: number;
+}
+
+export interface ManualReview {
+  id?: number;
+  status: string; // PENDING_REVIEW / PENDING_CONFIRM / REJECTED / EXPIRED / EXECUTED / FAILED
+  reason?: string;
+  kind?: string;
+  retryable?: boolean;
+  review?: {
+    rule_flags?: { flag: string; severity: string; detail?: string }[];
+    llm?: { verdict: string; confidence: number; reasoning: string; risk_flags?: string[]; emotional_indicators?: string[] };
+    [k: string]: unknown;
+  };
+  ticket?: number;
+  [k: string]: unknown;
+}
+
+export const submitManualOrder = (data: ManualOrderRequest) =>
+  api.post<ManualReview>("/api/trading/orders", data);
+export const confirmManualOrder = (reviewId: number) =>
+  api.post(`/api/trading/orders/${reviewId}/confirm`);
+export const getManualReview = (reviewId: number) =>
+  api.get<ManualReview>(`/api/trading/reviews/${reviewId}`);
+export const getManualReviews = (limit = 50) =>
+  api.get(`/api/trading/reviews`, { params: { limit } });
+
+export interface PendingOrder {
+  ticket: number;
+  symbol: string;
+  type: string; // BUY_LIMIT / SELL_LIMIT / BUY_STOP / SELL_STOP
+  lot: number;
+  price_open: number;
+  price_current: number;
+  sl: number;
+  tp: number;
+  time_setup: string;
+  comment: string;
+}
+export const getPendingOrders = () => api.get<{ orders: PendingOrder[] }>("/api/trading/orders");
+export const cancelPendingOrder = (ticket: number) =>
+  api.delete(`/api/trading/orders/${ticket}`);
+export const modifyPendingOrder = (ticket: number, data: { price?: number; sl?: number; tp?: number }) =>
+  api.put<ManualReview>(`/api/trading/orders/${ticket}`, data);
+export const modifyPositionSltp = (ticket: number, data: { sl?: number; tp?: number }) =>
+  api.put(`/api/trading/positions/${ticket}`, data);
+export const closePositionGated = (ticket: number) =>
+  api.post(`/api/trading/positions/${ticket}/close`);
+
 // History
 export const getDailyPnl = (symbol?: string) =>
   api.get("/api/history/daily-pnl", { params: symbol ? { symbol } : {} });

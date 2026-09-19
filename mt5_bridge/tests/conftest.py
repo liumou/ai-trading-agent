@@ -39,11 +39,33 @@ _mt5_module.TIMEFRAME_D1 = 1440
 _mt5_module.TIMEFRAME_W1 = 10080
 _mt5_module.ORDER_TYPE_BUY = 0
 _mt5_module.ORDER_TYPE_SELL = 1
+_mt5_module.ORDER_TYPE_BUY_LIMIT = 2
+_mt5_module.ORDER_TYPE_SELL_LIMIT = 3
+_mt5_module.ORDER_TYPE_BUY_STOP = 4
+_mt5_module.ORDER_TYPE_SELL_STOP = 5
 _mt5_module.ORDER_TIME_GTC = 0
-_mt5_module.ORDER_FILLING_IOC = 2
+_mt5_module.ORDER_TIME_SPECIFIED = 2
+# 真实 SDK 值：FOK=0、IOC=1、RETURN=2（旧夹具把 IOC 写成 2，实际是 RETURN）
+_mt5_module.ORDER_FILLING_FOK = 0
+_mt5_module.ORDER_FILLING_IOC = 1
+_mt5_module.ORDER_FILLING_RETURN = 2
+_mt5_module.SYMBOL_FILLING_FOK = 1
+_mt5_module.SYMBOL_FILLING_IOC = 2
 _mt5_module.TRADE_ACTION_DEAL = 1
+_mt5_module.TRADE_ACTION_PENDING = 5
 _mt5_module.TRADE_ACTION_SLTP = 6
+_mt5_module.TRADE_ACTION_MODIFY = 7
+_mt5_module.TRADE_ACTION_REMOVE = 8
+_mt5_module.TRADE_RETCODE_PLACED = 10008
 _mt5_module.TRADE_RETCODE_DONE = 10009
+_mt5_module.ORDER_STATE_PLACED = 5
+# 交易/行情函数挂到模块（Phase 1 挂单端点测试需要；既有测试未触及）
+_mt5_module.symbol_info = _mt5_mock.symbol_info
+_mt5_module.symbol_select = _mt5_mock.symbol_select
+_mt5_module.symbol_info_tick = _mt5_mock.symbol_info_tick
+_mt5_module.order_send = _mt5_mock.order_send
+_mt5_module.orders_get = _mt5_mock.orders_get
+_mt5_module.positions_get = _mt5_mock.positions_get
 
 
 @pytest.fixture

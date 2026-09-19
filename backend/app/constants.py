@@ -6,6 +6,13 @@ Centralizes magic numbers for readability, testability, and maintainability.
 # ─── MT5 / Order ───────────────────────────────────────────────────────────────
 
 MT5_MAGIC_NUMBER = 234000
+# 手动交易独立 magic：与策略/AI 单区分，事后对账（trades 同步、归因）必需。
+MANUAL_MAGIC_NUMBER = 234100
+
+# 手动通道 SL/TP 防漂移预算（评审 C-4：以 entry 为固定基数，禁止以当前 SL
+# 为基数逐轮 ×2 的几何漂移 —— 5 轮即 32 倍距离）。
+MANUAL_SL_MAX_ENTRY_DIST_MULT = 5.0  # SL 距 entry 上限 = 5 × 初始风险距离
+MANUAL_SL_WIDEN_DAILY_LIMIT = 3  # 每日拉宽次数预算（Redis 计数）
 
 # ─── Engine ────────────────────────────────────────────────────────────────────
 

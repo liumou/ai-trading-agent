@@ -25,6 +25,7 @@ Multi-symbol automated trading bot: FastAPI backend (Railway) + Next.js frontend
 
 ```
 Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
+  /trading 手动下单 → ManualOrderGate 风控防火墙（硬闸门+AI 审查） ↗
                                           → PostgreSQL + Redis (Docker)
                                           → Claude AI (sentiment + optimization)
                                           → LightGBM ML models (per-symbol)
@@ -39,6 +40,9 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `bot/scheduler.py` — APScheduler jobs (candle, sentiment, sync, health, retrain)
   - `bot/health_monitor.py` — MT5 Bridge heartbeat + auto-pause/resume
   - `bot/account_switch.py` — **MT5 账号切换服务**：安全暂停 → Bridge `/account/switch` → 刷新规格 → 显式恢复引擎；Redis `switching:in_progress` 门禁 + asyncio 锁（防止切换瞬间错账号下单）；失败不恢复引擎；审计日志
+  - `services/order_preflight.py` — **共享下单硬闸门（唯一真相源）**：resolve_symbol → 并发行情 → per-symbol rolling spread → `guardrails.validate_order` → volume 归一 → rollout → llm_allow_live。AI/MCP 通道与手动通道共同调用；strict_symbol=True（手动）时 symbol 不可解析/无 volume 配置 fail-closed 拒单
+  - `services/manual_order_gate.py` — **手动交易风控防火墙**：per-account 锁 → 硬闸门 → 情绪规则（马丁=block 直接拒 / 复仇·连亏·频率=warn 交 LLM）→ OrderAudit(PENDING_REVIEW) → 异步 LLM 审查（`asyncio.wait_for` 25s 只约束 LLM 调用；verdict 白名单）→ APPROVED 执行 / CAUTION 二次确认（review_id 绑定参数 + 120s TTL）/ REJECTED 硬拦截不可强制；LLM 失败 fail-closed。改挂单=全流水线重审；改持仓 SL/TP 用 entry 锚点漂移预算（Redis `manual:sl_anchor:{ticket}`）
+  - `services/position_close.py` — 手动平仓统一闸门（switching fail-closed + rollout 拦截 + ticket 归属 + 记账防双计；dashboard DELETE /api/positions 与 /api/trading 平仓共用）
   - `strategy/` — 11 strategies (EMA, RSI, Breakout, Mean Reversion, ML, DCA, Grid, MomentumRank, PairSpread, RiskParity, Ensemble) + MTF filter + regime detection
   - `risk/` — risk manager, circuit breaker (H3: circuit key 按账号隔离), correlation filter
   - `ml/` — LightGBM trainer, features (40+), predictor, drift detection, sentiment features
@@ -48,7 +52,7 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `notifications/` — Telegram alerts
   - `memory/` — session memory service + consolidator
   - `ai/` — Claude AI client (SDK first, Anthropic API fallback), context builder, prompts, strategy optimizer
-  - `api/routes/` — 114 REST endpoints across 26 route files
+  - `api/routes/` — 120+ REST endpoints across 28 route files（含 manual_trading.py 手动交易）
   - `auth.py` — legacy JWT password auth (active)
   - `auth_webauthn.py` — Passkey (WebAuthn) auth (code exists, disabled)
   - `middleware/auth.py` — global JWT cookie auth middleware (backward compat)
@@ -209,8 +213,12 @@ railway vars set -s backend "KEY=value"  # set env var
 - **Daily reset**: Per-asset-class hour from `app.market.sessions._RULES` — forex/metal/energy reset at 22 UTC, index 22, stock 21, crypto 0. Scheduler registers one cron job per unique reset hour across active engines.
 - **Coverage**: CI threshold 30% (overall ~29%, critical paths ~89%)
 - **Telegram**: Notifications for trade signals, AI analysis, system alerts. Thai language alerts.
+- **Manual trading firewall invariants**（手动交易防火墙不变量，勿破坏）: ① 硬闸门先行，LLM 审查只能收紧不能放宽；② REJECTED 不可强制（无 override 端点）；③ LLM 失败/超时/畸形 verdict → fail-closed 拦截 + `AI_AGENT_ERROR` 事件（基础设施故障不伪装成分析结论）；④ 手动通道 switching 门禁 fail-closed（Redis 异常拒单），AI 通道 best-effort；⑤ 执行类请求（place_order/place_pending_order/cancel_order）禁歧义重试（超时重试=双开仓）；⑥ 下单前必须经 `preflight_order`，禁止直连 connector 下单；⑦ 手动单 `MANUAL_MAGIC_NUMBER=234100`；⑧ CAUTION 确认绑定 OrderAudit 行（review_id），参数不可重传，TTL 120s。
+- **Retcode 语义**: 挂单成功 retcode 是 `TRADE_RETCODE_PLACED(10008)`，市价是 `DONE(10009)` —— 挂单端点成功判定必须接受两者；挂单 type_filling 按 `symbol_info().filling_mode` 位掩码推导（回落 RETURN），硬编码 IOC 会被 10030 拒。
 
 ## Known Issues
+
+- Manual trading: shadow/paper rollout 模式禁止手动真实单（与 AI 通道同门禁），前端 /trading 有横幅提示；CAUTION 确认窗口 120s 内有效，过期需重新提交（EXPIRED）
 
 - MT5 Bridge frequently shows "stale tick" warnings (market closed or VPS connectivity)
 - Health monitor stays in degraded state when MT5 Bridge is offline (by design)

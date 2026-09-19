@@ -25,5 +25,6 @@
   "integration": "集成服务",
   "dbHealth": "数据库健康",
   "notifications": "通知中心",
-  "settings": "设置"
+  "settings": "设置",
+  "manualTrading": "手动交易"
 }

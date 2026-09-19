@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     Float,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -255,7 +256,17 @@ class MLPredictionLog(Base):
 
 
 class OrderAudit(Base):
+    """订单审计（统一三条通道：strategy / ai_agent / manual）。
+
+    手动交易（manual）扩展列：source 区分来源、account_login 支撑跨账号
+    ticket 复用（H4 同口径）、order_kind/order_price 承载挂单、review 存
+    LLM 审查结论 + 情绪规则明细。status 扩展生命周期值：
+    PENDING_REVIEW / PENDING_CONFIRM / REJECTED / EXPIRED / CANCELLED /
+    EXECUTED（历史值 FILLED / REJECTED / TIMEOUT / ERROR 保留）。
+    """
+
     __tablename__ = "order_audits"
+    __table_args__ = (Index("ix_order_audits_account_created", "account_login", "created_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20))
@@ -266,11 +277,17 @@ class OrderAudit(Base):
     expected_price: Mapped[float] = mapped_column(Float)
     fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     ticket: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    status: Mapped[str] = mapped_column(String(20))  # FILLED / REJECTED / TIMEOUT / ERROR
+    status: Mapped[str] = mapped_column(String(20), index=True)  # FILLED / REJECTED / TIMEOUT / ERROR / PENDING_REVIEW / PENDING_CONFIRM / EXPIRED / CANCELLED / EXECUTED
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     signal_source: Mapped[str] = mapped_column(String(50))  # strategy name
     attempt_count: Mapped[int] = mapped_column(Integer, default=1)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    # ─── 手动交易扩展（manual trading firewall）─────────────────────────
+    source: Mapped[str] = mapped_column(String(20), default="strategy", server_default="strategy", index=True)
+    account_login: Mapped[str] = mapped_column(String(32), default="0", server_default="0")
+    order_kind: Mapped[str] = mapped_column(String(10), default="market", server_default="market")  # market/pending
+    order_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # 挂单价
+    review: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # LLM verdict + 情绪规则明细
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

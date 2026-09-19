@@ -8,12 +8,13 @@ import math
 import os
 from datetime import datetime, timedelta
 from enum import Enum
+from typing import Literal
 
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -110,6 +111,79 @@ def mt5_response(success: bool, data=None, error: str | None = None):
     return {"success": success, "data": data, "error": error}
 
 
+def _retcode_reject(message: str, result) -> dict:
+    """拒绝响应带结构化 retcode —— 下游（order_executor._NO_RETRY_ERRORS、
+    前端）无法从拼进 error 字符串的 code 判定可重试性（10015/10016 可改价
+    重试 vs 10018/10019 不可重试）。"""
+    return mt5_response(
+        False,
+        data={"retcode": int(result.retcode), "comment": result.comment},
+        error=f"{message}: {result.comment} (code: {result.retcode})",
+    )
+
+
+def _resolve_filling(symbol_info) -> int:
+    """按 symbol filling_mode 位掩码推导成交模式。
+
+    挂单硬编码 IOC 会被大量券商拒（10030 INVALID_FILL）——Exchange/Netting
+    模式下挂单通常要求 RETURN。位掩码：SYMBOL_FILLING_FOK=1、
+    SYMBOL_FILLING_IOC=2；无匹配回落 RETURN。
+    """
+    modes = int(getattr(symbol_info, "filling_mode", 0) or 0)
+    if modes & 1:
+        return mt5.ORDER_FILLING_FOK
+    if modes & 2:
+        return mt5.ORDER_FILLING_IOC
+    return mt5.ORDER_FILLING_RETURN
+
+
+def _order_type_name(order_type: int) -> str:
+    for name in (
+        "ORDER_TYPE_BUY",
+        "ORDER_TYPE_SELL",
+        "ORDER_TYPE_BUY_LIMIT",
+        "ORDER_TYPE_SELL_LIMIT",
+        "ORDER_TYPE_BUY_STOP",
+        "ORDER_TYPE_SELL_STOP",
+    ):
+        if getattr(mt5, name, None) == order_type:
+            return name.removeprefix("ORDER_TYPE_")
+    return str(order_type)
+
+
+def _serialize_order(o) -> dict:
+    """挂单序列化 —— orders_get 字段与 positions 完全不同（price_open/
+    volume_initial/state/type_time），不能复用 /positions 的映射。"""
+    return {
+        "ticket": o.ticket,
+        "symbol": o.symbol,
+        "type": _order_type_name(o.type),
+        "lot": float(o.volume_current),
+        "volume_initial": float(o.volume_initial),
+        "price_open": float(o.price_open),
+        "price_current": float(o.price_current),
+        "sl": float(o.sl),
+        "tp": float(o.tp),
+        "state": int(o.state),
+        "type_time": int(o.type_time),
+        "time_setup": datetime.fromtimestamp(o.time_setup).isoformat() if o.time_setup else None,
+        "time_expiration": datetime.fromtimestamp(o.time_expiration).isoformat() if o.time_expiration else None,
+        "comment": o.comment,
+        "magic": o.magic,
+    }
+
+
+def _clamp_volume(symbol_info, lot: float) -> float:
+    """按券商 volume grid 收敛手数（与市价单 /order 同逻辑）。"""
+    vol = lot
+    vol_step = symbol_info.volume_step
+    if vol_step > 0:
+        vol = math.floor(vol / vol_step) * vol_step
+        vol = round(vol, 10)
+    vol = max(vol, symbol_info.volume_min)
+    return min(vol, symbol_info.volume_max)
+
+
 # --- Models ---
 class OrderRequest(BaseModel):
     symbol: str
@@ -124,6 +198,33 @@ class OrderRequest(BaseModel):
 class ModifyPositionRequest(BaseModel):
     sl: float | None = None
     tp: float | None = None
+
+
+class PendingOrderRequest(BaseModel):
+    """挂单请求（手动交易 Phase 1）。
+
+    price 必填且 >0、lot >0 由 pydantic 校验（422），杜绝旧 /order 的
+    "非 BUY 一律 SELL" 与 "负 lot 被 clamp 成最小手数" 两类静默放行。
+    """
+
+    symbol: str
+    type: Literal["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"]
+    lot: float = Field(gt=0)
+    price: float = Field(gt=0)
+    sl: float = Field(default=0.0, ge=0)
+    tp: float = Field(default=0.0, ge=0)
+    comment: str = ""
+    magic: int = 234000
+    expiration: str | None = None  # ISO datetime；None = GTC
+
+
+class ModifyOrderRequest(BaseModel):
+    """改挂单请求：price/sl/tp 任一变更都需后端重跑全流水线后转发至此。"""
+
+    price: float | None = Field(default=None, gt=0)
+    sl: float | None = None
+    tp: float | None = None
+    expiration: str | None = None
 
 
 # --- Startup / Shutdown ---
@@ -412,7 +513,7 @@ async def place_order(req: OrderRequest):
     if result is None:
         return mt5_response(False, error=f"Order send failed: {mt5.last_error()}")
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        return mt5_response(False, error=f"Order rejected: {result.comment} (code: {result.retcode})")
+        return _retcode_reject("Order rejected", result)
 
     logger.info(f"Order placed: {req.type} {vol} {req.symbol} @ {price} ticket={result.order}")
     return mt5_response(True, data={
@@ -448,7 +549,7 @@ async def modify_position(ticket: int, req: ModifyPositionRequest):
     if result is None:
         return mt5_response(False, error=f"Modify failed: {mt5.last_error()}")
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        return mt5_response(False, error=f"Modify rejected: {result.comment} (code: {result.retcode})")
+        return _retcode_reject("Modify rejected", result)
 
     logger.info(f"Position {ticket} modified: SL={new_sl} TP={new_tp}")
     return mt5_response(True, data={"ticket": ticket, "sl": new_sl, "tp": new_tp})
@@ -486,7 +587,7 @@ async def close_position(ticket: int):
     if result is None:
         return mt5_response(False, error=f"Close failed: {mt5.last_error()}")
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        return mt5_response(False, error=f"Close rejected: {result.comment}")
+        return _retcode_reject("Close rejected", result)
 
     logger.info(f"Position {ticket} closed @ {price}")
     return mt5_response(True, data={"ticket": ticket, "close_price": price})
@@ -530,6 +631,164 @@ async def close_all_positions(symbol: str | None = None):
             logger.info(f"Emergency close: {pos.ticket} @ {price}")
 
     return mt5_response(True, data={"closed": sum(1 for r in results if r["success"]), "results": results})
+
+
+# --- Pending orders（手动交易 Phase 1）---
+
+
+@app.get("/orders", dependencies=[Depends(verify_api_key)])
+async def get_orders():
+    """列出当前账号的全部挂单。"""
+    if not ensure_connected():
+        return mt5_response(False, error="MT5 not connected")
+    orders = mt5.orders_get()
+    if orders is None:
+        return mt5_response(True, data=[])
+    return mt5_response(True, data=[_serialize_order(o) for o in orders])
+
+
+def _validate_pending_price_relation(req: PendingOrderRequest, tick) -> str | None:
+    """挂单价/SL/TP 与市价的关系校验，返回错误信息或 None。"""
+    is_buy = req.type.startswith("BUY")
+    is_limit = req.type.endswith("LIMIT")
+    ref = tick.ask if is_buy else tick.bid
+    if is_limit:
+        if is_buy and req.price >= ref:
+            return f"BUY_LIMIT price {req.price} must be below ask {ref}"
+        if not is_buy and req.price <= ref:
+            return f"SELL_LIMIT price {req.price} must be above bid {ref}"
+    else:
+        if is_buy and req.price <= ref:
+            return f"BUY_STOP price {req.price} must be above ask {ref}"
+        if not is_buy and req.price >= ref:
+            return f"SELL_STOP price {req.price} must be below bid {ref}"
+    # SL/TP 相对挂单价的方向（买：SL<price<TP；卖相反）
+    if is_buy:
+        if req.sl and req.sl >= req.price:
+            return f"SL {req.sl} must be below pending price {req.price} for BUY"
+        if req.tp and req.tp <= req.price:
+            return f"TP {req.tp} must be above pending price {req.price} for BUY"
+    else:
+        if req.sl and req.sl <= req.price:
+            return f"SL {req.sl} must be above pending price {req.price} for SELL"
+        if req.tp and req.tp >= req.price:
+            return f"TP {req.tp} must be below pending price {req.price} for SELL"
+    return None
+
+
+@app.post("/order/pending", dependencies=[Depends(verify_api_key)])
+async def place_pending_order(req: PendingOrderRequest):
+    if not ensure_connected():
+        return mt5_response(False, error="MT5 not connected")
+
+    symbol_info = mt5.symbol_info(req.symbol)
+    if symbol_info is None:
+        return mt5_response(False, error=f"Symbol {req.symbol} not found")
+    if not symbol_info.visible:
+        mt5.symbol_select(req.symbol, True)
+
+    vol = _clamp_volume(symbol_info, req.lot)
+    tick = mt5.symbol_info_tick(req.symbol)
+    if tick is None:
+        return mt5_response(False, error="Cannot get tick")
+
+    error = _validate_pending_price_relation(req, tick)
+    if error:
+        return mt5_response(False, error=error)
+
+    request = {
+        "action": mt5.TRADE_ACTION_PENDING,
+        "symbol": req.symbol,
+        "volume": vol,
+        "type": getattr(mt5, f"ORDER_TYPE_{req.type}"),
+        "price": req.price,
+        "sl": req.sl,
+        "tp": req.tp,
+        "magic": req.magic,
+        "comment": req.comment,
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": _resolve_filling(symbol_info),
+    }
+    if req.expiration:
+        try:
+            exp_dt = datetime.fromisoformat(req.expiration)
+        except ValueError:
+            return mt5_response(False, error="Invalid expiration format. Use ISO: YYYY-MM-DDTHH:MM:SS")
+        request["type_time"] = mt5.ORDER_TIME_SPECIFIED
+        request["expiration"] = exp_dt
+
+    result = mt5.order_send(request)
+    if result is None:
+        return mt5_response(False, error=f"Pending order failed: {mt5.last_error()}")
+    # 关键：挂单成功的 retcode 是 PLACED(10008)，市价才是 DONE(10009)。
+    # 只查 DONE 会把成功挂单判为失败 → 用户重试 → 重复挂单。
+    if result.retcode not in (mt5.TRADE_RETCODE_PLACED, mt5.TRADE_RETCODE_DONE):
+        return _retcode_reject("Pending order rejected", result)
+
+    logger.info(f"Pending order placed: {req.type} {vol} {req.symbol} @ {req.price} ticket={result.order}")
+    return mt5_response(True, data={"ticket": result.order, "price": req.price, "lot": vol, "type": req.type})
+
+
+@app.put("/order/{ticket}", dependencies=[Depends(verify_api_key)])
+async def modify_pending_order(ticket: int, req: ModifyOrderRequest):
+    if not ensure_connected():
+        return mt5_response(False, error="MT5 not connected")
+
+    orders = mt5.orders_get(ticket=ticket)
+    if not orders:
+        return mt5_response(False, error=f"Pending order {ticket} not found")
+    order = orders[0]
+
+    # TRADE_ACTION_MODIFY 必须回传 type_time；原单 ORDER_TIME_SPECIFIED 时
+    # expiration 也必填，否则多数券商以 10016/10022 拒绝 → 先查单整包回填。
+    request = {
+        "action": mt5.TRADE_ACTION_MODIFY,
+        "order": ticket,
+        "symbol": order.symbol,
+        "price": req.price if req.price is not None else float(order.price_open),
+        "sl": req.sl if req.sl is not None else float(order.sl),
+        "tp": req.tp if req.tp is not None else float(order.tp),
+        "type_time": int(order.type_time),
+    }
+    if int(order.type_time) == mt5.ORDER_TIME_SPECIFIED:
+        if req.expiration:
+            try:
+                request["expiration"] = datetime.fromisoformat(req.expiration)
+            except ValueError:
+                return mt5_response(False, error="Invalid expiration format. Use ISO: YYYY-MM-DDTHH:MM:SS")
+        elif order.time_expiration:
+            request["expiration"] = datetime.fromtimestamp(order.time_expiration)
+
+    result = mt5.order_send(request)
+    if result is None:
+        return mt5_response(False, error=f"Modify order failed: {mt5.last_error()}")
+    if result.retcode not in (mt5.TRADE_RETCODE_PLACED, mt5.TRADE_RETCODE_DONE):
+        return _retcode_reject("Modify order rejected", result)
+
+    logger.info(f"Pending order {ticket} modified: price={request['price']} SL={request['sl']} TP={request['tp']}")
+    return mt5_response(True, data={
+        "ticket": ticket, "price": request["price"], "sl": request["sl"], "tp": request["tp"],
+    })
+
+
+@app.delete("/order/{ticket}", dependencies=[Depends(verify_api_key)])
+async def cancel_order(ticket: int):
+    if not ensure_connected():
+        return mt5_response(False, error="MT5 not connected")
+
+    orders = mt5.orders_get(ticket=ticket)
+    if not orders:
+        return mt5_response(False, error=f"Pending order {ticket} not found")
+
+    request = {"action": mt5.TRADE_ACTION_REMOVE, "order": ticket}
+    result = mt5.order_send(request)
+    if result is None:
+        return mt5_response(False, error=f"Cancel failed: {mt5.last_error()}")
+    if result.retcode not in (mt5.TRADE_RETCODE_PLACED, mt5.TRADE_RETCODE_DONE):
+        return _retcode_reject("Cancel rejected", result)
+
+    logger.info(f"Pending order {ticket} cancelled")
+    return mt5_response(True, data={"ticket": ticket, "cancelled": True})
 
 
 @app.get("/ohlcv/{symbol}/history", dependencies=[Depends(verify_api_key)])

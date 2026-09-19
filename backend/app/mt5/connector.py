@@ -40,7 +40,7 @@ class MT5BridgeConnector:
             await self._client.close()
             self._client = None
 
-    async def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
+    async def _request(self, method: str, path: str, *, retry_ambiguous: bool = True, **kwargs) -> dict[str, Any]:
         import time
 
         client = await self._get_client()
@@ -53,12 +53,16 @@ class MT5BridgeConnector:
                 await self._record_timing(path, time.monotonic() - start)
                 return result
             except (httpx.TimeoutException, httpx.ConnectError, ValueError) as e:
-                if attempt < self.max_retries:
+                # 歧义失败（超时/响应损坏）：请求可能已到达桥并被执行，重试
+                # 会造成同一笔订单双开仓。下单类调用传 retry_ambiguous=False，
+                # 只有明确未发出的 ConnectError 才允许重试。
+                ambiguous = not isinstance(e, httpx.ConnectError)
+                if attempt < self.max_retries and (retry_ambiguous or not ambiguous):
                     logger.warning(f"MT5 Bridge {method.upper()} {path} retry {attempt + 1}: {e}")
                     await asyncio.sleep(1)
                 else:
                     logger.error(
-                        f"MT5 Bridge {method.upper()} {path} failed after {self.max_retries + 1} attempts: {e}"
+                        f"MT5 Bridge {method.upper()} {path} failed after {attempt + 1} attempts: {e}"
                     )
                     await self._record_timing(path, time.monotonic() - start, error=True)
                     return {"success": False, "data": None, "error": str(e)}
@@ -145,9 +149,12 @@ class MT5BridgeConnector:
 
         if magic is None:
             magic = MT5_MAGIC_NUMBER
+        # retry_ambiguous=False：下单请求超时后订单可能已在桥端成交，重试会
+        # 双开仓（手动/引擎两条通道共用此方法，都是真实资金路径）。
         return await self._request(
             "post",
             "/order",
+            retry_ambiguous=False,
             json={
                 "symbol": symbol,
                 "type": order_type,
@@ -158,6 +165,65 @@ class MT5BridgeConnector:
                 "magic": magic,
             },
         )
+
+    async def place_pending_order(
+        self,
+        symbol: str,
+        order_type: str,
+        lot: float,
+        price: float,
+        sl: float = 0.0,
+        tp: float = 0.0,
+        comment: str = "",
+        magic: int | None = None,
+        expiration: str | None = None,
+    ) -> dict:
+        """挂单（BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP），Phase 1 Bridge 端点。"""
+        from app.constants import MANUAL_MAGIC_NUMBER
+
+        if magic is None:
+            magic = MANUAL_MAGIC_NUMBER
+        # retry_ambiguous=False：同 place_order —— 挂单超时后可能已在桥端
+        # 挂上，重试会重复挂单。
+        body: dict = {
+            "symbol": to_broker_alias(symbol),
+            "type": order_type,
+            "lot": lot,
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "comment": comment,
+            "magic": magic,
+        }
+        if expiration:
+            body["expiration"] = expiration
+        return await self._request("post", "/order/pending", retry_ambiguous=False, json=body)
+
+    async def get_orders(self) -> dict:
+        """当前账号挂单列表（桥端 orders_get 序列化）。"""
+        return await self._request("get", "/orders")
+
+    async def modify_order(self, ticket: int, price: float | None = None, sl: float | None = None,
+                           tp: float | None = None, expiration: str | None = None) -> dict:
+        """改挂单（价/SL/TP）。桥端先查单回填 type_time/expiration 整包回传。
+
+        手动通道语义：任一参数变更都必须先重跑全流水线（审查针对的是
+        变更后的订单），本方法只做执行。
+        """
+        body: dict = {}
+        if price is not None:
+            body["price"] = price
+        if sl is not None:
+            body["sl"] = sl
+        if tp is not None:
+            body["tp"] = tp
+        if expiration is not None:
+            body["expiration"] = expiration
+        return await self._request("put", f"/order/{ticket}", json=body)
+
+    async def cancel_order(self, ticket: int) -> dict:
+        """撤单（TRADE_ACTION_REMOVE）。风险只减不增，无需审查。"""
+        return await self._request("delete", f"/order/{ticket}", retry_ambiguous=False)
 
     async def modify_position(self, ticket: int, sl: float | None = None, tp: float | None = None) -> dict:
         body = {}

@@ -32,6 +32,7 @@ from app.api.routes import (
     integration,
     jobs,
     macro,
+    manual_trading,
     market_data,
     ml,
     positions,
@@ -285,6 +286,12 @@ async def lifespan(app: FastAPI):
 
     account_switch_service = AccountSwitchService(manager, connector, db_session, redis_client)
     app.state.account_switch_service = account_switch_service
+
+    # Initialize ManualOrderGate（手动交易风控防火墙）— 复用 lifespan 单例
+    # connector/redis/ai_client（评审：勿模仿 init_broker 自建 connector）。
+    from app.services.manual_order_gate import ManualOrderGate
+
+    app.state.manual_order_gate = ManualOrderGate(connector, redis_client, ai_client)
 
     # Initialize sentiment analyzer (shared)
     sentiment_analyzer = NewsSentimentAnalyzer(ai_client, db_session, redis_client)
@@ -603,6 +610,7 @@ app.include_router(auth_router)
 app.include_router(webauthn_router)
 app.include_router(bot.router)
 app.include_router(positions.router)
+app.include_router(manual_trading.router)
 app.include_router(history.router)
 app.include_router(strategy.router)
 app.include_router(ai_insights.router)

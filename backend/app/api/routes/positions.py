@@ -4,10 +4,11 @@ Positions API routes (multi-symbol).
 
 import asyncio
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.routes.bot import _get_engine, get_manager
 from app.auth import require_auth
+from app.services.position_close import close_position_gated
 
 router = APIRouter(prefix="/api/positions", tags=["positions"], dependencies=[Depends(require_auth)])
 
@@ -33,9 +34,7 @@ async def get_positions(symbol: str | None = Query(None)):
 
 
 @router.delete("/{ticket}")
-async def close_position(ticket: int):
-    mgr = get_manager()
-    # Use first engine's executor (they share the same connector)
-    first_engine = next(iter(mgr.engines.values()))
-    result = await first_engine.executor.close_position(ticket)
-    return result
+async def close_position(ticket: int, request: Request):
+    # 收口：手动平仓必须走闸门序列（switching 门禁 + rollout 拦截 + 记账），
+    # 不得直连 executor（历史旁路：零检查平仓）。
+    return await close_position_gated(request.app.state.connector, request.app.state.redis, ticket)

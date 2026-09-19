@@ -25,5 +25,6 @@
   "integration": "Integration",
   "dbHealth": "DB Health",
   "notifications": "Notifications",
-  "settings": "Settings"
+  "settings": "Settings",
+  "manualTrading": "Manual Trading"
 }
