@@ -180,7 +180,7 @@ class BotManager:
         """
         self.current_account_login = account_login or "0"
         for engine in self.engines.values():
-            engine.account_login = self.current_account_login
+            engine.set_account_login(self.current_account_login)
         self._positions_cache = {}
         self._positions_cache_time = 0
 

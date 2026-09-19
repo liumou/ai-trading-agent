@@ -197,7 +197,9 @@ async def get_account():
         from app.risk.circuit_breaker import CircuitBreaker
 
         balance = primary.get("balance", 0)
-        peak_balance = await CircuitBreaker.update_peak_balance(first_engine.redis, balance)
+        peak_balance = await CircuitBreaker.update_peak_balance(
+            first_engine.redis, balance, account_login=first_engine.account_login
+        )
         if peak_balance > 0:
             drawdown_pct = (peak_balance - balance) / peak_balance
     except Exception:

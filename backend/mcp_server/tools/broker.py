@@ -34,6 +34,19 @@ def _require_init():
         raise RuntimeError("Broker not initialized — call init_broker(redis) first")
 
 
+async def _switching_in_progress() -> bool:
+    """账号切换门禁（H2）：切换期间（Redis `switching:in_progress`）为 True。
+
+    Redis 不可用时放行（best-effort，不阻塞正常交易操作）。
+    """
+    if _redis is None:
+        return False
+    try:
+        return bool(await _redis.get("switching:in_progress"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def place_order(
     symbol: str,
     order_type: str,
@@ -262,18 +275,13 @@ async def place_order(
     # ─── 账号切换门禁（H2） ──────────────────────────────────────────────
     # 切换期间（AccountSwitchService 置 Redis `switching:in_progress`）拒绝
     # 下单，防止 MCP/AI 通道在账号切换瞬间把订单落在错误账号上。
-    if _redis is not None:
-        try:
-            switching = await _redis.get("switching:in_progress")
-            if switching:
-                logger.warning(f"place_order [{symbol}] rejected: account switch in progress")
-                return {
-                    "executed": False,
-                    "rejected": True,
-                    "reason": "Account switch in progress — retry after switch completes",
-                }
-        except Exception:  # noqa: BLE001
-            pass  # Redis 不可用时放行（门禁 best-effort，不阻塞正常下单）
+    if await _switching_in_progress():
+        logger.warning(f"place_order [{symbol}] rejected: account switch in progress")
+        return {
+            "executed": False,
+            "rejected": True,
+            "reason": "Account switch in progress — retry after switch completes",
+        }
 
     # ─── EXECUTE ORDER (live or micro) ───────────────────────────────────
     # comment 清洗：MT5 ORDER_COMMENT 硬上限 27 字符，且不接受 `[`/`]` 等
@@ -352,6 +360,9 @@ async def modify_position(ticket: int, sl: float | None = None, tp: float | None
       dragging SL to zero.
     """
     _require_init()
+    if await _switching_in_progress():
+        logger.warning(f"modify_position [{ticket}] rejected: account switch in progress")
+        return {"modified": False, "rejected": True, "reason": "Account switch in progress"}
     rollout_mode = await _guardrails.get_persisted_rollout_mode()
     if rollout_mode in ("shadow", "paper"):
         logger.info(f"[{rollout_mode}] modify_position intercepted: ticket={ticket} sl={sl} tp={tp}")
@@ -393,6 +404,9 @@ async def close_position(ticket: int) -> dict:
     AI agent cannot liquidate a real account while we're still dry-running.
     """
     _require_init()
+    if await _switching_in_progress():
+        logger.warning(f"close_position [{ticket}] rejected: account switch in progress")
+        return {"closed": False, "rejected": True, "reason": "Account switch in progress"}
     rollout_mode = await _guardrails.get_persisted_rollout_mode()
 
     # Get position info before closing for notification

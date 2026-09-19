@@ -221,6 +221,15 @@ class BotEngine:
         self.account_login: str = "0"
         self._known_tickets: set[int] = set()  # Track open tickets for close detection
 
+    def set_account_login(self, account_login: str) -> None:
+        """更新所属 MT5 账号，并重建 circuit_breaker（H3：key 带账号维度）。
+
+        切换服务（manager.set_current_account）调用：风控状态随账号隔离，
+        不把新账号的日损/回撤算到旧账号头上。
+        """
+        self.account_login = account_login or "0"
+        self.circuit_breaker = CircuitBreaker(self.redis, self.symbol, account_login=self.account_login)
+
         # Lot sizing mode: None = auto (AI/Kelly/risk-based), float = fixed lot
         self.fixed_lot: float | None = None
 
@@ -410,8 +419,8 @@ class BotEngine:
                 return
             balance = account["data"]["balance"]
 
-            # Track peak balance for absolute drawdown detection
-            await CircuitBreaker.update_peak_balance(self.redis, balance)
+            # Track peak balance for absolute drawdown detection (H3: 按账号分键)
+            await CircuitBreaker.update_peak_balance(self.redis, balance, account_login=self.account_login)
 
             if await self._check_circuit_breakers(balance):
                 return
@@ -585,7 +594,7 @@ class BotEngine:
             all_symbols = [s for s, p in SYMBOL_PROFILES.items() if "canonical" not in p] or settings.symbol_list
         symbol_triggered, global_triggered = await _asyncio.gather(
             self.circuit_breaker.is_triggered(balance),
-            CircuitBreaker.is_global_triggered(self.redis, all_symbols, balance),
+            CircuitBreaker.is_global_triggered(self.redis, all_symbols, balance, account_login=self.account_login),
         )
 
         if symbol_triggered:
@@ -604,11 +613,12 @@ class BotEngine:
                 await self._notify(self.notifier.send_error_alert("⚡ Portfolio circuit breaker — ALL symbols paused"))
             return True
 
-        # Absolute drawdown from peak balance
+        # Absolute drawdown from peak balance (H3: 按账号分键)
         drawdown_halted = await CircuitBreaker.is_drawdown_halted(
             self.redis,
             balance,
             settings.max_drawdown_from_peak,
+            account_login=self.account_login,
         )
         if drawdown_halted:
             self.state = BotState.PAUSED

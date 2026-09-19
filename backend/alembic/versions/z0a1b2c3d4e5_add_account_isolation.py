@@ -1,7 +1,7 @@
 """add account isolation (trades/bot_events account_login) + mt5_accounts
 
 Revision ID: z0a1b2c3d4e5
-Revises: y5z6a7b8c9d0
+Revises: b8c9d0e1f2a3
 Create Date: 2026-09-19 09:00:00.000000
 
 MT5 账号实时切换功能（Phase 4）：
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "z0a1b2c3d4e5"
-down_revision: Union[str, None] = "y5z6a7b8c9d0"
+down_revision: Union[str, None] = "b8c9d0e1f2a3"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -10,7 +10,7 @@
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 from loguru import logger
 from sqlalchemy import select
@@ -91,103 +91,104 @@ class AccountSwitchService:
 
             # 1. 置门禁 + 暂停引擎（H2）
             await self._set_switching_flag(True)
-            await self._manager.stop()  # 全部引擎 STOPPED，scheduler 不再触发新下单
-            await asyncio.sleep(1.0)  # drain：让已越过 state 检查的在途 HTTP 调用排空
-
-            # 2. 调 Bridge /account/switch（Phase 3 端点）
-            result = await self._connector.switch_account(
-                login=target.login,
-                password=password,
-                server=target.server or None,
-            )
-            if not result.get("success"):
-                detail = result.get("error", "unknown")
-                await self._set_switching_flag(False)
-                # 失败：不恢复引擎（H1），回滚审计标记
-                await log_audit(
-                    self._db,
-                    action="account.switch_failed",
-                    actor=actor,
-                    resource=f"account:{target.id}",
-                    detail={
-                        "from": previous_login,
-                        "to": target.login,
-                        "error": detail,
-                        "elapsed_s": round(time.monotonic() - start_ts, 2),
-                    },
-                    success=False,
-                )
-                # 尝试回滚到原账号（若 Bridge 失败可能已落入半切换态）
-                if previous_login and previous_login != "0":
-                    rollback = await self._try_rollback(previous_login, actor)
-                    if rollback:
-                        logger.warning(
-                            f"Switch to {target.login} failed; rolled back to {previous_login}: {detail}"
-                        )
-                raise AccountSwitchError(f"Bridge account switch failed: {detail}")
-
-            new_login = str(target.login)
-            # 3. 更新账号状态 + 同步引擎（H3/H4/M5）
-            await self._manager.set_current_account(new_login)
-            target.is_active = True
-            target.last_switched_at = datetime.now(timezone.utc)
-            # 原活跃账号取消标记
-            old_active = await self._db.execute(
-                select(MT5Account).where(MT5Account.is_active.is_(True))
-            )
-            for other in old_active.scalars().all():
-                if other.id != target.id:
-                    other.is_active = False
-            await self._db.commit()
-
-            # 4. 刷新规格（同券商基本一致，重跑 volume 回填）
             try:
-                from app.services.symbol_config_service import load_profiles_into_memory
+                await self._manager.stop()  # 全部引擎 STOPPED，scheduler 不再触发新下单
+                await asyncio.sleep(1.0)  # drain：让已越过 state 检查的在途 HTTP 调用排空
 
-                await load_profiles_into_memory()
-                await self._validate_symbols()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"Symbol spec refresh after switch failed (continuing): {e}")
+                # 2. 调 Bridge /account/switch（Phase 3 端点）
+                result = await self._connector.switch_account(
+                    login=target.login,
+                    password=password,
+                    server=target.server or None,
+                )
+                if not result.get("success"):
+                    detail = result.get("error", "unknown")
+                    await log_audit(
+                        self._db,
+                        action="account.switch_failed",
+                        actor=actor,
+                        resource=f"account:{target.id}",
+                        detail={
+                            "from": previous_login,
+                            "to": target.login,
+                            "error": detail,
+                            "elapsed_s": round(time.monotonic() - start_ts, 2),
+                        },
+                        success=False,
+                    )
+                    # 尝试回滚到原账号（若 Bridge 失败可能已落入半切换态）
+                    if previous_login and previous_login != "0":
+                        rollback = await self._try_rollback(previous_login, actor)
+                        if rollback:
+                            logger.warning(
+                                f"Switch to {target.login} failed; rolled back to {previous_login}: {detail}"
+                            )
+                    raise AccountSwitchError(f"Bridge account switch failed: {detail}")
 
-            # 5. H1：显式恢复引擎 + active_count 断言
-            await self._manager.reload_engines()
-            start_result = await self._manager.start()
-            status = self._manager.get_status()
-            active_count = sum(1 for s in status.values() if s.get("state") in ("RUNNING", "PAUSED"))
-            if active_count == 0:
-                # 引擎未恢复 = 静默停，需报告
-                await self._set_switching_flag(False)
+                new_login = str(target.login)
+                # 3. 更新账号状态 + 同步引擎（H3/H4/M5）
+                await self._manager.set_current_account(new_login)
+                target.is_active = True
+                target.last_switched_at = datetime.utcnow()
+                # 原活跃账号取消标记
+                old_active = await self._db.execute(
+                    select(MT5Account).where(MT5Account.is_active.is_(True))
+                )
+                for other in old_active.scalars().all():
+                    if other.id != target.id:
+                        other.is_active = False
+                await self._db.commit()
+
+                # 4. 刷新规格（同券商基本一致，重跑 volume 回填）
+                try:
+                    from app.services.symbol_config_service import load_profiles_into_memory
+
+                    await load_profiles_into_memory()
+                    await self._validate_symbols()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Symbol spec refresh after switch failed (continuing): {e}")
+
+                # 5. H1：显式恢复引擎 + active_count 断言
+                await self._manager.reload_engines()
+                start_result = await self._manager.start()
+                # get_status() 返回 {symbols: {...}, active_count: N, ...}，直接读聚合计数
+                status = self._manager.get_status()
+                active_count = int(status.get("active_count", 0) or 0)
+                if active_count == 0:
+                    # 引擎未恢复 = 静默停，需报告
+                    await log_audit(
+                        self._db,
+                        action="account.switch_start_failed",
+                        actor=actor,
+                        resource=f"account:{target.id}",
+                        detail={
+                            "from": previous_login,
+                            "to": new_login,
+                            "elapsed_s": round(time.monotonic() - start_ts, 2),
+                            "start_result": str(start_result),
+                        },
+                        success=False,
+                    )
+                    raise AccountSwitchError(
+                        f"Account switched to {new_login} but engines did not resume (active_count=0)"
+                    )
+
+                # 6. 审计成功
                 await log_audit(
                     self._db,
-                    action="account.switch_start_failed",
+                    action="account.switched",
                     actor=actor,
                     resource=f"account:{target.id}",
                     detail={
                         "from": previous_login,
                         "to": new_login,
                         "elapsed_s": round(time.monotonic() - start_ts, 2),
-                        "start_result": str(start_result),
                     },
-                    success=False,
+                    success=True,
                 )
-                raise AccountSwitchError(
-                    f"Account switched to {new_login} but engines did not resume (active_count=0)"
-                )
-
-            # 6. 清门禁 + 审计成功
-            await self._set_switching_flag(False)
-            await log_audit(
-                self._db,
-                action="account.switched",
-                actor=actor,
-                resource=f"account:{target.id}",
-                detail={
-                    "from": previous_login,
-                    "to": new_login,
-                    "elapsed_s": round(time.monotonic() - start_ts, 2),
-                },
-                success=True,
-            )
+            finally:
+                # 门禁必须清理：成功/失败/任何异常出口都复位，避免切换窗口内下单被拒
+                await self._set_switching_flag(False)
 
             logger.info(f"Account switched: {previous_login} -> {new_login} ({time.monotonic() - start_ts:.2f}s)")
             return {

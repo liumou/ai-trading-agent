@@ -112,3 +112,28 @@
 - **Phase 7**：CLAUDE.md + CI bridge job + 全量测试。
 
 **待办（用户侧）**：VPS 部署 Bridge 新代码 → Railway 后端迁移 → 前端联调 → git 提交。
+
+## code-reviewer 评审问题修复（2026-09-19）
+
+请求 `/superpowers:requesting-code-review` 后，code-reviewer 复评发现 **2 Critical + 5 Important**，均已修复并验证：
+
+### Critical（高置信阻断，均已实证确认）
+- **C1**：`account_switch.py:155-156` active_count 断言对真实 `get_status()` 结构（`{symbols, active_count, total_count, ...}`）调 `.get("state")` → 每次成功切换都抛 `AttributeError`。**修复**：改为 `status.get("active_count", 0)` 读取聚合计数；整个 `switch()` 主流程包进 `try/finally`，`finally` 统一清门禁（成功/失败/异常出口都复位）。
+- **C2**：Alembic 迁移双 head（`z0a1b2c3d4e5` 误挂 `y5z6a7b8c9d0` 分叉点）。**修复**：`down_revision` 改为链末 `b8c9d0e1f2a3`。验证：`alembic heads` 单 head，`alembic history` 全链线性。
+
+### Important（均已修复）
+- **I1**：`datetime.now(timezone.utc)` 写 naive 列 → 改 `datetime.utcnow()`。
+- **I2**：H3 风控账号隔离未接线。**修复**：engine 加 `set_account_login()`（更新 account_login + 重建带账号维度的 circuit_breaker）；manager `set_current_account()` 改调它；engine.py 的 `update_peak_balance`/`is_global_triggered`/`is_drawdown_halted`、bot.py 的 `update_peak_balance` 均传 `account_login=self.account_login`。
+- **I3**：Bridge 断线重连翻回 env 账号。**修复**：Bridge 维护模块级 `_active_*`（最近活跃账号，初始 env）；`switch_account()` 成功后更新；`ensure_connected()` 重连用最近活跃账号。补回归测试。
+- **I4**：测试 mock 结构失真（`get_status()` 假结构导致 C1 漏网）。**修复**：`test_account_switch.py` mock 改为真实聚合结构。
+- **I5**：MCP 门禁只拦 `place_order`。**修复**：抽 `_switching_in_progress()` helper，`modify_position`/`close_position` 也检查切换门禁。补 `TestSwitchingWindowGate` 4 个测试。
+
+### 额外修复
+- **Bridge 测试基建缺陷**：`BRIDGE_API_KEY` 未配置时 `verify_api_key` 直接 503，导致 `/account/switch` 用例在无 env 环境下全挂。**修复**：`conftest.py` 在 `main` import 前 `os.environ.setdefault("BRIDGE_API_KEY", "test-key")`。
+
+### 验证结果
+- Bridge 测试：**8/8 通过**（含新增 I3 回归用例）。
+- 后端：account_switch 4/4、accounts/circuit/risk/strategy_switch 83 通过、mcp_broker_guard 9/9（含新增 I5 门禁用例）、guardrails 34 通过。**相关测试全集 126 passed**。
+- `alembic heads` 单 head 确认。
+- 改动文件 py_compile 通过。
+- 后端全量单测回归：733 passed / 8 failed，失败均为**既有环境问题**（multi_agent 模型 ID 断言依赖会话 provider、backtest 数据断言、SDK 模拟差异），与本次改动无关。

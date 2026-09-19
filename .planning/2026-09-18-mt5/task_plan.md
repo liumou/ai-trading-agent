@@ -171,6 +171,19 @@ Phase 7 (测试 + 文档)
 
 **全部 Phase 0-7 完成**。下一步（可选）：部署验证（VPS 上跑 Bridge + Railway 后端 + Vercel 前端联调）；提交 git（等待用户确认）。
 
+## code-reviewer 复评修复（2026-09-19）
+
+请求 code-review 后复评发现 **2 Critical + 5 Important**，已全部修复：
+- **C1**（active_count 断言抛 AttributeError）→ 读聚合计数 + `try/finally` 统一清门禁。
+- **C2**（Alembic 双 head）→ `down_revision` 改 `b8c9d0e1f2a3`，`alembic heads` 单 head。
+- **I1**（aware datetime 写 naive 列）→ `datetime.utcnow()`。
+- **I2**（H3 风控账号隔离未接线）→ engine `set_account_login()` + 各调用点传 `account_login`。
+- **I3**（Bridge 重连翻回 env 账号）→ `_active_*` 最近活跃账号 + 回归测试。
+- **I4**（测试 mock 结构失真）→ `test_account_switch.py` 改真实聚合结构。
+- **I5**（MCP 门禁只拦 place_order）→ `_switching_in_progress()` helper + close/modify 门禁 + 4 测试。
+- **额外**：Bridge 测试基建补 `BRIDGE_API_KEY` 注入（conftest）。
+- 验证：Bridge 8/8、后端相关 83+9+34 通过、单 head、py_compile 通过。详见 progress.md。
+
 ## Errors Encountered
 
 | Error | Attempt | Resolution |

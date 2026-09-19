@@ -21,8 +21,12 @@ def _profiles():
     SYMBOL_PROFILES.update(snapshot)
 
 
-def _install(monkeypatch, profile: dict, rollout_mode: str = "live"):
-    """把 mock 的 connector/guardrails 注入 broker 模块的全局变量。"""
+def _install(monkeypatch, profile: dict, rollout_mode: str = "live", switching: bool = False):
+    """把 mock 的 connector/guardrails 注入 broker 模块的全局变量。
+
+    ``switching=True`` 时把 Redis 门禁 mock 为「切换进行中」，用于验证
+    切换窗口内 MCP 下单/改单/平仓被拒（I5 修复）。
+    """
     from app.config import settings
 
     SYMBOL_PROFILES.clear()
@@ -50,7 +54,13 @@ def _install(monkeypatch, profile: dict, rollout_mode: str = "live"):
     monkeypatch.setattr(broker_mod, "_connector", connector)
     monkeypatch.setattr(broker_mod, "_guardrails", guardrails)
     monkeypatch.setattr(broker_mod, "_notifier", None)
-    monkeypatch.setattr(broker_mod, "_redis", None)  # daily pnl 回退到 account.profit
+    if switching:
+        # 模拟切换进行中：Redis 有 `switching:in_progress` key（I5 门禁）
+        redis_mock = AsyncMock()
+        redis_mock.get.return_value = b"1"
+        monkeypatch.setattr(broker_mod, "_redis", redis_mock)
+    else:
+        monkeypatch.setattr(broker_mod, "_redis", None)  # daily pnl 回退到 account.profit
 
     # 测试默认 live 模式需要 LLM_ALLOW_LIVE=true 才能通过 broker 层授权检查
     prev_allow = settings.llm_allow_live
@@ -127,3 +137,60 @@ class TestMcpVolumeGuard:
         assert result["mode"] == "shadow"
         assert result["would_execute"]["lot"] == pytest.approx(0.5)
         connector.place_order.assert_not_awaited()
+
+
+class TestSwitchingWindowGate:
+    """I5 修复：账号切换窗口内 MCP 下单/改单/平仓必须被拒。
+
+    此前仅 place_order 有 `switching:in_progress` 门禁，modify/close 会
+    在切换瞬间作用于旧账号持仓，造成订单落错账号。
+    """
+
+    @pytest.mark.asyncio
+    async def test_place_order_rejected_during_switch(self, monkeypatch):
+        connector, _ = _install(
+            monkeypatch, {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.1},
+            switching=True,
+        )
+        result = await broker_mod.place_order(
+            symbol="GOLD", order_type="BUY", lot=0.1, sl=1900.0, tp=2100.0
+        )
+        assert result["rejected"] is True
+        assert "switch in progress" in result["reason"]
+        connector.place_order.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_modify_position_rejected_during_switch(self, monkeypatch):
+        connector, _ = _install(
+            monkeypatch, {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.1},
+            switching=True,
+        )
+        result = await broker_mod.modify_position(ticket=123, sl=1800.0)
+        assert result["rejected"] is True
+        assert "switch in progress" in result["reason"]
+        connector.modify_position.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_close_position_rejected_during_switch(self, monkeypatch):
+        connector, _ = _install(
+            monkeypatch, {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.1},
+            switching=True,
+        )
+        result = await broker_mod.close_position(ticket=123)
+        assert result["rejected"] is True
+        assert "switch in progress" in result["reason"]
+        connector.close_position.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ops_allowed_when_not_switching(self, monkeypatch):
+        """门禁只在切换窗口内生效，正常时段不阻断（Redis 返回空）。"""
+        connector, _ = _install(
+            monkeypatch, {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.1},
+            switching=False,
+        )
+        connector.modify_position.return_value = {"success": True, "data": {}}
+        connector.close_position.return_value = {"success": True, "data": {}}
+        modify = await broker_mod.modify_position(ticket=123, sl=1800.0)
+        close = await broker_mod.close_position(ticket=123)
+        assert modify["modified"] is True
+        assert close["closed"] is True

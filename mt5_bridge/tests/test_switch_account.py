@@ -108,6 +108,40 @@ def test_switch_account_failure_reports_current(client, mt5_mock):
     assert body["data"]["previous"]["login"] == 12345
 
 
+def test_reconnect_uses_last_switched_account(client, mt5_mock):
+    """I3 回归：切换成功后，断线重连用最近活跃账号而非 env 初始账号。
+
+    场景：初始 env 账号 12345，切到 99999 后终端断线/被登出，
+    ensure_connected() 重连应 login(99999)，而不是翻回 12345。
+    """
+    from main import _active_login, ensure_connected, switch_account
+
+    def fake_login(login, password="", server=None):
+        mt5_mock.account_info.return_value = types.SimpleNamespace(
+            login=login, server=server or "Broker-Server",
+            balance=5000.0, equity=5100.0, currency="USD",
+        )
+        return True
+
+    mt5_mock.login.side_effect = fake_login
+
+    # 先切到 99999
+    ok, _, _ = switch_account(99999, "secret", "Broker-Server")
+    assert ok is True
+    assert _active_login == 99999
+
+    # 模拟断线：终端存活但未登录
+    mt5_mock.account_info.return_value = None
+    mt5_mock.initialize.return_value = True
+    mt5_mock.login.reset_mock()
+
+    # 重连：应使用最近活跃账号 99999
+    assert ensure_connected() is True
+    mt5_mock.login.assert_called_once()
+    call_kwargs = mt5_mock.login.call_args
+    assert call_kwargs.args[0] == 99999  # 用切换后的账号，而非 env 12345
+
+
 def test_switch_account_requires_auth(client):
     """M2：/account/switch 必须强制 verify_api_key。"""
     from main import app

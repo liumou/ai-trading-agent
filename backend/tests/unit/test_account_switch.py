@@ -24,7 +24,15 @@ def _make_service(**overrides):
     manager.stop = AsyncMock()
     manager.start = AsyncMock(return_value={"started": []})
     manager.reload_engines = AsyncMock(return_value={})
-    manager.get_status = MagicMock(return_value={"GOLD": {"state": "RUNNING"}})
+    # 与真实 manager.get_status() 返回结构一致（I4 修复）：聚合 dict
+    manager.get_status = MagicMock(
+        return_value={
+            "symbols": {"GOLD": {"state": "RUNNING"}},
+            "active_count": 1,
+            "total_count": 1,
+            "enable_auto_strategy_switch": False,
+        }
+    )
 
     connector = MagicMock()
     connector.switch_account = AsyncMock(return_value={"success": True, "data": {"switched": True}})
@@ -97,7 +105,12 @@ async def test_switch_failure_does_not_resume_engines():
 async def test_switch_clears_gate_even_when_resume_fails():
     """active_count=0（引擎未恢复）→ 清门禁 + 抛错（避免静默停）。"""
     service, manager, connector, redis, db = _make_service()
-    manager.get_status.return_value = {"GOLD": {"state": "STOPPED"}}  # 引擎没恢复
+    manager.get_status.return_value = {
+        "symbols": {"GOLD": {"state": "STOPPED"}},
+        "active_count": 0,  # 引擎没恢复
+        "total_count": 1,
+        "enable_auto_strategy_switch": False,
+    }
 
     with pytest.raises(AccountSwitchError) as ei:
         await service.switch(1)

@@ -6,11 +6,17 @@ MetaTrader5 仅 Windows 可 import。为了让测试在 Linux/macOS/CI 上可运
 真实 SDK 行为由 Phase 0 spike 在 VPS 上验证；这里只测 Bridge 的逻辑分支。
 """
 
+import os
 import sys
 import types
 from unittest.mock import MagicMock
 
 import pytest
+
+# 测试环境的 bridge key：main.py 的 verify_api_key 在 key 为空时直接 503，
+# 会让依赖鉴权的 /account/switch 用例全挂（测试夹具缺失）。此处统一注入，
+# 避免依赖外部 .env 或 shell 环境变量。
+os.environ.setdefault("BRIDGE_API_KEY", "test-key")
 
 # 构造 mock MetaTrader5 模块。关键：模块的每个属性都引用 _mt5_mock 的
 # 子属性，这样测试通过 mt5_mock.<attr>.return_value 的修改会同时影响

@@ -20,6 +20,14 @@ load_dotenv()
 MT5_LOGIN = int(os.getenv("MT5_LOGIN", "0"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
+
+# 最近活跃账号（I3 修复）：初始为 env 账号，/account/switch 成功后更新。
+# ensure_connected() 断线重连用此账号，避免切换后断线自动翻回 env 账号
+# 导致引擎跑在新账号、实际持仓却在 env 账号的静默错乱。
+_active_login: int = MT5_LOGIN
+_active_password: str = MT5_PASSWORD
+_active_server: str = MT5_SERVER
+
 BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "")
 if not BRIDGE_API_KEY:
     logger.warning("BRIDGE_API_KEY not set — bridge will reject all requests until configured")
@@ -60,7 +68,8 @@ def ensure_connected() -> bool:
     if not mt5.initialize(MT5_PATH):
         logger.error(f"MT5 initialize failed: {mt5.last_error()}")
         return False
-    if MT5_LOGIN and not mt5.login(MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
+    # I3：用最近活跃账号重连（切换后的账号），而非 env 初始账号
+    if _active_login and not mt5.login(_active_login, password=_active_password, server=_active_server or None):
         logger.error(f"MT5 login failed: {mt5.last_error()}")
         return False
     logger.info("MT5 reconnected successfully")
@@ -82,6 +91,11 @@ def switch_account(login: int, password: str, server: str | None = None) -> tupl
     info = mt5.account_info()
     if info is None:
         return False, None, f"Login returned True but account_info() is None: {mt5.last_error()}"
+    # I3：记录最近活跃账号，断线重连回本账号而非 env 初始账号
+    global _active_login, _active_password, _active_server
+    _active_login = info.login
+    _active_password = password
+    _active_server = info.server or server or ""
     snapshot = {
         "login": info.login,
         "server": info.server,
