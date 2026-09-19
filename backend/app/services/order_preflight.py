@@ -127,6 +127,7 @@ async def preflight_order(
     strict_symbol: bool = False,
     direction: str | None = None,
     entry_price: float | None = None,
+    account_login: str | None = None,
 ) -> PreflightOutcome:
     """Run the full hard-gate sequence; return context for execution or rejection.
 
@@ -137,13 +138,30 @@ async def preflight_order(
     reference price — guardrails' SL/TP direction checks must run against the
     pending price, not the tick mid (the bridge validates the price relation
     separately).
+
+    account_login: 账号维度（H3）。传入后日亏/回撤熔断 key 带账号前缀
+    （``circuit:acc:{login}:``），与引擎切换账号后重建的 CircuitBreaker
+    key 对齐 —— 不传则读旧 ``circuit:`` 前缀的空 key，日亏闸门静默失效。
     """
-    from app.config import SYMBOL_PROFILES, settings
+    from app.config import SYMBOL_PROFILES, get_canonical_symbol, settings
     from app.risk.circuit_breaker import CircuitBreaker
     from app.services.symbol_validation import normalize_lot_to_volume_grid
     from mcp_server.guardrails import MICRO_MAX_LOT, TradingGuardrails
 
     guardrails = guardrails or TradingGuardrails(redis)
+
+    # 账号维度回退（H3）：调用方未显式传 account_login 时，尝试从全局
+    # BotManager 读取当前账号 —— 保证日亏熔断 key 与引擎切换后重建的
+    # 熔断器对齐，避免读到旧前缀的空 key 导致日亏闸门静默失效。
+    if account_login is None:
+        try:
+            from app.bot.manager import get_global_manager
+
+            _mgr = get_global_manager()
+            if _mgr is not None:
+                account_login = getattr(_mgr, "current_account_login", None)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"preflight_order account_login lookup failed: {e!r}")
 
     # 1. Symbol resolution（strict 手动通道 fail-closed）
     resolved, err = _resolve_symbol(symbol, strict=strict_symbol)
@@ -176,8 +194,10 @@ async def preflight_order(
 
     # 4. daily_pnl 必须是已实现盈亏（CircuitBreaker），浮动盈亏会让盈利仓
     #    掩盖已实现亏损、绕过日亏限额。Redis 缺失时回退 account.profit（仅测试）。
+    #    账号维度（H3）：传 account_login 使 key 与引擎切换后重建的熔断器
+    #    对齐（circuit:acc:{login}:daily_pnl:{symbol}），否则读旧空 key，日亏闸门失效。
     if redis is not None:
-        realized_daily_pnl = await CircuitBreaker(redis, symbol=symbol).get_daily_pnl()
+        realized_daily_pnl = await CircuitBreaker(redis, symbol=symbol, account_login=account_login).get_daily_pnl()
     else:
         realized_daily_pnl = account.get("profit", 0)
 
@@ -189,11 +209,18 @@ async def preflight_order(
         entry_ref = (tick.get("ask", 0) + tick.get("bid", 0)) / 2 if tick.get("ask") and tick.get("bid") else 0
 
     # 6. GUARDRAIL CHECK（不可绕过）
+    #    持仓 symbol 必须先归一化为 canonical 引擎键 —— bridge 返回的是
+    #    券商别名（如 "GOLD_"），而 guardrails 按 canonical 过滤并发计数
+    #    （MAX_CONCURRENT_PER_SYMBOL）；否则比较永不匹配，该闸门静默失效。
+    normalized_positions = [
+        {**p, "symbol": get_canonical_symbol(str(p.get("symbol") or "")) or p.get("symbol")}
+        for p in positions
+    ]
     result = await guardrails.validate_order(
         symbol=symbol,
         lot=lot,
         order_type=direction or order_type,
-        current_positions=positions,
+        current_positions=normalized_positions,
         account_balance=account.get("balance", 0),
         daily_pnl=realized_daily_pnl,
         spread=spread,
@@ -265,7 +292,7 @@ async def preflight_order(
         sl=sl,
         tp=tp,
         account=account,
-        positions=positions,
+        positions=normalized_positions,
         tick=tick,
         spread=spread,
         avg_spread=avg_spread,

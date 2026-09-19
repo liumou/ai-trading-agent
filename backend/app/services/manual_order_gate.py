@@ -123,6 +123,7 @@ class ManualOrderGate:
                 strict_symbol=True,
                 direction=direction,
                 entry_price=price if order_kind == "pending" else None,
+                account_login=account_login,
             )
             if not pf.ok:
                 return await self._reject_inline(audit_id, pf.reason, kind=pf.kind)
@@ -255,6 +256,7 @@ class ManualOrderGate:
                 pass
 
         # 参数以持久化行为准（杜绝「确认 A 单执行 B 单」）；重跑硬闸门。
+        audit_account = str(audit.account_login or account_login or "0")
         async with self._lock_for(account_login):
             blocked = await self._switching_blocked()
             if blocked:
@@ -265,6 +267,7 @@ class ManualOrderGate:
                 lot=audit.requested_lot, sl=audit.requested_sl, tp=audit.requested_tp,
                 strict_symbol=True,
                 entry_price=audit.order_price if audit.order_kind == "pending" else None,
+                account_login=audit_account,
             )
             if not pf.ok:
                 return await self._reject_inline(review_id, f"State changed since review: {pf.reason}", kind=pf.kind)
@@ -285,6 +288,7 @@ class ManualOrderGate:
                 lot=audit.requested_lot, sl=audit.requested_sl, tp=audit.requested_tp,
                 strict_symbol=True,
                 entry_price=audit.order_price if audit.order_kind == "pending" else None,
+                account_login=str(audit.account_login or "0"),
             )
             if not pf.ok:
                 await self._reject_inline(audit_id, f"State changed since review: {pf.reason}", kind=pf.kind)
@@ -296,12 +300,32 @@ class ManualOrderGate:
             await self._reject_inline(audit_id, blocked, kind="switching")
             return
 
+        # ROLLOUT 门禁（评审 C-2）：手动通道与 AI 通道同语义 —— shadow/paper
+        # 绝不让真实单碰到真实账号。preflight 本身不拒（AI 通道需要拦截
+        # 消息而非拒单），此处是执行前最后一道闸。
+        if ctx.rollout_mode in ("shadow", "paper"):
+            await self._reject_inline(
+                audit_id,
+                f"Rollout mode '{ctx.rollout_mode}' blocks manual real orders — enable live or paper first",
+                kind="rollout",
+            )
+            return
+
         raw_type = review.get("raw_order_type") or audit.order_type
         modify_ticket = review.get("modify_ticket")
         comment = _sanitize_comment(str(review.get("comment", "")), prefix="M")
         start = time.monotonic()
         if modify_ticket:
-            # 改挂单：price/sl/tp 以审查通过的持久化行为准
+            # 改挂单：price/sl/tp 以审查通过的持久化行为准。
+            # 执行前重验 ticket 归属（评审 I-4）：提交时验证过，但审查期间
+            # 该单可能被撤/被改账号 —— 不重验会在他人撤销后改错对象。
+            if not await self._verify_order_ticket(int(modify_ticket)):
+                await self._reject_inline(
+                    audit_id,
+                    f"Pending order {modify_ticket} no longer exists on current account — resubmit",
+                    kind="ticket_ownership",
+                )
+                return
             result = await self.connector.modify_order(
                 int(modify_ticket),
                 price=audit.order_price,
@@ -411,6 +435,15 @@ class ManualOrderGate:
                 return {"modified": False, "error": f"SL {new_sl} must be above entry {entry} for SELL"}
             if new_tp and new_tp >= entry:
                 return {"modified": False, "error": f"TP {new_tp} must be below entry {entry} for SELL"}
+
+        # 删除已有止损 = 无限拉宽（评审 C-3）：风险只减不增，已有 SL 时
+        # new_sl=0 必须硬拦截 —— 任何有限倍数都无法约束「无限距离」。
+        if current_sl != 0 and new_sl == 0:
+            return {
+                "modified": False,
+                "rejected": True,
+                "reason": "Removing an existing stop-loss is not allowed — set a new SL instead",
+            }
 
         widening = False
         if new_sl != current_sl and entry:
@@ -641,7 +674,11 @@ class ManualOrderGate:
     async def _reject_inline(self, audit_id: int, reason: str, *, kind: str,
                              rule_flags: list | None = None, llm: dict | None = None,
                              retryable: bool = False) -> dict:
-        review = {"reject_kind": kind, "retryable": retryable}
+        # 加载并合并（评审 I-2）：审计行可能已存有 LLM verdict/rule_flags，
+        # 整体覆盖会丢失先前审查阶段的证据 —— 合并保留完整审查轨迹。
+        audit = await self._load_audit(audit_id)
+        review = dict((audit.review or {}) if audit else {})
+        review.update({"reject_kind": kind, "retryable": retryable})
         if rule_flags is not None:
             review["rule_flags"] = rule_flags
         if llm:

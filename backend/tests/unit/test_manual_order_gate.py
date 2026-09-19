@@ -89,7 +89,11 @@ def ai_client():
 
 @pytest_asyncio.fixture
 async def gate(connector, redis_client, ai_client):
-    return ManualOrderGate(connector, redis_client, ai_client)
+    # 成功路径测试需要 rollout=live（否则 C2 拦截 shadow/paper 会让执行被拒）。
+    # guardrails:rollout_mode 落 Redis —— 持久化优先于 env 默认 shadow。
+    gate = ManualOrderGate(connector, redis_client, ai_client)
+    await redis_client.set("guardrails:rollout_mode", "live")
+    return gate
 
 
 async def _drain_tasks(gate):
@@ -341,6 +345,25 @@ async def test_modify_pending_requires_ownership(gate, session_patched):
 
 
 @pytest.mark.asyncio
+async def test_modify_pending_ticket_reverified_at_execution(gate, connector, session_patched):
+    """I4 回归:提交时单存在,审查期间被撤 → 执行前重验 ticket 归属并拒绝,
+    不能 modify 已被撤销的单。"""
+    # 提交时 get_orders 返回 ticket 555(归属通过)
+    connector.get_orders.return_value = {"success": True, "data": [{"ticket": 555, "symbol": "GOLD_"}]}
+    result = await gate.submit_order(symbol="GOLD", order_kind="pending", order_type="BUY_LIMIT",
+                                     lot=0.1, sl=1970.0, tp=2020.0, price=1999.0,
+                                     modify_ticket=555)
+    assert result["status"] == "PENDING_REVIEW"
+    # 审查期间单被撤:get_orders 变为空(模拟撤销)
+    connector.get_orders.return_value = {"success": True, "data": []}
+    await _drain_tasks(gate)
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "REJECTED"
+    assert review["review"]["reject_kind"] == "ticket_ownership"
+    connector.modify_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_sltp_set_first_stop_allowed_and_anchored(gate, redis_client, session_patched):
     """SL=0 仓位:设任何合法 SL 放行(风险收紧),距离记为漂移锚点。"""
     gate.connector.get_positions.return_value = {
@@ -392,3 +415,57 @@ async def test_sltp_direction_validated(gate, session_patched):
     res = await gate.modify_position_sltp(42, sl=2010.0, tp=None)  # BUY SL ≥ entry
     assert res["modified"] is False
     assert "below entry" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_sltp_remove_existing_stop_rejected(gate, session_patched):
+    """C3 回归：已有 SL 时 new_sl=0（删止损）必须硬拦截 —— 风险只减不增。"""
+    gate.connector.get_positions.return_value = {
+        "success": True,
+        "data": [{"ticket": 42, "symbol": "GOLD_", "type": "BUY", "volume": 0.1,
+                  "open_price": 2000.0, "sl": 1980.0, "tp": 0, "profit": 0}],
+    }
+    res = await gate.modify_position_sltp(42, sl=0.0, tp=None)  # 尝试删除 SL
+    assert res["modified"] is False
+    assert res.get("rejected") is True
+    assert "Removing an existing stop-loss" in res["reason"]
+    # 连接器不应被调用
+    gate.connector.modify_position.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shadow_paper_rollout_blocks_execution(gate, connector, session_patched):
+    """C2 回归：shadow/paper rollout 下 LLM APPROVED 也不得执行真实单。"""
+    await gate.redis.set("guardrails:rollout_mode", "shadow")
+    result = await gate.submit_order(symbol="GOLD", order_kind="market", order_type="BUY",
+                                     lot=0.1, sl=1900.0, tp=2100.0)
+    assert result["status"] == "PENDING_REVIEW"
+    await _drain_tasks(gate)
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "REJECTED"
+    assert review["review"]["reject_kind"] == "rollout"
+    connector.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_llm_reject_preserves_review_evidence(gate, session_patched):
+    """I2 回归：执行前拒绝（switching/state-drift）不得覆盖先前已持久化的
+    LLM verdict —— 否则审查轨迹丢失,「审计一切」沦为空谈。"""
+    gate.ai_client.complete_json_async.return_value = {
+        "verdict": "APPROVED", "confidence": 0.9,
+        "risk_flags": [], "emotional_indicators": [],
+        "reasoning": "sane order",
+    }
+    result = await gate.submit_order(symbol="GOLD", order_kind="market", order_type="BUY",
+                                     lot=0.1, sl=1900.0, tp=2100.0)
+    assert result["status"] == "PENDING_REVIEW"
+    # LLM APPROVED 落库后、执行前:切换闸门拒绝
+    await gate.redis.set("switching:in_progress", "1")
+    await _drain_tasks(gate)
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "REJECTED"
+    assert review["review"]["reject_kind"] == "switching"
+    # LLM verdict 必须保留(不被 _reject_inline 覆盖)
+    assert review["review"]["llm"]["verdict"] == "APPROVED"
+    assert review["review"]["llm"]["reasoning"] == "sane order"
+    gate.connector.place_order.assert_not_awaited()

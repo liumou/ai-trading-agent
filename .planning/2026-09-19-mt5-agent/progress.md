@@ -39,3 +39,12 @@
 - 2026-09-19:**Phase 5 完成**——/trading 页 + ReviewResultCard/PositionsTable 组件 + api.ts 接口 + i18n×2 + 导航。tsc/build 通过。偏离记录:dashboard 持仓表未迁移到共享 PositionsTable(无前端测试,回归风险>收益),列为后续项。
 - 2026-09-19:**Phase 6 完成**——新增 87 测试全绿;全量 909 passed/13 failed(与改动前基线核对为同一批存量失败,零回归);bridge 36/36;tsc+build 通过。
 - 2026-09-19:**Phase 7 完成**——CLAUDE.md 更新(防火墙不变量/retcode 语义/key directories)。**全部 Phase 0-7 完成。**
+- 2026-09-19:**提交 44857e8 代码审查(请求ing-code-review)**——审查返回 4 Critical + 5 Important。已修复并验证:
+  - **C1** 日亏闸门 key 账号错位(CircuitBreaker 不传 account_login → 读旧前缀空 key)→ preflight 加 account_login 参数+manager 回退,手动 gate 3 处传参,position_close 记账传参。测试 test_account_scoped_daily_pnl_key
+  - **C2** shadow/paper 不拦截手动单(docstring 声称拦截实际没有)→ _execute_approved 执行前拦截 rollout。测试 test_shadow_paper_rollout_blocks_execution
+  - **C3** 删除已有止损无预算(new_sl=0 跳过全部校验)→ modify_position_sltp 硬拦截 current_sl!=0 and new_sl==0。测试 test_sltp_remove_existing_stop_rejected
+  - **C4** per-symbol 并发永不触发(bridge 别名 vs canonical 比较不匹配)→ preflight positions 归一化 get_canonical_symbol。测试 test_guardrail_positions_normalized_to_canonical
+  - **I1** 引擎 PAUSED 平仓不记账 → position_close 引擎 state!=RUNNING 也记账。测试 test_close_with_paused_engine_records_accounting
+  - **I2** _reject_inline 覆盖 review JSON(丢 LLM verdict)→ 改为加载合并。测试 test_llm_reject_preserves_review_evidence
+  - **I4** ticket 归属执行前未重验 → _execute_approved modify 前重验。测试 test_modify_pending_ticket_reverified_at_execution
+  - 验证:相关 103 测试全绿;全量(排除已知存量失败 23 个)783 passed,零回归。测试 fixture 补 rollout=live(否则成功路径被 C2 拦截)。

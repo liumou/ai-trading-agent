@@ -87,14 +87,33 @@ async def close_position_gated(
 
     # 5. Accounting + events. Engine-tracked symbols are recorded by the
     #    engine's sync loop — recording here too would double-count daily PnL.
+    #    但引擎必须 RUNNING 才会 sync：引擎 PAUSED/ERROR/STOPPED 时该品种无人
+    #    记账（评审 I-1）—— 手动平仓落账，防止日亏/连亏计数在引擎暂停期间失效。
     profit = pos_info.get("profit", 0) or 0
     pos_symbol = pos_info.get("symbol", "")
     engine = _lookup_engine(pos_symbol)
+    engine_records = engine is not None and getattr(engine, "state", None) is not None
+    from app.bot.engine import BotState
 
-    if engine is None:
+    if engine_records:
+        engine_records = engine.state == BotState.RUNNING
+
+    if not engine_records:
         canonical = get_canonical_symbol(pos_symbol) or pos_symbol
+        # 账号维度（H3）：不传则写入旧 circuit: 前缀 key，与引擎切换后读的
+        # circuit:acc:{login}: 前缀 key 错位 —— 日亏闸门读不到手动平仓的盈亏。
+        account_login = getattr(engine, "account_login", None) if engine else None
+        if not account_login:
+            try:
+                from app.bot.manager import get_global_manager
+
+                mgr = get_global_manager()
+                if mgr is not None:
+                    account_login = getattr(mgr, "current_account_login", None)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Manual close [{ticket}] account_login lookup failed: {e!r}")
         try:
-            await CircuitBreaker(redis, symbol=canonical).record_trade_result(profit)
+            await CircuitBreaker(redis, symbol=canonical, account_login=account_login).record_trade_result(profit)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Manual close [{ticket}] circuit-breaker record failed: {e!r}")
         try:

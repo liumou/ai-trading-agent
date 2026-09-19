@@ -37,7 +37,14 @@ class CircuitBreaker:
         H3 修复：所有 key 带账号维度前缀。``account_login=None`` 保持旧 key
         （向后兼容，现有调用不受影响）；切换服务传入当前账号后按账号隔离，
         避免跨账号日损/回撤污染。
+
+        ``"0"`` 是默认占位（未连接账号）—— 归一化为 None，使引导期
+        （引擎构造无前缀 + preflight 读到 account_login="0"）key 对齐；
+        否则 preflight 读 ``circuit:acc:0:`` 而引擎写 ``circuit:``，日亏
+        闸门在首次切换前静默失效（评审 C1 引导期变体）。
         """
+        if account_login == "0":
+            account_login = None
         self.redis = redis_client
         self.symbol = symbol
         self.account_login = account_login
@@ -126,7 +133,13 @@ class CircuitBreaker:
 
     @staticmethod
     def _acc_key(account_login: str | None, suffix: str) -> str:
-        """生成带账号维度的 key。account_login 为 None 时保持旧 key（向后兼容）。"""
+        """生成带账号维度的 key。account_login 为 None 时保持旧 key（向后兼容）。
+
+        ``"0"`` 默认占位归一化为 None（与 __init__ 保持一致，避免引导期
+        全局日亏读 ``circuit:acc:0:`` 而引擎写 ``circuit:`` 的错位）。
+        """
+        if account_login == "0":
+            account_login = None
         return f"circuit:acc:{account_login}:{suffix}" if account_login else f"circuit:{suffix}"
 
     @staticmethod

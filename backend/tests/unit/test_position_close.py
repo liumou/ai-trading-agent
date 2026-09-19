@@ -136,7 +136,10 @@ async def test_close_success_with_engine_skips_accounting(
     connector, redis_client, db_session_patched, monkeypatch, live_mode
 ):
     """引擎在管品种：引擎 sync 会记账，gate 重复记录 = 日亏双计。"""
+    from app.bot.engine import BotState
+
     engine = MagicMock()
+    engine.state = BotState.RUNNING  # 引擎活跃，sync 会记账
     engine._log_event = AsyncMock()
     fake_mgr = MagicMock()
     fake_mgr.resolve_symbol.return_value = "GOLD"
@@ -149,6 +152,34 @@ async def test_close_success_with_engine_skips_accounting(
     from mcp_server.guardrails import _daily_key
 
     assert await redis_client.llen(_daily_key("trade_results")) == 0
+
+
+@pytest.mark.asyncio
+async def test_close_with_paused_engine_records_accounting(
+    connector, redis_client, db_session_patched, monkeypatch, live_mode
+):
+    """I1 回归：引擎存在但 PAUSED（日亏熔断/风险事件暂停）时不跑 sync，
+    手动平仓必须自行记账 —— 否则日亏/连亏计数在引擎暂停期间失效。"""
+    from app.bot.engine import BotState
+
+    engine = MagicMock()
+    engine.state = BotState.PAUSED  # 引擎暂停，sync 不跑
+    engine.account_login = None  # 无账号维度，落到无前缀 key
+    fake_mgr = MagicMock()
+    fake_mgr.resolve_symbol.return_value = "GOLD"
+    fake_mgr.engines = {"GOLD": engine}
+    monkeypatch.setattr(position_close_module, "_lookup_engine", lambda symbol: engine)
+
+    result = await close_position_gated(connector, redis_client, 111)
+    assert result["closed"] is True
+    # 应记账(而非跳过)—— circuit breaker 记录了盈亏
+    from app.config import get_canonical_symbol
+
+    pnl = float(await redis_client.get(f"circuit:daily_pnl:{get_canonical_symbol('GOLD_')}"))
+    assert pnl == -12.5
+    from mcp_server.guardrails import _daily_key
+
+    assert await redis_client.llen(_daily_key("trade_results")) == 1
 
 
 @pytest.mark.asyncio
