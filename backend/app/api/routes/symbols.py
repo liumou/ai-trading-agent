@@ -340,12 +340,27 @@ _PATH_TO_CLASS: tuple[tuple[str, str], ...] = (
 
 
 def _infer_asset_class(path: str) -> str:
-    """把 MT5 品种路径（如 "Forex\\Majors\\EURUSD"）映射为受支持的资产类别。"""
+    """把 MT5 品种路径（如 "Forex\\Majors\\EURUSD"）映射为受支持的资产类别。
+
+    券商路径并不总是把类别词放在首段 —— XM Derivatives 返回
+    "Derivatives\\SpotMetals_\\GOLD_"（"metal" 在第二段，且带下划线噪声）。
+    因此先按首段匹配（保持向后兼容），未命中再把整条路径归一化
+    （小写、去下划线等噪声）后做**整词**匹配，避免子串误伤。
+    """
     if not path:
         return "forex"
-    first = path.split("\\")[0].lower()
+    segments = [seg.lower() for seg in path.split("\\") if seg]
+    if not segments:
+        return "forex"
+    # 1) 首段子串匹配 —— 旧行为，兼容现有路径
     for needle, cls in _PATH_TO_CLASS:
-        if needle in first:
+        if needle in segments[0]:
+            return cls
+    # 2) 全路径匹配 —— 归一化去掉 _ / 空格等券商噪声后，对每个词做子串匹配
+    #    （与首段子串匹配同一哲学："metal" 命中 "spotmetals"、"ind" 命中 "index"）
+    words = [re.sub(r"[^a-z]", "", seg) for seg in segments]
+    for needle, cls in _PATH_TO_CLASS:
+        if any(needle in w for w in words if w):
             return cls
     return "forex"
 
@@ -615,7 +630,7 @@ async def broker_catalog(request: Request) -> dict:
     if redis_client is not None:
         from app.cache import cached
 
-        return await cached(redis_client, "xm:catalog:v1", 3600, _fetch)
+        return await cached(redis_client, "xm:catalog:v2", 3600, _fetch)
     return await _fetch()
 
 
