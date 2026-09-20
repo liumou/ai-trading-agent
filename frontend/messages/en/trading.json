@@ -60,5 +60,13 @@
   "reviewHistory": "Review History",
   "confidence": "Confidence",
   "modifyNote": "Modifying a pending order re-runs the full risk review (treated as a new order)",
-  "refresh": "Refresh"
+  "refresh": "Refresh",
+  "symbolPlaceholder": "Select symbol",
+  "noSymbols": "No symbols configured",
+  "bid": "Bid",
+  "ask": "Ask",
+  "spread": "Spread",
+  "waitingTick": "Waiting for quote…",
+  "stalePrice": "Delayed",
+  "colCurrent": "Current"
 }

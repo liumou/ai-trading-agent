@@ -46,6 +46,7 @@ export function PositionsTable({
             <th className="px-4 py-3 font-medium">{t("colType")}</th>
             <th className="px-4 py-3 text-right font-medium">{t("colLots")}</th>
             <th className="px-4 py-3 text-right font-medium">{t("colPrice")}</th>
+            <th className="px-4 py-3 text-right font-medium">{t("colCurrent")}</th>
             <th className="px-4 py-3 text-right font-medium">{t("colSl")}</th>
             <th className="px-4 py-3 text-right font-medium">{t("colTp")}</th>
             <th className="px-4 py-3 text-right font-medium">{t("colPnl")}</th>
@@ -62,6 +63,7 @@ export function PositionsTable({
               </td>
               <td className="px-4 py-3 text-right font-mono">{p.lot}</td>
               <td className="px-4 py-3 text-right font-mono">{p.open_price?.toFixed(2)}</td>
+              <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.current_price?.toFixed(2)}</td>
               <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.sl?.toFixed(2)}</td>
               <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.tp?.toFixed(2)}</td>
               <td className={`px-4 py-3 text-right font-mono font-semibold ${p.profit >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}>

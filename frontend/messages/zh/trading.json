@@ -60,5 +60,13 @@
   "reviewHistory": "审查历史",
   "confidence": "置信度",
   "modifyNote": "改挂单将重新经过完整风控审查(相当于提交一个新订单)",
-  "refresh": "刷新"
+  "refresh": "刷新",
+  "symbolPlaceholder": "选择品种",
+  "noSymbols": "暂无已配置品种",
+  "bid": "买价 Bid",
+  "ask": "卖价 Ask",
+  "spread": "点差",
+  "waitingTick": "等待报价…",
+  "stalePrice": "延迟",
+  "colCurrent": "现价"
 }

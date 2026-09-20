@@ -9,19 +9,30 @@ import api, {
   confirmManualOrder,
   getManualReview,
   getPendingOrders,
+  getPositions,
   getRolloutMode,
+  getTick,
   modifyPendingOrder,
   modifyPositionSltp,
   submitManualOrder,
   type ManualOrderRequest,
   type ManualReview,
   type PendingOrder,
+  type TickQuote,
 } from "@/lib/api";
 import { useBotStore } from "@/store/botStore";
+import { useWebSocket } from "@/lib/websocket";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
-import { PositionsTable } from "@/components/trading/PositionsTable";
+import { PositionsTable, type TradingPosition } from "@/components/trading/PositionsTable";
 import { ReviewResultCard, type ReviewState } from "@/components/trading/ReviewResultCard";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { showError, showSuccess } from "@/lib/toast";
 
 const PENDING_TYPES = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
@@ -29,10 +40,16 @@ type PendingType = (typeof PENDING_TYPES)[number];
 
 const REVIEW_POLL_MS = 2000;
 const REVIEW_POLL_MAX = 20; // 2s × 20 = 40s > LLM 25s 预算
+const POSITIONS_POLL_MS = 10000; // 持仓全量快照周期（品种停跑后 WS 不再推送持仓）
+const QUOTE_POLL_MS = 2000; // WS 断开时的报价兜底周期
+const STALE_TICK_MS = 30000; // 超过此时长未收到新报价 → 标记"延迟"（对齐后端 MAX_TICK_AGE_SECONDS）
 
 export default function TradingPage() {
   const t = useTranslations("trading");
   const positions = useBotStore((s) => s.positions);
+  const setPositions = useBotStore((s) => s.setPositions);
+  const setTick = useBotStore((s) => s.setTick);
+  const { isConnected, subscribe } = useWebSocket();
 
   const [rolloutMode, setRolloutMode] = useState<string | null>(null);
   const [orderKind, setOrderKind] = useState<"market" | "pending">("market");
@@ -43,6 +60,13 @@ export default function TradingPage() {
   const [sl, setSl] = useState("");
   const [tp, setTp] = useState("");
   const [comment, setComment] = useState("");
+  // REST 报价（WS price_update 的兜底）。带 symbol 一起存：切品种后旧报价不会短暂串台
+  const [quote, setQuote] = useState<{ symbol: string; tick: TickQuote | null } | null>(null);
+  const [quoteNonce, setQuoteNonce] = useState(0); // 手动"刷新"时重新取价
+  // 报价新鲜度只认本地收到的时刻：桥返回的 time 是终端本地时间，跨时区不可比
+  const lastQuoteAt = useRef(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const positionsEmptyStreak = useRef(0);
 
   const [submitting, setSubmitting] = useState(false);
   const [review, setReview] = useState<ReviewState | null>(null);
@@ -58,11 +82,27 @@ export default function TradingPage() {
 
   const symbols = useBotStore((s) => s.symbols);
   const activeSymbol = useBotStore((s) => s.activeSymbol);
+  const symbolInfo = symbols.find((s) => s.symbol === symbol);
+  const priceDecimals = symbolInfo?.price_decimals ?? 2;
+  const priceStep = 1 / 10 ** priceDecimals;
+  // 下拉选项：value 用规范品种名（后端严格精确匹配），label 用 display_name
+  const symbolItems = symbols.map((s) => ({ value: s.symbol, label: s.display_name || s.symbol }));
+  // 只订阅当前品种的 tick：其它品种更新时返回的引用不变，不会触发多余的渲染
+  const wsTick = useBotStore((s) => (symbol ? s.ticks[symbol] : undefined));
+  const restTick = quote && quote.symbol === symbol ? quote.tick : null;
+  const liveTick = wsTick ?? restTick ?? null;
+  const priceStale =
+    !!liveTick && (lastQuoteAt.current === 0 || nowMs - lastQuoteAt.current > STALE_TICK_MS);
+
+  /** 默认品种：优先 store 的 activeSymbol（须在已配置列表内），否则第一个。 */
   useEffect(() => {
-    if (!symbol) {
-      setSymbol(symbols.length > 0 ? symbols[0].symbol : activeSymbol || "");
-    }
-  }, [symbols, activeSymbol, symbol]);
+    if (symbol || symbols.length === 0) return;
+    const initial = symbols.some((s) => s.symbol === activeSymbol)
+      ? activeSymbol
+      : symbols[0].symbol;
+    setSymbol(initial);
+    setLot(String(symbols.find((s) => s.symbol === initial)?.default_lot ?? 0.1));
+  }, [symbol, symbols, activeSymbol]);
 
   const fetchPendingOrders = useCallback(async () => {
     try {
@@ -78,10 +118,101 @@ export default function TradingPage() {
     } catch { setRolloutMode(null); }
   }, []);
 
+  /**
+   * 持仓刷新：一次取全账户快照（不传 symbol），整体替换 store。
+   *
+   * 为什么不用"按 ticket 合并"：本页展示全部持仓，快照就是完整视图，合并会残留
+   * 已平仓的行。为什么空快照要连续两次才清空：MT5 bridge 超时同样返回空数组
+   * （engine.sync_positions 有同款守卫），单次空直接清空会让持仓"闪没"。
+   */
+  const refreshPositions = useCallback(async () => {
+    try {
+      const res = await getPositions();
+      const list = res.data?.positions;
+      if (!Array.isArray(list)) return; // 结构异常 → 保留现有数据
+      if (list.length === 0 && useBotStore.getState().positions.length > 0) {
+        positionsEmptyStreak.current += 1;
+        if (positionsEmptyStreak.current < 2) return;
+      } else {
+        positionsEmptyStreak.current = 0;
+      }
+      setPositions(list);
+    } catch { /* 保留现有数据，等下一次刷新 */ }
+  }, [setPositions]);
+
+  /** WS position_update：每个引擎只推自己的持仓 → 按 ticket 合并（与 dashboard 一致）。 */
+  const mergePositions = useCallback((data: unknown) => {
+    const incoming = (data as { positions?: TradingPosition[] } | null)?.positions;
+    if (!incoming) return;
+    const merged = new Map(useBotStore.getState().positions.map((p) => [p.ticket, p]));
+    incoming.forEach((p) => merged.set(p.ticket, p));
+    setPositions([...merged.values()]);
+  }, [setPositions]);
+
+  /** 切换品种：清掉上一品种的价格/SL/TP，手数回到该品种默认值，并立即刷新持仓与报价。 */
+  const handleSymbolChange = (next: string) => {
+    if (!next || next === symbol) return;
+    setSymbol(next);
+    setPrice(""); setSl(""); setTp("");
+    setReview(null);
+    const info = symbols.find((s) => s.symbol === next);
+    if (info) setLot(String(info.default_lot));
+    lastQuoteAt.current = 0;
+    setQuoteNonce((n) => n + 1);
+    void refreshPositions();
+  };
+
   useEffect(() => {
     fetchPendingOrders();
     fetchRollout();
   }, [fetchPendingOrders, fetchRollout]);
+
+  // 报价：挂载/切品种/手动刷新时取一次；WS 断开期间每 2s 轮询兜底（WS 恢复即停）
+  useEffect(() => {
+    if (!symbol) return;
+    let cancelled = false;
+    const fetchOnce = async () => {
+      try {
+        const res = await getTick(symbol);
+        if (cancelled) return;
+        const tick = res.data?.tick ?? null;
+        setQuote({ symbol, tick });
+        if (tick) lastQuoteAt.current = Date.now();
+      } catch {
+        if (!cancelled) setQuote({ symbol, tick: null });
+      }
+    };
+    fetchOnce();
+    if (isConnected) return () => { cancelled = true; };
+    const timer = setInterval(fetchOnce, QUOTE_POLL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [symbol, isConnected, quoteNonce]);
+
+  // WS 订阅：报价 + 持仓推送（持仓作为 10s 快照之间的补充）
+  useEffect(() => {
+    subscribe("price_update", (data) => {
+      if (!data) return;
+      const tick = data as NonNullable<typeof wsTick>;
+      if (tick.symbol === symbol) lastQuoteAt.current = Date.now();
+      setTick(tick);
+    });
+    subscribe("position_update", (data) => mergePositions(data));
+  }, [subscribe, setTick, mergePositions, symbol]);
+
+  // 持仓：挂载 + 切品种立即刷新一次
+  useEffect(() => {
+    refreshPositions();
+  }, [refreshPositions, symbol]);
+
+  // 持仓轮询：页面可见时每 10s 全量刷新（品种停跑后 WS 不再推持仓，只能靠 REST）；
+  // 同一条心跳顺便驱动"报价是否延迟"的重算。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+      if (document.visibilityState === "visible") refreshPositions();
+    }, POSITIONS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [refreshPositions]);
 
   // 清理轮询
   useEffect(() => () => { if (pollTimer.current) clearInterval(pollTimer.current); }, []);
@@ -104,12 +235,13 @@ export default function TradingPage() {
           stopPolling();
           setSubmitting(false);
           await fetchPendingOrders();
+          await refreshPositions();
           if (r.status === "EXECUTED") showSuccess(t("executed"));
           if (r.status === "FAILED") showError(r.reason || t("failed"));
         }
       } catch { /* keep polling */ }
     }, REVIEW_POLL_MS);
-  }, [fetchPendingOrders, t]);
+  }, [fetchPendingOrders, refreshPositions, t]);
 
   const submit = async () => {
     if (!symbol || Number(lot) <= 0) return;
@@ -117,7 +249,8 @@ export default function TradingPage() {
     setSubmitting(true);
     setReview(null);
     const payload = {
-      symbol: symbol.toUpperCase(),
+      // 必须原样发送规范品种名：后端严格精确匹配（OILCash 不能变成 OILCASH）
+      symbol,
       order_kind: orderKind,
       order_type: orderType,
       lot: Number(lot),
@@ -137,6 +270,7 @@ export default function TradingPage() {
         setSubmitting(false);
         if (r.status === "REJECTED") { /* 拦截是业务结果,面板展示 */ }
         await fetchPendingOrders();
+        await refreshPositions();
       }
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
@@ -155,6 +289,7 @@ export default function TradingPage() {
         showSuccess(t("executed"));
         setReview({ status: "EXECUTED", reviewId: review.reviewId, llm: review.llm });
         await fetchPendingOrders();
+        await refreshPositions();
       } else if (r.status === "EXPIRED") {
         setReview({ status: "EXPIRED", reviewId: review.reviewId });
       } else {
@@ -177,6 +312,7 @@ export default function TradingPage() {
       await cancelPendingOrder(ticket);
       showSuccess(t("cancel"));
       await fetchPendingOrders();
+      await refreshPositions();
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
       showError(detail || t("failed"));
@@ -195,7 +331,7 @@ export default function TradingPage() {
       setModifyPrice("");
       setReview(toReviewState(r));
       if (r.status === "PENDING_REVIEW") pollReview(r.review_id as number);
-      else await fetchPendingOrders();
+      else { await fetchPendingOrders(); await refreshPositions(); }
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
       showError(detail || t("failed"));
@@ -208,6 +344,7 @@ export default function TradingPage() {
     try {
       await closePositionGated(ticket);
       showSuccess(t("close"));
+      await refreshPositions();
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
       showError(detail || t("failed"));
@@ -223,6 +360,7 @@ export default function TradingPage() {
       } else {
         showSuccess(t("editSlTp"));
       }
+      await refreshPositions();
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
       showError(detail || t("failed"));
@@ -234,9 +372,44 @@ export default function TradingPage() {
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
       <PageHeader title={t("title")} subtitle={t("subtitle")}>
+        {liveTick ? (
+          <div
+            className={`border rounded-full px-3 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 sm:gap-3 bg-card ${
+              priceStale ? "border-amber-500/60" : "border-border"
+            }`}
+          >
+            <span className="text-xs text-muted-foreground font-medium">{symbol}</span>
+            <span className="text-xs sm:text-sm font-mono font-bold text-foreground" title={t("bid")}>
+              {liveTick.bid?.toFixed(priceDecimals)}
+            </span>
+            <span className="text-xs text-muted-foreground">/</span>
+            <span className="text-xs sm:text-sm font-mono text-muted-foreground" title={t("ask")}>
+              {liveTick.ask?.toFixed(priceDecimals)}
+            </span>
+            <span className="hidden sm:inline text-xs text-muted-foreground font-medium">
+              {t("spread")}: {liveTick.spread?.toFixed(1)}
+            </span>
+            {priceStale && (
+              <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                {t("stalePrice")}
+              </span>
+            )}
+          </div>
+        ) : (
+          symbol && (
+            <div className="border border-dashed border-border rounded-full px-3 py-1.5 sm:px-4 sm:py-2 text-xs text-muted-foreground">
+              {t("waitingTick")}
+            </div>
+          )
+        )}
         <button
           type="button"
-          onClick={() => { fetchPendingOrders(); fetchRollout(); }}
+          onClick={() => {
+            fetchPendingOrders();
+            fetchRollout();
+            refreshPositions();
+            setQuoteNonce((n) => n + 1);
+          }}
           className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
         >
           <RefreshCw className="size-4" />{t("refresh")}
@@ -304,16 +477,29 @@ export default function TradingPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">{t("symbol")}</label>
-              <input
-                type="text" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                placeholder="GOLD"
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
-              />
+              <Select
+                value={symbol || null}
+                onValueChange={(v) => v && handleSymbolChange(v)}
+                items={symbolItems}
+              >
+                <SelectTrigger className="w-full" aria-label={t("symbol")}>
+                  <SelectValue placeholder={t("symbolPlaceholder")} />
+                </SelectTrigger>
+                <SelectContent>
+                  {symbolItems.length > 0 ? (
+                    symbolItems.map((s) => (
+                      <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value="__none__" disabled>{t("noSymbols")}</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">{t("lot")}</label>
               <input
-                type="number" step="0.01" min="0.01" value={lot} onChange={(e) => setLot(e.target.value)}
+                type="number" step="0.01" min="0.01" max={symbolInfo?.max_lot} value={lot} onChange={(e) => setLot(e.target.value)}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
@@ -321,7 +507,7 @@ export default function TradingPage() {
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1">{t("price")}</label>
                 <input
-                  type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)}
+                  type="number" step={priceStep} value={price} onChange={(e) => setPrice(e.target.value)}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
@@ -329,14 +515,14 @@ export default function TradingPage() {
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">{t("sl")}</label>
               <input
-                type="number" step="0.01" value={sl} onChange={(e) => setSl(e.target.value)}
+                type="number" step={priceStep} value={sl} onChange={(e) => setSl(e.target.value)}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">{t("tp")}</label>
               <input
-                type="number" step="0.01" value={tp} onChange={(e) => setTp(e.target.value)}
+                type="number" step={priceStep} value={tp} onChange={(e) => setTp(e.target.value)}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
               />
             </div>

@@ -44,6 +44,33 @@ async def get_ohlcv(
     return {"candles": candles}
 
 
+@router.get("/tick")
+async def get_tick(symbol: str = Query("GOLD")):
+    """当前品种最新 tick（bid/ask/点差）—— 手动交易页报价的兜底取值。
+
+    主链路是 WS ``price_update``（scheduler 每秒推全部引擎，无 RUNNING 过滤）；
+    本端点用于刚进页面、切换品种或 WS 断线时拿到一次报价。
+
+    ``validate=False`` 是刻意的：这里是展示用途，tick 略陈旧或点差暂时偏大
+    也应显示出来（风控闸门另有自己的严格校验），validate=True 会在这些情况下
+    返回 None，让页面价格无谓地闪空。
+    """
+    engine = _get_engine(symbol)
+    tick = await engine.market_data.get_current_tick(engine.symbol, validate=False)
+    if not tick:
+        return {"tick": None}
+
+    return {
+        "tick": {
+            "symbol": engine.symbol,
+            "bid": tick.get("bid"),
+            "ask": tick.get("ask"),
+            "spread": tick.get("spread"),
+            "time": tick.get("time"),
+        }
+    }
+
+
 @router.get("/symbols")
 async def get_symbols():
     """Return all configured symbols with their profiles."""

@@ -61,6 +61,24 @@ export const getAccount = () => api.get("/api/bot/account");
 export const getBotEvents = (params?: { days?: number; event_type?: string; limit?: number }) =>
   api.get("/api/bot/events", { params });
 
+// Market data
+export interface TickQuote {
+  symbol: string;
+  bid: number;
+  ask: number;
+  spread: number;
+  time?: string;
+}
+
+/**
+ * 当前品种最新报价 —— 兜底通道。
+ *
+ * 主链路是 WS `price_update`（scheduler 每秒推全部引擎）；本接口用于刚进页面、
+ * 切换品种或 WS 断线时拿到一次报价（无 tick 时返回 null，而不是报错）。
+ */
+export const getTick = (symbol: string) =>
+  api.get<{ tick: TickQuote | null }>("/api/market-data/tick", { params: { symbol } });
+
 // Positions
 export const getPositions = (symbol?: string) =>
   api.get("/api/positions", { params: symbol ? { symbol } : {} });
