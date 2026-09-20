@@ -85,6 +85,7 @@ export interface ManualReview {
   id?: number;
   status: string; // PENDING_REVIEW / PENDING_CONFIRM / REJECTED / EXPIRED / EXECUTED / FAILED
   reason?: string;
+  error_message?: string; // 后端 _audit_to_dict 的原始拒绝原因（reason 的兜底）
   kind?: string;
   retryable?: boolean;
   review?: {

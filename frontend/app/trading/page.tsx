@@ -485,7 +485,7 @@ function toReviewState(r: ManualReview): ReviewState {
   return {
     status: r.status,
     kind: r.kind,
-    reason: r.reason,
+    reason: r.reason ?? r.error_message,
     reviewId: r.review_id as number | undefined,
     ruleFlags: r.rule_flags as ReviewState["ruleFlags"],
     llm: r.review?.llm,

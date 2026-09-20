@@ -185,6 +185,10 @@ class Settings(BaseSettings):
     llm_timeout: int = 120  # per-request timeout (seconds)
     # 连接类失败（APIConnectionError/超时/拒绝）的请求内重试次数
     llm_max_retries: int = 2
+    # 手动交易 AI 审查的单次 LLM 调用超时（秒）。deepseek-v4-flash 等模型
+    # 在复杂评审 system prompt 下响应时间方差大（实测 7s~60s+），25s 会频触
+    # fail-closed；默认 90s 对齐 LLM_TIMEOUT 量级，env LLM_REVIEW_TIMEOUT_S 可调。
+    llm_review_timeout_s: int = Field(90, ge=5, le=600)
     # 指数退避重试：基础间隔与封顶（秒）。间隔按次数递增 base*2^attempt 封顶 max_s。
     # 放宽默认值以规避平台限流（ARK 等对高频重试返回 429）。
     llm_retry_base_s: float = Field(15, ge=1, le=300)

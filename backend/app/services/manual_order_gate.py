@@ -29,6 +29,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.ai.prompts import ORDER_REVIEW_SYSTEM_PROMPT, build_order_review_user_prompt
+from app.config import settings
 from app.constants import (
     MANUAL_MAGIC_NUMBER,
     MANUAL_SL_MAX_ENTRY_DIST_MULT,
@@ -38,7 +39,7 @@ from app.db.models import BotEvent, BotEventType, OrderAudit
 from app.services.order_preflight import PreflightContext, _sanitize_comment, preflight_order
 
 CONFIRM_TTL_S = 120
-LLM_REVIEW_TIMEOUT_S = 25
+LLM_REVIEW_TIMEOUT_S = settings.llm_review_timeout_s
 REVENGE_WINDOW_MIN = 15
 MARTINGALE_LOT_MULT = 2.0
 
@@ -713,6 +714,7 @@ class ManualOrderGate:
 
 
 def _audit_to_dict(a: OrderAudit) -> dict:
+    review = dict(a.review or {})
     return {
         "id": a.id, "symbol": a.symbol, "order_type": a.order_type,
         "requested_lot": a.requested_lot, "requested_sl": a.requested_sl,
@@ -720,5 +722,10 @@ def _audit_to_dict(a: OrderAudit) -> dict:
         "fill_price": a.fill_price, "ticket": a.ticket, "status": a.status,
         "error_message": a.error_message, "account_login": a.account_login,
         "order_kind": a.order_kind, "order_price": a.order_price,
+        # 前端轮询依赖这些字段（WS 推送会被轮询覆盖）：reason=error_message，
+        # kind/retryable 从 review JSON 还原 —— 缺失会让「拦截原因」和重试按钮消失。
+        "reason": a.error_message,
+        "kind": review.get("reject_kind"),
+        "retryable": review.get("retryable"),
         "review": a.review, "created_at": a.created_at.isoformat() if a.created_at else None,
     }
