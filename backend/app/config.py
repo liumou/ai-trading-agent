@@ -298,6 +298,18 @@ class Settings(BaseSettings):
     ml_rollback_accuracy_floor: float = 0.30  # rollback if accuracy drops below this
     ml_rollback_min_predictions: int = 50  # minimum predictions before rollback check
 
+    # Laya 决策引擎（Phase: laya integration，默认关闭）
+    # 非自回归单次前向的结构化判定引擎（choice/score/noul）。本项目用它做
+    # 高频分类预筛（情绪三分类等），不替换 LLM 的深度决策/长文生成。
+    # 默认 False：未装 laya 依赖 / 未下载模型权重时系统照常运行（try-import 降级）。
+    laya_enabled: bool = False
+    # 模型标识：本地路径优先（缓存目录下），否则视为 HF repo id（走 HF_ENDPOINT 镜像）。
+    laya_model: str = "convaiinnovations/laya"  # english 421M；多语言用 convaiinnovations/laya-multilingual(322M)
+    # 分类预筛置信度阈值：laya 判定 confidence ≥ 阈值则直接采用；否则回退 LLM 深析。
+    laya_confidence_threshold: float = 0.85
+    # 模型权重缓存目录（默认 ~/.cache/huggingface）。生产部署建议构建时预缓存到镜像。
+    laya_model_cache_dir: str = ""
+
     # Runner
     runner_backend: str = "process"  # "process" or "docker"
     docker_host: str = ""  # e.g. "tcp://vps:2376" for remote Docker
