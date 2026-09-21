@@ -20,6 +20,7 @@ Laya 交易决策引擎 —— 合成样本 + LightGBM 基线（Phase 3.8，第�
 import argparse
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -85,8 +86,18 @@ async def load_from_db(symbol: str = "GOLD", timeframe: str = "M15", limit: int 
     return df[OHLCV_COLS]
 
 
-def run_baseline(df: pd.DataFrame, forward_bars: int = 10, tp_pips: float = 5.0) -> None:
-    """构建特征 + 标签，训 LightGBM，输出 AUC vs 基率。"""
+def run_baseline(
+    df: pd.DataFrame, forward_bars: int = 10, tp_pips: float = 5.0, save_path: str | None = None
+) -> float | None:
+    """构建特征 + 标签，训 LightGBM，输出 AUC vs 基率。
+
+    若 AUC ≥ 0.6 且传入 save_path：用全量数据重训一个可落地的「可否交易」门控模型
+    （joblib 保存 model + feature_columns + threshold），供 app/ml/trade_gate.py 运行时加载。
+
+    返回 mean_auc（或 None 当无法计算）。
+    """
+    import joblib
+
     from app.ml.features import build_features, build_labels
 
     from lightgbm import LGBMClassifier
@@ -145,6 +156,33 @@ def run_baseline(df: pd.DataFrame, forward_bars: int = 10, tp_pips: float = 5.0)
     if mean_auc >= 0.6:
         print(f"AUC={mean_auc:.3f} ≥ 0.6 → 信号显著高于随机，**值得继续**（微调 laya 有数据基础）")
         print("建议下一步：3.9 Kaggle RLCD 微调 laya（用同一批合成样本的 JSONL 导出）")
+        # 落地：AUC 达标且指定保存路径 → 全量重训可落地门控模型
+        if save_path:
+            print(f"\n=== 落地「可否交易」门控 ===")
+            clf = LGBMClassifier(n_estimators=200, learning_rate=0.05, verbose=-1)
+            clf.fit(X, y_binary)
+            threshold = float(np.mean(base))  # 基率作默认阈值（可交易占比）
+            import os
+
+            os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+            joblib.dump(
+                {
+                    "model": clf,
+                    "feature_columns": cols,
+                    "threshold": threshold,
+                    "metadata": {
+                        "symbol": "GOLD",
+                        "forward_bars": forward_bars,
+                        "tp_pips": tp_pips,
+                        "auc": mean_auc,
+                        "n_samples": int(len(X)),
+                        "created_at": datetime.now().isoformat(),
+                    },
+                },
+                save_path,
+            )
+            print(f"门控模型已保存: {save_path}")
+            print(f"  特征数: {len(cols)}  阈值(可交易概率): {threshold:.3f}  训练样本: {len(X):,}")
     elif mean_auc >= 0.55:
         print(f"AUC={mean_auc:.3f} ∈ [0.55, 0.6) → 信号存在但弱，建议扩大样本/调参后复测")
     else:
@@ -153,6 +191,7 @@ def run_baseline(df: pd.DataFrame, forward_bars: int = 10, tp_pips: float = 5.0)
         print("     则 laya 交易决策微调（3.9 轨道）缺乏数据基础，建议冻结该方向，聚焦情绪预筛集成。")
         print("注意：标签窗口与训练样本存在重叠（bar i 的标签引用 i+1..i+10 的价格，这些未来 bar")
         print("     同时是后续训练样本），TimeSeriesSplit 无法消除该信息泄漏，AUC 可能系统性虚高。")
+    return mean_auc
 
 
 def main() -> None:
@@ -165,6 +204,11 @@ def main() -> None:
     parser.add_argument("--forward-bars", type=int, default=10)
     parser.add_argument("--tp-pips", type=float, default=5.0)
     parser.add_argument("--limit", type=int, default=200_000)
+    parser.add_argument(
+        "--save", metavar="PATH", default="models/trade_gate.pkl",
+        help="AUC≥0.6 时保存「可否交易」门控模型到此路径（用 --no-save 禁用）",
+    )
+    parser.add_argument("--no-save", action="store_true", help="不保存门控模型（仅评估基线）")
     args = parser.parse_args()
 
     if args.db:
@@ -173,7 +217,8 @@ def main() -> None:
         df = load_from_csv(args.csv)
     print(f"OHLCV 行数: {len(df):,}  范围: {df.index.min()} → {df.index.max()}")
 
-    run_baseline(df, forward_bars=args.forward_bars, tp_pips=args.tp_pips)
+    save_path = None if args.no_save else args.save
+    run_baseline(df, forward_bars=args.forward_bars, tp_pips=args.tp_pips, save_path=save_path)
 
 
 if __name__ == "__main__":

@@ -280,3 +280,19 @@
 - `quant_analyzer`：嵌套分数 dict + suggestions 列表 + reasoning 长文 → 不可替换（仅 correlation_changes.status 三分类可离散，是子字段）。
 - MCP technical/fundamental/risk analyst：**调用工具读指标** + 结构化长文 + 标签 → 仅标签可离散。
 - MCP reflector：14 个工具（含 `apply_strategy` 改状态）的多步反思循环 + 长文 → 整体不可替换。
+
+## 14. 3.8 决策门实测结果（真实生产数据，2026-09-21）
+
+> 用用户授权的**只读**连库（`default_transaction_read_only='on'`，PG 服务端硬保证）跑了 `scripts/laya_synth_baseline.py --db --symbol GOLD --timeframe M15`。
+
+**实测结果**：
+- OHLCV：**34,552 行**（GOLD M15，2025-04-01 → 2026-09-17）
+- 合成样本：**34,542 条**、41 特征（`build_features` 40+ 列）
+- 标签分布（SELL/HOLD/BUY）：15502 / 3372 / 15668（三重障碍，`tp_pips=5.0`，`forward_bars=10`）
+- 可交易占比（基率）：0.896
+- **LightGBM AUC（3-fold 时间序列 CV）：0.739 ± 0.025**
+- **决策门判定：AUC=0.739 ≥ 0.6 → 值得继续，微调 laya / 数据驱动交易决策有基础**
+
+**解读**：GOLD M15 历史数据里确实存在可预测的「该不该交易」信号（LightGBM 0.74 AUC，显著高于随机 0.5 且高于基率 0.896）。→ 3.9 轨道（Kaggle RLCD 微调 laya）数据层面**成立**。
+
+**关键反思**：既然 LightGBM 已能 0.74 AUC，**先用 LightGBM 做"可否交易"门控可能比微调 laya 更便宜**（微调需 GPU + 4-5h + 权重）。建议 3.9 前：①固化 LightGBM 基线为可落地的"可否交易"门控 ②再评估微调 laya 的**边际收益**（文本+数值混合状态 vs 纯结构化特征）。
