@@ -179,3 +179,45 @@ async def laya_sentiment_choice(
         logger.warning(f"[laya] sentiment label outside whitelist, falling back to LLM: {result['label']}")
         return None
     return result
+
+
+# 策略名候选（与 agent_config 抽取对齐：8 个策略 + ai_autonomous 兜底）
+STRATEGY_LABELS = {
+    "trend_following",
+    "mean_reversion",
+    "breakout",
+    "momentum",
+    "hold",
+    "ai_autonomous",
+}
+
+
+async def laya_strategy_choice(decision: str) -> Optional[Dict[str, Any]]:
+    """从 AI 决策文本抽取策略名（choice：8+1 策略类 + 概率 + 置信度）。
+
+    替换 agent_config 里 `if keyword in text` 子串匹配（顺序敏感、中文/否定误判）。
+    返回 None 表示 laya 不可用/调用失败/返回畸形——调用方应回退原关键词匹配。
+    """
+    rt = get_laya_runtime()
+    if not rt.available:
+        return None
+    state = {"decision": decision[:3000]}
+    question = {
+        "type": "choice",
+        "instructions": "Which trading strategy does this AI decision most clearly describe?",
+        "criteria": {
+            "trend_following": "riding established trends, EMA crossover, trend continuation",
+            "mean_reversion": "buying dips / selling rallies, reverting to average",
+            "breakout": "price breaking a range or level, breakout entries",
+            "momentum": "momentum / RSI / velocity based entries",
+            "hold": "no trade, hold position, wait, stay out",
+            "ai_autonomous": "none of the above, autonomous/adaptive decision",
+        },
+    }
+    result = await rt.predict_choice(state, "strategy", question)
+    if result is None:
+        return None
+    if result["label"] not in STRATEGY_LABELS:
+        logger.warning(f"[laya] strategy label outside whitelist, falling back to keyword match: {result['label']}")
+        return None
+    return result

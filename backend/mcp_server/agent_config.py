@@ -25,6 +25,34 @@ def _load_system_prompt() -> str:
 
 # ─── Agent Entry Points ─────────────────────────────────────────────────────
 
+# 策略名抽取的关键词回退（3.3：laya choice 不可用时使用）。
+# 关键词 → 英文策略名。原实现用 `keyword.lower().replace(" ", "_")` 对中文关键词
+# 返回中文原文（如 "均值回归"），导致下游 strategy_switch 期望英文名时失配——修复。
+_STRATEGY_KEYWORDS = [
+    ("trend_following", "Trend Following"),
+    ("trend_following", "趋势跟踪"),
+    ("mean_reversion", "Mean Reversion"),
+    ("mean_reversion", "均值回归"),
+    ("breakout", "Breakout"),
+    ("breakout", "突破"),
+    ("momentum", "Momentum"),
+    ("momentum", "动量"),
+    ("hold", "Hold"),
+    ("hold", "持仓"),
+]
+
+
+def _keyword_strategy_fallback(decision: str) -> str:
+    """从决策文本用关键词抽取策略名（laya 不可用时的回退）。
+
+    顺序敏感是已知局限（原逻辑一致）；laya 可用时优先语义分类（3.3）。
+    """
+    lowered = decision.lower()
+    for strategy, keyword in _STRATEGY_KEYWORDS:
+        if keyword.lower() in lowered:
+            return strategy
+    return "ai_autonomous"
+
 
 def _agent_error_from(result: dict) -> str | None:
     """从 agent loop 结果中提取失败信息；正常响应返回 None。
@@ -75,24 +103,15 @@ async def run_agent(
     if ai_error:
         decision = "HOLD (AI unavailable)"
 
-    # Extract strategy name from decision text（支持中英文关键词）
+    # Extract strategy name from decision text（3.3：优先 laya choice，回退关键词）
     strategy_used = "ai_autonomous"
-    strategy_keywords = [
-        "Trend Following",
-        "趋势跟踪",
-        "Mean Reversion",
-        "均值回归",
-        "Breakout",
-        "突破",
-        "Momentum",
-        "动量",
-        "Hold",
-        "持仓",
-    ]
-    for keyword in strategy_keywords:
-        if keyword.lower() in decision.lower():
-            strategy_used = keyword.lower().replace(" ", "_")
-            break
+    try:
+        from app.ai.laya_runtime import laya_strategy_choice
+
+        result = await laya_strategy_choice(decision)
+        strategy_used = result["label"] if result is not None else _keyword_strategy_fallback(decision)
+    except Exception:
+        strategy_used = _keyword_strategy_fallback(decision)
 
     return {
         "decision": decision,
