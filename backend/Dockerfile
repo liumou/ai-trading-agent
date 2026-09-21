@@ -11,7 +11,25 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
+# 先装 CPU-only torch，防止 `pip install laya` 拉 CUDA 版 torch (~2GB+)。
+# 集成了 laya 后镜像会显著增大（CPU torch ~170MB + 权重）。安装失败不阻断构建：
+# laya 在运行时 try-import 降级，ws 照常启动（缺依赖时情绪仍走 LLM）。
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    || echo "[warn] CPU torch install failed; laya will be unavailable (try-import fallback)"
 RUN pip install --no-cache-dir -r requirements.txt
+
+# --- Laya 权重预缓存（可选，默认 off）--------------------------------------
+# 构建时拉权重进镜像，避免每次冷启动从 HF 下载（~1.7GB）。用法：
+#   docker build --build-arg PRELOAD_LAYA=1 .
+# 运行时设 LAYA_MODEL_CACHE_DIR=/app/models/laya 指向缓存；默认走 HF_ENDPOINT 镜像。
+ARG PRELOAD_LAYA=0
+ARG HF_ENDPOINT=https://hf-mirror.com
+RUN if [ "$PRELOAD_LAYA" = "1" ]; then \
+        HF_ENDPOINT=${HF_ENDPOINT} HF_HUB_ENABLE_HF_TRANSFER=1 \
+        huggingface-cli download convaiinnovations/laya --local-dir /app/models/laya --local-dir-use-symlinks False; \
+    else \
+        mkdir -p /app/models/laya && echo "[skip] PRELOAD_LAYA not set; laya weights download at runtime"; \
+    fi
 
 # Install Claude CLI globally (needed by claude-agent-sdk)
 RUN npm install -g @anthropic-ai/claude-code@latest

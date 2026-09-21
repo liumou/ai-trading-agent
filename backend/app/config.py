@@ -311,6 +311,9 @@ class Settings(BaseSettings):
     laya_confidence_threshold: float = 0.85
     # 模型权重缓存目录（默认 ~/.cache/huggingface）。生产部署建议构建时预缓存到镜像。
     laya_model_cache_dir: str = ""
+    # HF 下载端点（C10：默认空=用官方 huggingface.co 或环境变量 HF_ENDPOINT）。
+    # 国内网络 huggingface.co 模型端点常被阻断，部署侧显式设 HF_ENDPOINT=https://hf-mirror.com。
+    laya_hf_endpoint: str = ""
 
     # Runner
     runner_backend: str = "process"  # "process" or "docker"

@@ -30,3 +30,10 @@ hmmlearn>=0.3
 filterpy>=1.4
 cvxpy>=1.4
 sentry-sdk[fastapi]==2.20.0
+
+# Laya 决策引擎（默认关闭 laya_enabled=False，未装也能启动——try-import 降级）
+# NOTE: laya 依赖 torch>=2.0/transformers。Dockerfile 已先装 CPU-only torch
+# （--index-url https://download.pytorch.org/whl/cpu），避免拉取 CUDA 版 (~2GB+)。
+# 权重从 HF 下载（~1.7GB english / 1.3GB multilingual），部署用 HF_ENDPOINT 镜像
+# 或构建期预缓存（见 Dockerfile laya-model 阶段注释）。
+laya==0.3.4

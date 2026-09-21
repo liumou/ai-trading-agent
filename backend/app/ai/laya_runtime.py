@@ -59,9 +59,11 @@ class LayaRuntime:
             if self._agent is not None:
                 return self._agent
             try:
-                # 支持 HF 镜像（实测 huggingface.co 模型端点被阻断）
-                if not os.environ.get("HF_ENDPOINT"):
-                    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+                # C10：HF_ENDPOINT 可配置，不再无条件写 hf-mirror。
+                # 优先级：环境变量 HF_ENDPOINT > config.laya_hf_endpoint > 不设置（用官方）。
+                # 这样 Railway 境外可直连官方，国内部署显式设 HF_ENDPOINT=hf-mirror.com。
+                if not os.environ.get("HF_ENDPOINT") and settings.laya_hf_endpoint:
+                    os.environ["HF_ENDPOINT"] = settings.laya_hf_endpoint
                 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
                 os.environ.setdefault("USE_TF", "0")
 
