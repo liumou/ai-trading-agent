@@ -114,7 +114,15 @@ def run_baseline(
     y_binary = (y3 != 0).astype(int)  # 1=该状态值得交易（BUY 或 SELL），0=HOLD
 
     # 去掉全 NaN 列与不参与预测的原始列
-    cols = [c for c in fdf.columns if fdf[c].notna().any() and c not in ("open", "high", "low", "close", "tick_volume")]
+    # C1 修复：volume 与 tick_volume 都排除——build_features 只产出 volume_sma_ratio，
+    # 裸 volume 是透传的冗余原始列（tick_volume 已入 volume_sma_ratio）。若漏排 volume，
+    # 训练出的模型 feature_columns 会含裸 volume，而推理时 build_features 永不产出它，
+    # 造成特征数失配（41 vs 40）→ 全量弃权（曾因此缺陷，见 TradeGate._load schema 对齐）。
+    cols = [
+        c
+        for c in fdf.columns
+        if fdf[c].notna().any() and c not in ("open", "high", "low", "close", "tick_volume", "volume")
+    ]
     X = fdf[cols].fillna(0)
 
     # 仅保留有标签的行

@@ -35,8 +35,9 @@ _STRATEGY_KEYWORDS = [
     ("mean_reversion", "均值回归"),
     ("breakout", "Breakout"),
     ("breakout", "突破"),
-    ("momentum", "Momentum"),
-    ("momentum", "动量"),
+    # I4 对齐：注册表策略名是 momentum_rank（非 momentum），strategy_switch 才能 resolve。
+    ("momentum_rank", "Momentum"),
+    ("momentum_rank", "动量"),
     ("hold", "Hold"),
     ("hold", "持仓"),
 ]

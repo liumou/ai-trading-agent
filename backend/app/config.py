@@ -304,11 +304,14 @@ class Settings(BaseSettings):
     # 非自回归单次前向的结构化判定引擎（choice/score/noul）。本项目用它做
     # 高频分类预筛（情绪三分类等），不替换 LLM 的深度决策/长文生成。
     # 默认 False：未装 laya 依赖 / 未下载模型权重时系统照常运行（try-import 降级）。
-    laya_enabled: bool = True
+    # C1 修复：曾误翻为 True，此处与注释/计划/测试三方一致回退 False。
+    laya_enabled: bool = False
     # 模型标识：本地路径优先（缓存目录下），否则视为 HF repo id（走 HF_ENDPOINT 镜像）。
     laya_model: str = "convaiinnovations/laya"  # english 421M；多语言用 convaiinnovations/laya-multilingual(322M)
     # 分类预筛置信度阈值：laya 判定 confidence ≥ 阈值则直接采用；否则回退 LLM 深析。
     laya_confidence_threshold: float = 0.85
+    # 策略名抽取的置信阈值（I3 修复）：laya 策略分类低于此阈值时回退 keyword 匹配。
+    laya_strategy_confidence_threshold: float = 0.6
     # 模型权重缓存目录（默认 ~/.cache/huggingface）。生产部署建议构建时预缓存到镜像。
     laya_model_cache_dir: str = ""
     # HF 下载端点（C10：默认空=用官方 huggingface.co 或环境变量 HF_ENDPOINT）。
@@ -316,10 +319,14 @@ class Settings(BaseSettings):
     laya_hf_endpoint: str = ""
 
     # Trade Gate 「可否交易」门控（Phase 3.8 落地，默认关闭）
-    # LightGBM 二分类（由 scripts/laya_synth_baseline.py --save 训练，AUC≈0.739）。
-    # 在每笔交易前检查当前 OHLCV 状态是否值得开仓（can_trade 概率 ≥ 阈值）；不通过则拒绝。
-    # 默认 False：模型文件缺失时引擎照常运行（gate.is_ready=False → 放行）。
-    trade_gate_enabled: bool = False
+    # LightGBM 二分类（由 scripts/laya_synth_baseline.py --save 训练，AUC≈0.739 —— 待 purge-gap）。
+    # 在每笔交易前检查当前 OHLCV 状态是否值得开仓（can_trade 概率 ≥ 阈值）。
+    # I1 修复：拆两个开关——
+    #   trade_gate_shadow=True：记录 gate 判定与概率、不否决交易（影子验证，计划硬要求）。
+    #   trade_gate_enforce=True：判定不通过则拒绝交易。
+    # 默认：shadow 开启、enforce 关闭 —— 模型文件缺失时引擎照常运行（is_ready=False → 弃权放行）。
+    trade_gate_shadow: bool = True
+    trade_gate_enforce: bool = False
     trade_gate_model_path: str = "models/trade_gate.pkl"
 
     # Runner

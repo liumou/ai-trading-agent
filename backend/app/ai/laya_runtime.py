@@ -181,26 +181,38 @@ async def laya_sentiment_choice(
     return result
 
 
-# 策略名候选（与 agent_config 抽取对齐：8 个策略 + ai_autonomous 兜底）
+# 策略名候选（I4 修复：此前含 "momentum"，注册表里是 "momentum_rank"，一旦
+# strategy_switch 接上会 raise ValueError("Unknown strategy: momentum") → 改 momentum_rank。
+# 注意保留 trend_following：它是 keyword 兜底链路的既有契约名（AI 决策文本常说
+# "Trend Following"，test_llm_lang 断言它），laya criteria 同样建模此类——虽然
+# STRATEGIES 实现注册表里没有同名策略，但 strategy_used 仅用于展示（scheduler.py），
+# 不 resolve 到实现。两处白名单（STRATEGY_LABELS / _STRATEGY_KEYWORDS）必须一致。）
+# 注意：这是策略名的**子集**（覆盖 AI 决策文本常出现的 6 类 + ai_autonomous 兜底），
+# 非全部注册策略——laya criteria 只建模这几类，其余归 ai_autonomous。
 STRATEGY_LABELS = {
     "trend_following",
     "mean_reversion",
     "breakout",
-    "momentum",
+    "momentum_rank",
     "hold",
     "ai_autonomous",
 }
 
 
-async def laya_strategy_choice(decision: str) -> Optional[Dict[str, Any]]:
-    """从 AI 决策文本抽取策略名（choice：8+1 策略类 + 概率 + 置信度）。
+async def laya_strategy_choice(decision: str, confidence_threshold: float | None = None) -> Optional[Dict[str, Any]]:
+    """从 AI 决策文本抽取策略名（choice：策略类 + 概率 + 置信度）。
 
     替换 agent_config 里 `if keyword in text` 子串匹配（顺序敏感、中文/否定误判）。
-    返回 None 表示 laya 不可用/调用失败/返回畸形——调用方应回退原关键词匹配。
+    返回 None 表示 laya 不可用/调用失败/返回畸形/低置信——调用方应回退原关键词匹配。
+
+    I3 修复：默认对结果施加置信阈值（config.laya_strategy_confidence_threshold）。
+    否则 laya 最低置信的猜测会覆盖 keyword 兜底（后者在关键词命中时是近确定性信号）。
     """
     rt = get_laya_runtime()
     if not rt.available:
         return None
+    if confidence_threshold is None:
+        confidence_threshold = settings.laya_strategy_confidence_threshold
     state = {"decision": decision[:3000]}
     question = {
         "type": "choice",
@@ -209,8 +221,8 @@ async def laya_strategy_choice(decision: str) -> Optional[Dict[str, Any]]:
             "trend_following": "riding established trends, EMA crossover, trend continuation",
             "mean_reversion": "buying dips / selling rallies, reverting to average",
             "breakout": "price breaking a range or level, breakout entries",
-            "momentum": "momentum / RSI / velocity based entries",
-            "hold": "no trade, hold position, wait, stay out",
+            "momentum_rank": "momentum / RSI / velocity / relative-strength based entries",
+            "hold": "explicitly no trade, hold position, wait, stay out",
             "ai_autonomous": "none of the above, autonomous/adaptive decision",
         },
     }
@@ -219,5 +231,11 @@ async def laya_strategy_choice(decision: str) -> Optional[Dict[str, Any]]:
         return None
     if result["label"] not in STRATEGY_LABELS:
         logger.warning(f"[laya] strategy label outside whitelist, falling back to keyword match: {result['label']}")
+        return None
+    if result["confidence"] < confidence_threshold:
+        logger.debug(
+            f"[laya] strategy label {result['label']} below threshold "
+            f"({result['confidence']:.3f} < {confidence_threshold}) → keyword fallback"
+        )
         return None
     return result

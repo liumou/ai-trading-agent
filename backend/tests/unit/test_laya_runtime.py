@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.ai.laya_runtime import SENTIMENT_LABELS, LayaRuntime, get_laya_runtime, laya_sentiment_choice
+from app.ai.laya_runtime import SENTIMENT_LABELS, LayaRuntime, get_laya_runtime, laya_sentiment_choice, laya_strategy_choice
 from app.ai.news_sentiment import NewsSentimentAnalyzer, SentimentResult
 
 
@@ -58,6 +58,12 @@ class TestLayaRuntimeDefault:
             rt = get_laya_runtime()
             assert rt.available is False
             assert await laya_sentiment_choice("headline") is None
+
+    def test_config_default_is_false(self):
+        """C1 回归：真实 config 默认值必须是 False（曾误翻为 True，注释/计划/测试三方矛盾）。"""
+        from app.config import settings
+
+        assert settings.laya_enabled is False
 
 
 class TestLayaSentimentChoiceDirect:
@@ -273,6 +279,47 @@ class TestSentimentPrefilter:
             )
             analyzer.ai.complete_json_async.assert_awaited_once()
             assert result.label == "bullish"
+
+
+class TestStrategyChoiceThreshold:
+    """I3：laya_strategy_choice 的置信阈值分支（低置信 → None → keyword 兜底）。"""
+
+    async def _choice(self, confidence: float, threshold: float | None = None):
+        with (
+            patch("app.ai.laya_runtime.settings") as mock_settings,
+            patch("app.ai.laya_runtime.get_laya_runtime") as mock_rt_factory,
+        ):
+            mock_settings.laya_enabled = True
+            mock_settings.laya_strategy_confidence_threshold = 0.6
+            rt = _mock_runtime(predict_choice_result={
+                "label": "momentum_rank",
+                "confidence": confidence,
+                "probabilities": {"momentum_rank": confidence, "mean_reversion": 0.1},
+            })
+            mock_rt_factory.return_value = rt
+            return await laya_strategy_choice("momentum looks strong", threshold)
+
+    async def test_below_threshold_returns_none(self):
+        """置信 0.59 < 阈值 0.6 → None（回退 keyword 兜底）。"""
+        result = await self._choice(0.59)
+        assert result is None
+
+    async def test_at_threshold_returns_label(self):
+        """置信恰等阈值 0.6 → 通过（>= 语义）。"""
+        result = await self._choice(0.6)
+        assert result is not None
+        assert result["label"] == "momentum_rank"
+
+    async def test_default_threshold_from_settings(self):
+        """显式 threshold=None 时使用 settings.laya_strategy_confidence_threshold。"""
+        result = await self._choice(0.8, None)
+        assert result is not None
+
+    async def test_explicit_threshold_overrides_default(self):
+        """显式 threshold 覆盖 settings 默认。"""
+        # 显式 0.95 → 0.8 低于它 → None；settings 默认 0.6 本会通过
+        result = await self._choice(0.8, 0.95)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

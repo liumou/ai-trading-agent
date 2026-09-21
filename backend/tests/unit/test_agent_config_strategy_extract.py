@@ -15,9 +15,10 @@ from mcp_server.agent_config import _keyword_strategy_fallback
 
 class TestKeywordFallback:
     def test_english_keywords(self):
+        # trend_following 是 keyword 兜底链路的既有契约名（test_llm_lang 断言它），保留
         assert _keyword_strategy_fallback("Use Trend Following on the breakout") == "trend_following"
         assert _keyword_strategy_fallback("Hold position for now") == "hold"
-        assert _keyword_strategy_fallback("Momentum is strong, buy") == "momentum"
+        assert _keyword_strategy_fallback("Momentum is strong, buy") == "momentum_rank"
 
     def test_chinese_keywords_map_to_english(self):
         """中文关键词必须返回英文策略名（修复原 `replace(" ","_")` 返回中文 bug）。"""
@@ -44,9 +45,9 @@ class TestRunAgentStrategyExtraction:
         return _keyword_strategy_fallback(decision)
 
     async def test_laya_hit_wins(self):
-        with patch("app.ai.laya_runtime.laya_strategy_choice", new=AsyncMock(return_value={"label": "momentum", "confidence": 0.9, "probabilities": {}})):
+        with patch("app.ai.laya_runtime.laya_strategy_choice", new=AsyncMock(return_value={"label": "momentum_rank", "confidence": 0.9, "probabilities": {}})):
             got = await self._extract("Buy on Trend Following", AsyncMock())
-            assert got == "momentum"
+            assert got == "momentum_rank"
 
     async def test_laya_unavailable_falls_back(self):
         with patch("app.ai.laya_runtime.laya_strategy_choice", new=AsyncMock(return_value=None)):

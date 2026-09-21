@@ -21,12 +21,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # --- Laya 权重预缓存（可选，默认 off）--------------------------------------
 # 构建时拉权重进镜像，避免每次冷启动从 HF 下载（~1.7GB）。用法：
 #   docker build --build-arg PRELOAD_LAYA=1 .
-# 运行时设 LAYA_MODEL_CACHE_DIR=/app/models/laya 指向缓存；默认走 HF_ENDPOINT 镜像。
+# 目录布局必须与 app/ai/laya_runtime.py 的查找逻辑对齐（C5 修复）：
+#   runtime 用 os.path.join(cache_dir, basename("convaiinnovations/laya")) = /app/models/laya/laya。
 ARG PRELOAD_LAYA=0
 ARG HF_ENDPOINT=https://hf-mirror.com
 RUN if [ "$PRELOAD_LAYA" = "1" ]; then \
         HF_ENDPOINT=${HF_ENDPOINT} HF_HUB_ENABLE_HF_TRANSFER=1 \
-        huggingface-cli download convaiinnovations/laya --local-dir /app/models/laya --local-dir-use-symlinks False; \
+        python -c "from huggingface_hub import snapshot_download; snapshot_download('convaiinnovations/laya', local_dir='/app/models/laya/laya')"; \
     else \
         mkdir -p /app/models/laya && echo "[skip] PRELOAD_LAYA not set; laya weights download at runtime"; \
     fi
@@ -45,6 +46,8 @@ USER appuser
 # Claude CLI needs a writable home for config
 ENV HOME=/home/appuser
 ENV PYTHONPATH=/app
+# laya 运行期统一读此缓存目录；不设则下载落 ~/.cache/huggingface 且需配合 chown。
+ENV LAYA_MODEL_CACHE_DIR=/app/models/laya
 
 EXPOSE 8080
 

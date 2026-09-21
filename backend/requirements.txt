@@ -36,4 +36,8 @@ sentry-sdk[fastapi]==2.20.0
 # （--index-url https://download.pytorch.org/whl/cpu），避免拉取 CUDA 版 (~2GB+)。
 # 权重从 HF 下载（~1.7GB english / 1.3GB multilingual），部署用 HF_ENDPOINT 镜像
 # 或构建期预缓存（见 Dockerfile laya-model 阶段注释）。
+# C6 修复：显式 pin huggingface-hub（≥1.0 移除了 huggingface-cli 子命令，用 snapshot_download）
+# 与 transformers，避免 laya 的宽依赖锥（hub>=0.20 / transformers>=4.45 无上界）解析到不可复现版本。
 laya==0.3.4
+huggingface-hub>=0.26,<2
+transformers>=4.45,<5
