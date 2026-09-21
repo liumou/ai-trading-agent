@@ -38,5 +38,18 @@
 - ⚠️ trades 精确 count(*) 被自动分类器拦截（只读+read_only 硬保证被误杀）——交给用户决定是否授权
 - **第三轮结论成形：零样本不可行，必须微调；真实数据不足，需合成。待迭代计划提交审批**
 
+### 实施（用户批准后，2026-09-21）
+- ✅ 用户批准计划，要求新分支 + PR（不合并 main）
+- ✅ 新建分支 `feat/laya-research-and-integration`
+- ✅ config.py 加 laya_* 配置（默认关闭）
+- ✅ app/ai/laya_runtime.py（懒加载单例/线程安全/to_thread/降级/HF 镜像）
+- ✅ news_sentiment.py 情绪预筛（高置信跳过 LLM，低置信/不可用回退；默认关闭零回归）
+- ✅ tests/unit/test_laya_runtime.py（4 用例全过；sentiment 回归 193 passed）
+- ✅ scripts/laya_synth_baseline.py（合成样本 + LightGBM AUC 基线，链路已用合成 CSV 跑通）
+- ✅ git commit `a517dc0` + push `feat/laya-research-and-integration`
+- ✅ **PR #1 已创建**（OPEN）：https://github.com/liumou/ai-trading-agent/pull/1（→ main，不自动合并）
+- **PR 范围**：6 代码/测试文件 + .planning/2026-09-21-laya-research/ 调研证据；排除无关 .active_plan 改动
+- **交付完成**：集成轨道 3.2（情绪预筛）+ 3.8 决策门脚本 + 测试；轨道 3.3/3.4/3.7/3.9 待后续 PR
+
 ### 错误
 （无）

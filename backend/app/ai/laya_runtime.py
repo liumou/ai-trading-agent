@@ -88,6 +88,41 @@ class LayaRuntime:
             raise RuntimeError("laya unavailable")
         return await asyncio.to_thread(self._predict_sync, state, questions)
 
+    async def predict_choice(
+        self, state: Any, question_key: str, question: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """异步 choice 推理并安全解析返回（label 白名单 + confidence 类型收窄）。
+
+        返回 None 表示不可用/调用失败/返回畸形——调用方应回落 LLM。
+        这是唯一应被业务代码调用的异步入口（内部走 to_thread）。
+
+        confidence 语义（实测 laya 0.3.4）：laya 原生的 ``ans["confidence"]`` 是
+        **归一化熵置信度**（``1 - H(p)/log(k)``，实测 0.59 即使某类概率已达 0.87），
+        不反映"模型对所选类别的把握"。因此这里把 confidence 重定义为
+        **所选类别的最大类概率**（阈值判断的自然语义），原熵置信度保留为 entropy_confidence。
+        """
+        try:
+            result = await self.predict(state, {question_key: question})
+            ans = result["answers"][question_key]
+            label = str(ans["choice"])
+            probabilities = ans.get("probabilities", {})
+            if not isinstance(probabilities, dict) or not probabilities:
+                logger.warning(f"[laya] {question_key} returned empty probabilities")
+                return None
+            # 最大类概率 = 模型对所选类别的把握（用于预筛阈值判断）
+            max_prob = float(max(probabilities.values()))
+            # laya 原生熵置信度（保留参考）
+            entropy_conf = float(ans.get("confidence", 0.0))
+        except Exception as e:
+            logger.warning(f"[laya] {question_key} inference failed: {e}")
+            return None
+        return {
+            "label": label,
+            "confidence": max_prob,
+            "entropy_confidence": entropy_conf,
+            "probabilities": probabilities,
+        }
+
     def _predict_sync(self, state: Any, questions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         agent = self._load()
         return agent.system_one(state, questions)
@@ -104,41 +139,41 @@ def get_laya_runtime() -> LayaRuntime:
     return _runtime
 
 
-def laya_sentiment_choice(
+# 情绪三分类候选集（白名单，laya 返回候选外值一律回落 LLM——见 I2 修复）
+SENTIMENT_LABELS = {"bullish", "bearish", "neutral"}
+
+
+async def laya_sentiment_choice(
     headlines: str, symbol: str = "GOLD"
 ) -> Optional[Dict[str, Any]]:
     """对新闻标题做情绪三分类预筛（choice: bullish/bearish/neutral + 概率 + 置信度）。
 
-    返回 None 表示 laya 不可用/调用失败——调用方应回退 LLM。
+    异步：内部走 ``rt.predict``（``asyncio.to_thread``），不阻塞事件循环。
+    返回 None 表示 laya 不可用/调用失败/返回畸形——调用方应回落 LLM。
     仅返回离散分类，不生成 score/key_factors（那些仍是 LLM 的地盘）。
     """
-    try:
-        rt = get_laya_runtime()
-        if not rt.available:
-            return None
-        state = {
-            "symbol": symbol,
-            "headlines": headlines[:3000],  # 截断防超长
-        }
-        questions = {
-            "sentiment": {
-                "type": "choice",
-                "instructions": "What is the market sentiment of these headlines?",
-                "criteria": {
-                    "bullish": "positive outlook, price expected to rise",
-                    "bearish": "negative outlook, price expected to fall",
-                    "neutral": "mixed or no clear direction",
-                },
-            }
-        }
-        # 同步推理（to_thread 在 predict 内部），此处直接调同步版本以复用单例
-        result = rt._predict_sync(state, questions)
-        ans = result["answers"]["sentiment"]
-        return {
-            "label": ans["choice"],
-            "confidence": ans["confidence"],
-            "probabilities": ans["probabilities"],
-        }
-    except Exception as e:  # pragma: no cover - 降级路径
-        logger.warning(f"[laya] sentiment prefilter failed: {e}")
+    rt = get_laya_runtime()
+    if not rt.available:
         return None
+    state = {
+        "symbol": symbol,
+        "headlines": headlines[:3000],  # 截断防超长
+    }
+    question = {
+        "type": "choice",
+        "instructions": "What is the market sentiment of these headlines?",
+        "criteria": {
+            "bullish": "positive outlook, price expected to rise",
+            "bearish": "negative outlook, price expected to fall",
+            "neutral": "mixed or no clear direction",
+        },
+    }
+    result = await rt.predict_choice(state, "sentiment", question)
+    if result is None:
+        return None
+    # I2：白名单校验——laya 可能返回候选外的畸形标签（如 "positive"/"unknown"），
+    # 直接回落 LLM，绝不把未校验 label 传给 score 映射（否则 KeyError 吞掉整个分析）。
+    if result["label"] not in SENTIMENT_LABELS:
+        logger.warning(f"[laya] sentiment label outside whitelist, falling back to LLM: {result['label']}")
+        return None
+    return result
