@@ -43,6 +43,9 @@ class SentimentResult:
     key_factors: list[str] = field(default_factory=list)
     source_count: int = 0
     analyzed_at: str = ""
+    # 情绪判定来源：llm（Claude 深析）| laya（预筛命中）| 空（默认/历史兼容）
+    # 供 API/前端显示"当前是否由 laya 处理"。旧缓存无此键时 dataclass 默认兜底为 "llm"。
+    engine: str = "llm"
 
     def to_dict(self) -> dict:
         return {
@@ -52,6 +55,7 @@ class SentimentResult:
             "key_factors": self.key_factors,
             "source_count": self.source_count,
             "analyzed_at": self.analyzed_at,
+            "engine": self.engine,
         }
 
 
@@ -100,6 +104,7 @@ class NewsSentimentAnalyzer:
                 key_factors=["laya prefilter (confidence>=threshold)"],
                 source_count=len(news_items),
                 analyzed_at=now,
+                engine="laya",
             )
             # I1 修复：预筛命中也写 DB 审计行（带来源标记），避免 ML 情绪特征静默饿死。
             # 不污染审计轨迹的意图保留——raw_response 显式标记 engine=laya，可与 LLM 行区分。
@@ -173,6 +178,7 @@ class NewsSentimentAnalyzer:
             key_factors=result.get("key_factors", []),
             source_count=len(news_items),
             analyzed_at=now,
+            engine="llm",
         )
 
         # Save to DB — use a fresh session to avoid shared session corruption

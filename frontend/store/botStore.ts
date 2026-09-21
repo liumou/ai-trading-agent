@@ -20,6 +20,8 @@ type Sentiment = {
   key_factors: string[];
   source_count: number;
   analyzed_at: string;
+  /** 情绪判定来源：laya（预筛命中）| llm（Claude 深析）；旧数据可能缺失。 */
+  engine?: string;
 };
 
 type BotStatus = {
