@@ -108,8 +108,8 @@ async def run_agent(
     try:
         from app.ai.laya_runtime import laya_strategy_choice
 
-        result = await laya_strategy_choice(decision)
-        strategy_used = result["label"] if result is not None else _keyword_strategy_fallback(decision)
+        laya_result = await laya_strategy_choice(decision)
+        strategy_used = laya_result["label"] if laya_result is not None else _keyword_strategy_fallback(decision)
     except Exception:
         strategy_used = _keyword_strategy_fallback(decision)
 

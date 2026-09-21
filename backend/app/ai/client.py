@@ -35,27 +35,6 @@ class AIClient:
             self._provider = _provider
         return self._provider
 
-    async def complete_async(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int = 256,
-        agent_id: str = "sentiment",
-    ) -> str | None:
-        try:
-            provider = self._get_provider()
-            return await provider.complete(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model=_resolve_model(),
-                max_tokens=max_tokens,
-                agent_id=agent_id,
-                temperature=settings.llm_temperature,
-            )
-        except Exception as e:
-            logger.error(f"AI call failed: {e}")
-            return None
-
     async def complete_json_async(
         self,
         system_prompt: str,

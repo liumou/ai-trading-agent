@@ -51,5 +51,12 @@
 - **PR 范围**：6 代码/测试文件 + .planning/2026-09-21-laya-research/ 调研证据；排除无关 .active_plan 改动
 - **交付完成**：集成轨道 3.2（情绪预筛）+ 3.8 决策门脚本 + 测试；轨道 3.3/3.4/3.7/3.9 待后续 PR
 
+### 第三轮后续实施（2026-09-21）
+- ✅ 3.8 TradeGate 门控落地：train 脚本 --save + app/ml/trade_gate.py 加载器 + 引擎接入（默认关闭，96 引擎测试过）
+- ✅ 3.3 策略名抽取：laya_strategy_choice 优先 + 关键词回退；修复中文返回中文 bug；修复 run_agent 变量作用域 bug；9 测试过
+- ✅ 删除死代码：client.complete_async + quant_analyzer.py（零调用方已确认）
+- ⏳ 最终测试 + 提交推送（分类器限流中，待恢复）
+- 诊断：test_multi_agent 7 失败为预存在（stash 对照确认，与本次改动无关）
+
 ### 错误
 （无）

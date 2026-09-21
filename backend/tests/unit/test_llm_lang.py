@@ -159,11 +159,13 @@ class TestStrategyUsedExtraction:
         }
         with (
             patch("mcp_server.agent_config.run_agent_loop", AsyncMock(return_value=mock_result)),
+            patch("app.ai.laya_runtime.laya_strategy_choice", AsyncMock(return_value=None)),  # 3.3: 回退关键词
             patch.object(prompt_registry, "_redis", None),
             patch.object(prompt_registry, "_inject_symbols", side_effect=lambda p: p),
         ):
             result = await run_agent(job_type="candle_analysis", job_input={"symbol": "GOLD"})
-        assert result["strategy_used"] == "趋势跟踪"
+        # 3.3 修复：策略名统一英文（不再返回中文原名），下游 strategy_switch 才能匹配。
+        assert result["strategy_used"] == "trend_following"
         assert "BUY" in result["decision"]
 
     @pytest.mark.asyncio
@@ -180,6 +182,7 @@ class TestStrategyUsedExtraction:
         }
         with (
             patch("mcp_server.agent_config.run_agent_loop", AsyncMock(return_value=mock_result)),
+            patch("app.ai.laya_runtime.laya_strategy_choice", AsyncMock(return_value=None)),  # 3.3: 回退关键词
             patch.object(prompt_registry, "_redis", None),
             patch.object(prompt_registry, "_inject_symbols", side_effect=lambda p: p),
         ):
