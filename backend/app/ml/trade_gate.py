@@ -66,11 +66,9 @@ class TradeGate:
         features = build_features(df)
         available = [c for c in self.feature_columns if c in features.columns]
         # 用最后一根 bar 的状态（与 MLPredictor 一致）
-        X = features[available].iloc[[-1]]
-
-        if X.isna().any(axis=1).iloc[0]:
-            logger.warning("Trade gate prediction has NaN features, defaulting to can_trade=False")
-            return False, 0.0
+        X = features[available].iloc[[-1]].fillna(0)
+        # 训练时 X 已 fillna(0)，这里填充保持一致（最后一根 bar 常落在指标窗口尾端
+        # 而有少量 NaN，如 volume_sma_ratio——降级 0.0 会让门控静默失效）。
 
         prob = float(self.model.predict_proba(X)[0, 1])  # P(可交易)
         return prob >= self.threshold, prob

@@ -14,17 +14,28 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.ml.features import FEATURE_COLUMNS
 from app.ml.trade_gate import TradeGate
+
+
+class FakeModel:
+    """可 pickle 的 mock 分类器（模块级类，供 joblib.dump 使用）。"""
+
+    def __init__(self, prob: float = 0.7):
+        self._prob = prob
+
+    def predict_proba(self, X):
+        n = len(X)
+        return np.array([[1.0 - self._prob, self._prob]] * n)
 
 
 def _fake_joblib_data(threshold: float = 0.5, prob: float = 0.7):
     """构造一个可被 TradeGate._load 载入的 joblib 数据结构（mock）。"""
-    class FakeModel:
-        def predict_proba(self, X):
-            return np.array([[1.0 - prob, prob]])
     return {
-        "model": FakeModel(),
-        "feature_columns": ["close", "rsi_14", "adx"],
+        "model": FakeModel(prob=prob),
+        # 用真实 FEATURE_COLUMNS，保证 build_features 输出的列与模型列匹配，
+        # 让 test_real_predict_returns_bool_prob 覆盖 build_features → predict 全链路。
+        "feature_columns": FEATURE_COLUMNS,
         "threshold": threshold,
         "metadata": {"auc": 0.7, "n_samples": 100},
     }
@@ -32,13 +43,14 @@ def _fake_joblib_data(threshold: float = 0.5, prob: float = 0.7):
 
 @pytest.fixture
 def ohlcv_df():
+    # 足够行数让 build_features 的 EMA/RSI/ATR 等指标产生非 NaN（需 warm-up 窗口）。
     rng = np.random.default_rng(7)
-    n = 30
+    n = 300
     ret = rng.normal(0, 0.001, n)
     close = 100 * np.exp(np.cumsum(ret))
     o = np.roll(close, 1)
     o[0] = close[0]
-    return pd.DataFrame(
+    df = pd.DataFrame(
         {
             "open": o,
             "high": np.maximum(o, close) * 1.001,
@@ -47,6 +59,8 @@ def ohlcv_df():
             "volume": rng.integers(100, 1000, n),
         }
     )
+    # 去掉指标 warm-up 期的 NaN 行，保证最后一行为有效特征
+    return df.iloc[50:].reset_index(drop=True)
 
 
 class TestTradeGateLoad:
