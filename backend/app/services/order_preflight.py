@@ -128,6 +128,7 @@ async def preflight_order(
     direction: str | None = None,
     entry_price: float | None = None,
     account_login: str | None = None,
+    check_live_auth: bool = True,
 ) -> PreflightOutcome:
     """Run the full hard-gate sequence; return context for execution or rejection.
 
@@ -201,6 +202,22 @@ async def preflight_order(
     else:
         realized_daily_pnl = account.get("profit", 0)
 
+    # 4b. 账户级日亏：聚合全部在线品种的已实现日亏。单品种检查会让
+    #     GOLD 亏 4% + BTCUSD 亏 1% 各自不触发、组合已超 3% —— 账户级
+    #     闸门堵住这条"分散亏损旁路"。
+    account_daily_pnl = None
+    if redis is not None:
+        try:
+            from app.bot.manager import get_global_manager as _ggm
+
+            _mgr = _ggm()
+            active_symbols = await CircuitBreaker.get_active_symbols(_mgr)
+            account_daily_pnl = await CircuitBreaker.get_global_daily_pnl(
+                redis, active_symbols, account_login
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Account-level daily PnL aggregation failed: {e!r}")
+
     # 5. 参考价：挂单用挂单价，市价单取 tick 中间价（ask/bid 直接取会误判
     #    BUY 的 SL>=entry）
     if entry_price is not None:
@@ -228,9 +245,26 @@ async def preflight_order(
         entry_price=entry_ref,
         sl=sl,
         tp=tp,
+        account_daily_pnl=account_daily_pnl,
     )
     if not result.allowed:
         return _reject(result.reason, "guardrail")
+
+    # 6b. equity 日内回撤闸门（余额 + 浮动盈亏）。只看已实现会让持仓
+    #     浮亏 8% 完全隐形；参考值=当日峰值 equity，跨日自动失效。
+    if redis is not None:
+        try:
+            equity = account.get("balance", 0) + account.get("profit", 0)
+            eq_halted, eq_ref = await CircuitBreaker.is_equity_drawdown_halted(
+                redis, equity, settings.max_equity_drawdown, account_login, symbol
+            )
+            if eq_halted:
+                return _reject(
+                    f"Equity intraday drawdown: equity={equity:.2f}, ref={eq_ref:.2f} — trading halted",
+                    "guardrail",
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Equity drawdown check failed: {e!r}")
 
     # 7. 券商手数防线：向下取整到 volume grid，低于 volume_min 拒单 ——
     #    否则 bridge 静默放大，击穿风险预算。
@@ -274,7 +308,9 @@ async def preflight_order(
 
     # 9. PROVIDER-AGNOSTIC LIVE AUTHORIZATION（micro/live 真实资金执行必须
     #    显式 LLM_ALLOW_LIVE=true；UI 降级与撤权即时生效）
-    if rollout_mode in ("micro", "live") and not settings.llm_allow_live:
+    #    check_live_auth=False 用于引擎自营通道：该通道由用户显式启动，不因
+    #    LLM 授权开关而静默停摆（llm_allow_live 语义面向 AI/agent 通道）。
+    if check_live_auth and rollout_mode in ("micro", "live") and not settings.llm_allow_live:
         logger.warning(
             f"preflight_order [{symbol}] rejected: rollout={rollout_mode} requires LLM_ALLOW_LIVE=true"
         )

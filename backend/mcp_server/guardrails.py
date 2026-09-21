@@ -13,9 +13,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import redis.asyncio as redis_lib
+from loguru import logger
 
 # ─── Hard Limits (non-negotiable) ────────────────────────────────────────────
-
+#单笔手数	≤ 1.0 lot	超过就拒（MAX_LOT_PER_TRADE）
+#单品种并发持仓	≤ 3 个	已有 3 个时，第 4 个拒（MAX_CONCURRENT_PER_SYMBOL）
+#总持仓	≤ 5 个	已有 5 个时，第 6 个拒（MAX_CONCURRENT_TOTAL）
+##日亏损	≤ 3% 余额	已实现亏损 ÷ 余额 ≥ 3% 就拒（MAX_DAILY_LOSS_PCT）
+#连亏	< 5 笔	连续亏损 ≥ 5 笔熔断拒单（CONSECUTIVE_LOSS_HALT）
+#每小时交易	< 5 笔	本小时已达 5 笔就拒（MAX_TRADES_PER_HOUR）
+#交易最小间隔	≥ 120 秒	距上一笔成交不足 120 秒就拒
+#点差	≤ 3× 均值	当前点差 > 该品种近 20 次滚动均值的 3 倍就拒（MAX_SPREAD_MULTIPLIER）
+#SL/TP 方向	—	BUY 单 SL ≥ 买入价（会立即亏损）拒；TP ≤ 买入价拒；SELL 反之；SL=0（无止损）直接拒
 # Position limits
 MAX_LOT_PER_TRADE = 1.0
 MAX_CONCURRENT_PER_SYMBOL = 3
@@ -155,6 +164,7 @@ class TradingGuardrails:
         entry_price: float | None = None,
         sl: float | None = None,
         tp: float | None = None,
+        account_daily_pnl: float | None = None,
     ) -> GuardrailResult:
         """Validate a trade order against all guardrails.
 
@@ -164,13 +174,64 @@ class TradingGuardrails:
             order_type: "BUY" or "SELL"
             current_positions: List of open positions [{symbol, lot, profit, ...}]
             account_balance: Current account balance
-            daily_pnl: Today's realized P&L
+            daily_pnl: Today's realized P&L for this symbol
             spread: Current spread in pips
             avg_spread: Average spread for this symbol
             entry_price: Reference price for SL/TP validation (None skips)
             sl: Stop-loss price (None skips validation)
             tp: Take-profit price (None skips validation)
+            account_daily_pnl: Today's realized P&L across ALL symbols
+                (账户级日亏，None 跳过——单品种检查可能漏掉分散亏损)
         """
+        result = await self._validate_order_core(
+            symbol=symbol,
+            lot=lot,
+            order_type=order_type,
+            current_positions=current_positions,
+            account_balance=account_balance,
+            daily_pnl=daily_pnl,
+            spread=spread,
+            avg_spread=avg_spread,
+            entry_price=entry_price,
+            sl=sl,
+            tp=tp,
+            account_daily_pnl=account_daily_pnl,
+        )
+        if not result.allowed:
+            await self._audit_rejection(symbol, result.reason)
+        return result
+
+    async def _audit_rejection(self, symbol: str, reason: str) -> None:
+        """风控拒绝审计：WARNING 日志 + Redis 当日拒绝列表（供运维/UI 追踪）。
+
+        此前拒绝只以 reason 字符串返回给调用方（AI agent 自行总结、手动通道
+        仅日志），用户侧完全不可见 —— 风控是否在工作无从核对。
+        """
+        logger.warning(f"Guardrail rejected [{symbol}]: {reason}")
+        try:
+            key = f"{_KEY_PREFIX}:rejections:{datetime.now(UTC).strftime('%Y-%m-%d')}"
+            await self.redis.rpush(key, f"{datetime.now(UTC).isoformat()} {symbol} {reason}")
+            await self.redis.expire(key, 86400 * 2)
+            await self.redis.ltrim(key, -500, -1)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Rejection audit failed: {e!r}")
+
+    async def _validate_order_core(
+        self,
+        symbol: str,
+        lot: float,
+        order_type: str,
+        current_positions: list[dict],
+        account_balance: float,
+        daily_pnl: float,
+        spread: float,
+        avg_spread: float,
+        entry_price: float | None = None,
+        sl: float | None = None,
+        tp: float | None = None,
+        account_daily_pnl: float | None = None,
+    ) -> GuardrailResult:
+        """Core guardrail checks (see :meth:`validate_order` for docs)."""
         # 1. Max lot per trade
         if lot > MAX_LOT_PER_TRADE:
             return GuardrailResult(False, f"Lot {lot} exceeds max {MAX_LOT_PER_TRADE}")
@@ -223,6 +284,16 @@ class TradingGuardrails:
                 return GuardrailResult(
                     False,
                     f"Daily loss {loss_pct:.1%} exceeds limit {MAX_DAILY_LOSS_PCT:.0%}",
+                )
+
+        # 4b. Account-level daily loss（多品种分散亏损也能触发）
+        if account_daily_pnl is not None and account_balance > 0 and account_daily_pnl < 0:
+            acct_loss_pct = abs(account_daily_pnl) / account_balance
+            if acct_loss_pct >= MAX_DAILY_LOSS_PCT:
+                return GuardrailResult(
+                    False,
+                    f"Account daily loss {acct_loss_pct:.1%} exceeds limit "
+                    f"{MAX_DAILY_LOSS_PCT:.0%} (all symbols)",
                 )
 
         # 5. Consecutive loss halt
@@ -293,13 +364,22 @@ class TradingGuardrails:
         # Update last trade time
         await self.redis.set(f"{_KEY_PREFIX}:last_trade_time", str(time.time()))
 
-    async def record_trade_closed(self, is_win: bool) -> None:
+    async def record_trade_closed(self, is_win: bool, ticket: int | None = None) -> None:
         """Record a closed trade outcome for consecutive loss tracking.
 
         Must be called from the close path with the REAL P&L outcome.
         Previously this was only ever called with ``is_win=True`` at open time,
         so CONSECUTIVE_LOSS_HALT could never trigger.
+
+        ``ticket`` 传入时按 ticket 幂等：同一笔平仓（重启重检、启动回填）
+        只记一次，避免连亏计数虚增。
         """
+        if ticket is not None:
+            seen_key = f"{_KEY_PREFIX}:closed_tickets:{datetime.now(UTC).strftime('%Y-%m-%d')}"
+            if await self.redis.sismember(seen_key, ticket):
+                return
+            await self.redis.sadd(seen_key, ticket)
+            await self.redis.expire(seen_key, 86400 * 2)
         key = _daily_key("trade_results")
         await self.redis.rpush(key, "1" if is_win else "0")
         await self.redis.expire(key, 86400 * 2)  # 2 days TTL
@@ -312,6 +392,12 @@ class TradingGuardrails:
 
     async def get_status(self) -> dict:
         """Get current guardrail state for monitoring."""
+        try:
+            from app.config import settings
+
+            max_equity_drawdown = settings.max_equity_drawdown
+        except Exception:  # noqa: BLE001
+            max_equity_drawdown = 0.03
         return {
             "consecutive_losses": await self._get_consecutive_losses(),
             "trades_this_hour": await self._get_trades_this_hour(),
@@ -322,6 +408,7 @@ class TradingGuardrails:
                 "max_concurrent_symbol": MAX_CONCURRENT_PER_SYMBOL,
                 "max_concurrent_total": MAX_CONCURRENT_TOTAL,
                 "max_daily_loss_pct": MAX_DAILY_LOSS_PCT,
+                "max_equity_drawdown_pct": max_equity_drawdown,
                 "max_trades_per_hour": MAX_TRADES_PER_HOUR,
                 "max_agent_calls": MAX_DAILY_AGENT_CALLS,
             },

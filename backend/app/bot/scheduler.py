@@ -399,6 +399,13 @@ class BotScheduler:
                 engine = engines.get(sym)
                 if engine and engine.state.value == "RUNNING":
                     try:
+                        # ai_autonomous 下 process_candle 早退 —— 风控回路
+                        # 必须在 scheduler 这里独立驱动，否则账户级熔断/
+                        # equity 回撤对实盘 AI 交易完全失效。
+                        await engine._run_risk_gate()
+                    except Exception as e:
+                        logger.warning(f"Risk gate failed [{sym}]: {e}")
+                    try:
                         await engine._detect_regime()
                     except Exception as e:
                         logger.warning(f"Regime detection failed [{sym}] — risk profile may be stale: {e}")

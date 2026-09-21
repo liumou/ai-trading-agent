@@ -113,11 +113,13 @@ async def close_position_gated(
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Manual close [{ticket}] account_login lookup failed: {e!r}")
         try:
-            await CircuitBreaker(redis, symbol=canonical, account_login=account_login).record_trade_result(profit)
+            await CircuitBreaker(redis, symbol=canonical, account_login=account_login).record_trade_result(
+                profit, ticket=ticket
+            )
         except Exception as e:  # noqa: BLE001
             logger.error(f"Manual close [{ticket}] circuit-breaker record failed: {e!r}")
         try:
-            await guardrails.record_trade_closed(is_win=profit > 0)
+            await guardrails.record_trade_closed(is_win=profit > 0, ticket=ticket)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Manual close [{ticket}] guardrail record failed: {e!r}")
 

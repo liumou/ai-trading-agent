@@ -74,3 +74,10 @@
 | 启动后 sync_positions（每 30s） | 09:05:00 后 paper_trade 错误 **0 条** |
 | 重启瞬间旧进程残留 | 09:04:45 一条（旧进程 29253 收尾最后一轮，其后归零） |
 | 引擎最终状态 | STOPPED（验证后已停止，控制权交回用户） |
+
+## 追加发现（2026-09-21 后台任务 failed 调查）
+
+- 我用于重启的后台任务（start-backend.sh，PID 34870）在 turn 结束时随 shell 会话被系统回收，触发 uvicorn 关闭 → 暴露 **shutdown 崩溃 bug**：`app/mt5/connector.py:40` 用 `await self._client.close()`，httpx `AsyncClient` 无 `close`（正确为 `aclose`）→ `AttributeError: 'AsyncClient' object has no attribute 'close'` + "Application shutdown failed" + 16 个泄漏 semaphore。**已修复**：`close()` → `aclose()`。
+- 排查同期确认：`redis.asyncio.Redis.close`（main.py:513 / websocket.py:66 / ws_runners.py:59 的 `await redis_client.close()`）是 `@deprecated_function` 包装的 async 别名，内部转 aclose，**可用不崩**，未改（避免扩大 diff）。
+- 修复验证：起临时实例（8003）→ SIGTERM → `Application shutdown complete` + `Finished server process`，退出干净；AttributeError 消失。剩余 `16 leaked semaphore objects` 警告为既有次要问题（修复前后一致），与本次无关，记录备查。
+- **注意**：当前运行中的后端（PID 64857，zcode-cli 托管，10:51 启动）内存中仍是旧 close 代码——`aclose` 修复在下一次重启后端时生效；启动机器人修复在其内存中已生效（status 200 + 字段完整）。

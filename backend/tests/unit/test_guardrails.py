@@ -150,6 +150,90 @@ class TestValidateOrderDailyLoss:
         assert "Daily loss" in result.reason
 
 
+class TestValidateOrderAccountDailyLoss:
+    """账户级日亏：单品种亏损分散到多个品种时，组合亏损也必须触发。"""
+
+    @pytest.mark.asyncio
+    async def test_account_level_within_limit(self, guardrails):
+        result = await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=-200,  # GOLD 单品种 -2%
+            account_daily_pnl=-250,  # 账户合计 -2.5% < 3%
+            spread=1.5,
+            avg_spread=1.5,
+        )
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_account_level_exceeds_limit_while_symbol_within(self, guardrails):
+        # GOLD 单品种只亏 2%（不触发单品种闸门），但账户合计 -3.5% 必须触发
+        result = await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=-200,
+            account_daily_pnl=-350,
+            spread=1.5,
+            avg_spread=1.5,
+        )
+        assert result.allowed is False
+        assert "Account daily loss" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_account_level_ignored_when_none(self, guardrails):
+        # 兼容旧调用：不传 account_daily_pnl 时行为不变
+        result = await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=-200,
+            spread=1.5,
+            avg_spread=1.5,
+        )
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_account_level_positive_pnl_allowed(self, guardrails):
+        result = await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=200,
+            account_daily_pnl=350,
+            spread=1.5,
+            avg_spread=1.5,
+        )
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_rejection_is_audited(self, guardrails, redis_client):
+        # 拒绝必须写入当日审计列表（可观测性）
+        await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=-400,
+            spread=1.5,
+            avg_spread=1.5,
+        )
+        keys = [k for k in await redis_client.keys("guardrails:rejections:*")]
+        assert keys
+        entries = await redis_client.lrange(keys[0], 0, -1)
+        assert any(b"Daily loss" in e for e in entries)
+
+
 class TestValidateOrderConsecutiveLosses:
     @pytest.mark.asyncio
     async def test_halt_on_consecutive_losses(self, guardrails):

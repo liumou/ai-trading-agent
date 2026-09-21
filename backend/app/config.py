@@ -254,6 +254,7 @@ class Settings(BaseSettings):
     max_concurrent_trades: int = 3
     max_lot: float = 1.0
     max_drawdown_from_peak: float = 0.15  # 15% absolute drawdown → halt
+    max_equity_drawdown: float = 0.03  # 日内 equity（含浮动盈亏）回撤 ≥3% → 停新开仓；0=禁用
     use_ai_filter: bool = True
     ai_confidence_threshold: float = 0.7
     paper_trade: bool = False

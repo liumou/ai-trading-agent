@@ -54,7 +54,21 @@ class CircuitBreaker:
         self.triggered_key = f"{prefix}triggered_at:{symbol}"
         self.cooldown_minutes = cooldown_minutes
 
-    async def record_trade_result(self, profit: float) -> None:
+    async def record_trade_result(self, profit: float, ticket: int | None = None) -> None:
+        """记录一笔已实现盈亏到当日 P&L。
+
+        ``ticket`` 传入时按 ticket 幂等：同一笔平仓（重启重检、启动回填、
+        手动+引擎双通道）只会记一次。ticket 集合与当日 P&L 同 TTL 域，跨日
+        自动失效。
+        """
+        prefix = f"circuit:acc:{self.account_login}:" if self.account_login else "circuit:"
+        if ticket is not None:
+            seen_key = f"{prefix}closed_tickets:{self.symbol}"
+            if await self.redis.sismember(seen_key, ticket):
+                return
+            await self.redis.sadd(seen_key, ticket)
+            await self.redis.expire(seen_key, 86400 * 2)
+
         current = await self.redis.get(self.pnl_key)
         current_pnl = float(current) if current else 0.0
         new_pnl = current_pnl + profit
@@ -198,6 +212,96 @@ class CircuitBreaker:
             )
             return True
         return False
+
+    @staticmethod
+    async def is_equity_drawdown_halted(
+        redis_client,
+        equity: float,
+        max_drawdown_pct: float,
+        account_login: str | None = None,
+        symbol: str | None = None,
+    ) -> tuple[bool, float]:
+        """日内 equity（余额 + 浮动盈亏）回撤闸门。
+
+        参考值 = 当日所见最高 equity（key 带秒级重置 TTL，跨日自动失效；
+        首个观测值即当日基准）。回撤 ≥ max_drawdown_pct 返回 True=停新开仓。
+        max_drawdown_pct <= 0 视为禁用。返回 (halted, ref_equity)。
+        """
+        if max_drawdown_pct <= 0 or equity <= 0:
+            return False, 0.0
+        key = CircuitBreaker._acc_key(account_login, "equity_ref")
+        ttl = CircuitBreaker._seconds_until_reset(symbol) if symbol else 86400
+        ref_raw = await redis_client.get(key)
+        if ref_raw is None:
+            ref = equity
+            await redis_client.set(key, str(ref), ex=ttl)
+        else:
+            ref = float(ref_raw)
+            if equity > ref:
+                ref = equity
+                await redis_client.set(key, str(ref), ex=ttl)
+        drawdown_pct = (ref - equity) / ref if ref > 0 else 0.0
+        if drawdown_pct >= max_drawdown_pct:
+            logger.warning(
+                f"EQUITY DRAWDOWN HALT: equity={equity:.2f}, ref={ref:.2f}, "
+                f"drawdown={drawdown_pct:.1%} >= limit={max_drawdown_pct:.1%}"
+            )
+            return True, ref
+        return False, ref
+
+    @staticmethod
+    async def get_active_symbols(manager=None) -> list[str]:
+        """在线交易品种集合（全局日亏/回撤的作用域）。
+
+        优先取在线引擎集合（含 /symbols 热重载加入的 DB 管理品种），
+        回退到 SYMBOL_PROFILES / settings.symbol_list。与引擎
+        _check_circuit_breakers 的作用域口径一致，供 preflight 等单品种
+        校验方聚合账户级日亏时复用。
+        """
+        if manager is not None:
+            engines = getattr(manager, "engines", None)
+            if engines:
+                return list(engines.keys())
+        from app.config import SYMBOL_PROFILES, settings
+
+        return [s for s, p in SYMBOL_PROFILES.items() if "canonical" not in p] or settings.symbol_list
+
+    @staticmethod
+    async def backfill_today(
+        connector,
+        redis_client,
+        symbol: str,
+        account_login: str | None = None,
+    ) -> int:
+        """启动回填：用 MT5 当日已平仓历史补齐日亏/连亏计数（按 ticket 幂等）。
+
+        覆盖引擎不在场/崩溃期平仓漏记 —— 日亏 3% 闸门的数据源一旦缺口，
+        单品种校验会读到旧值放行。返回回填笔数。
+        """
+        from mcp_server.guardrails import TradingGuardrails
+
+        # 桥返回的 deal symbol 是券商别名（如 "GOLD_"），后端 canonical 是
+        # "GOLD" —— 两侧去下划线/大写后比较（to_broker_alias 对 GOLD 返回
+        # "GOLD" 而非 "GOLD_"，不能直接用于匹配）。
+        sym_norm = symbol.upper().replace("_", "")
+        hist = await connector.get_history(days=1)
+        if not hist.get("success"):
+            return 0
+        cb = CircuitBreaker(redis_client, symbol=symbol, account_login=account_login)
+        gr = TradingGuardrails(redis_client)
+        n = 0
+        for d in hist.get("data", []):
+            deal_sym = (d.get("symbol") or "").upper().replace("_", "")
+            if deal_sym != sym_norm:
+                continue
+            ticket = d.get("ticket")
+            profit = d.get("profit", 0) or 0
+            await cb.record_trade_result(profit, ticket=ticket)
+            await gr.record_trade_closed(is_win=profit > 0, ticket=ticket)
+            n += 1
+        if n:
+            logger.info(f"Circuit breaker backfill [{symbol}]: {n} closed deals reconciled")
+        return n
 
     @staticmethod
     def _seconds_until_reset(symbol: str) -> int:

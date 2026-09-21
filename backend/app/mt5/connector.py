@@ -37,7 +37,7 @@ class MT5BridgeConnector:
 
     async def close(self):
         if self._client and not self._client.is_closed:
-            await self._client.close()
+            await self._client.aclose()
             self._client = None
 
     async def _request(self, method: str, path: str, *, retry_ambiguous: bool = True, **kwargs) -> dict[str, Any]:

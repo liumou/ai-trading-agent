@@ -270,7 +270,7 @@ async def close_position(ticket: int) -> dict:
         # 平仓按实际盈亏记录胜负，驱动连亏熔断（CONSECUTIVE_LOSS_HALT）
         if pos_info is not None:
             close_profit = pos_info.get("profit", 0) or 0
-            await _guardrails.record_trade_closed(is_win=close_profit > 0)
+            await _guardrails.record_trade_closed(is_win=close_profit > 0, ticket=ticket)
         # Send Telegram notification
         if _notifier and pos_info:
             try:

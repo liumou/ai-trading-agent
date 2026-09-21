@@ -249,6 +249,8 @@ class BotEngine:
         self._position_breakeven: set[int] = set()  # tickets moved to breakeven
         self.started_at: datetime | None = None
         self.last_signal_time: datetime | None = None
+        self._last_balance: float | None = None  # 风控回路缓存（_run_risk_gate 每次刷新）
+        self._last_equity: float = 0.0
 
     def set_account_login(self, account_login: str) -> None:
         """更新所属 MT5 账号，并重建 circuit_breaker（H3：key 带账号维度）。
@@ -321,6 +323,16 @@ class BotEngine:
         if self.notifier:
             await self._notify(self.notifier.send_start_alert(self.symbol, self.timeframe, strategy_name))
 
+        # 启动回填：补齐"引擎不在场/崩溃期"平仓漏记的当日已实现 P&L 与
+        # 连亏计数（按 ticket 幂等）。日亏 3% 闸门的数据源缺了口，上层
+        # 校验就会读到旧值放行 —— 这是 2026-09-21 GOLD -460 未拦截的根因。
+        _spawn_background(
+            CircuitBreaker.backfill_today(
+                self.connector, self.redis, self.symbol, account_login=self.account_login
+            ),
+            name=f"backfill_daily_pnl_{self.symbol}",
+        )
+
     async def stop(self):
         self.state = BotState.STOPPED
         await self._log_event(BotEventType.STOPPED, "Bot stopped")
@@ -349,6 +361,8 @@ class BotEngine:
             "paper_trade": self.paper_trade,
             "max_risk_per_trade": self.risk_manager.max_risk_per_trade,
             "max_daily_loss": self.risk_manager.max_daily_loss,
+            "max_equity_drawdown": settings.max_equity_drawdown,
+            "max_drawdown_from_peak": settings.max_drawdown_from_peak,
             "max_concurrent_trades": self.risk_manager.max_concurrent_trades,
             "max_lot": self.risk_manager.max_lot,
             "fixed_lot": self.fixed_lot,
@@ -392,6 +406,14 @@ class BotEngine:
 
     async def process_candle(self):
         """Main trading logic — called every candle close."""
+        # 0. 账户级风控回路（所有模式都必须跑；ai_autonomous 下 scheduler
+        #    单独驱动 _run_risk_gate，这里保住 strategy 模式）
+        if await self._run_risk_gate():
+            return
+
+        if self.state != BotState.RUNNING:
+            return
+
         # Skip if in AI autonomous mode (AI agent handles trading)
         if settings.trading_mode == "ai_autonomous" or self.strategy is None:
             logger.debug(
@@ -399,30 +421,10 @@ class BotEngine:
             )
             return
 
-        # Auto-recovery: check if paused bot can resume after cooldown
-        if self.state == BotState.PAUSED:
-            if await self.circuit_breaker.can_resume():
-                logger.info(f"Circuit breaker cooldown complete [{self.symbol}] — resuming")
-                self.state = BotState.RUNNING
-                await self._log_event(BotEventType.STARTED, "Auto-resumed after circuit breaker cooldown")
-            else:
-                return
-
-        if self.state != BotState.RUNNING:
-            return
-
         try:
-            # 1. Check circuit breakers (per-symbol + global portfolio)
-            account = await self.connector.get_account()
-            if not account.get("success"):
-                logger.error("Cannot get account info")
-                return
-            balance = account["data"]["balance"]
-
-            # Track peak balance for absolute drawdown detection (H3: 按账号分键)
-            await CircuitBreaker.update_peak_balance(self.redis, balance, account_login=self.account_login)
-
-            if await self._check_circuit_breakers(balance):
+            # 1. balance（风控回路已取账户并缓存；取数失败则早退，不拿陈旧余额算仓位）
+            balance = self._last_balance
+            if balance is None:
                 return
 
             # 1b. Multi-timeframe regime detection + HMM overlay
@@ -578,20 +580,18 @@ class BotEngine:
             if self.notifier:
                 await self._notify(self.notifier.send_error_alert(f"Bot engine error: {e}"))
 
-    async def _check_circuit_breakers(self, balance: float) -> bool:
-        """Check per-symbol and global circuit breakers. Returns True if trading should stop."""
+    async def _check_circuit_breakers(self, balance: float, equity: float | None = None) -> bool:
+        """Check per-symbol and global circuit breakers. Returns True if trading should stop.
+
+        ``equity`` = 余额 + 浮动盈亏；传入时追加日内 equity 回撤检查
+        （浮动亏损对纯已实现检查是隐形的，ai_autonomous 实盘下尤其关键）。
+        """
         import asyncio as _asyncio
 
         # 全局熔断的作用域 = 在线引擎集合（含经 /symbols 热重载加入的
         # DB 管理品种），而非遗留的 SYMBOLS 环境变量列表 —— 仅按 env 作用域
         # 会让 UI 新增的品种静默失去组合级回撤保护。
-        manager = self._manager
-        if manager is not None and manager.engines:
-            all_symbols = list(manager.engines.keys())
-        else:
-            from app.config import SYMBOL_PROFILES
-
-            all_symbols = [s for s, p in SYMBOL_PROFILES.items() if "canonical" not in p] or settings.symbol_list
+        all_symbols = await CircuitBreaker.get_active_symbols(self._manager)
         symbol_triggered, global_triggered = await _asyncio.gather(
             self.circuit_breaker.is_triggered(balance),
             CircuitBreaker.is_global_triggered(self.redis, all_symbols, balance, account_login=self.account_login),
@@ -631,7 +631,74 @@ class BotEngine:
                 )
             return True
 
+        # Intraday equity drawdown（含浮动盈亏）—— 纯已实现检查拦不住
+        # "持仓浮亏"型回撤；任何交易模式下都必须检查。
+        if equity is not None and settings.max_equity_drawdown > 0:
+            equity_halted, eq_ref = await CircuitBreaker.is_equity_drawdown_halted(
+                self.redis,
+                equity,
+                settings.max_equity_drawdown,
+                account_login=self.account_login,
+                symbol=self.symbol,
+            )
+            if equity_halted:
+                self.state = BotState.PAUSED
+                await self._log_event(
+                    BotEventType.CIRCUIT_BREAKER,
+                    f"Equity intraday drawdown: equity={equity:.2f}, ref={eq_ref:.2f} — trading halted",
+                )
+                if self.notifier:
+                    await self._notify(
+                        self.notifier.send_error_alert(
+                            f"🛑 EQUITY DRAWDOWN HALT: equity {equity:.2f} is >{settings.max_equity_drawdown:.0%} below today's peak {eq_ref:.2f}"
+                        )
+                    )
+                return True
+
         return False
+
+    async def _run_risk_gate(self) -> bool:
+        """账户级风控回路：任何交易模式下每周期运行一次。
+
+        - 刷新峰值余额/当日峰值 equity
+        - 检查分品种/全局/绝对回撤/equity 回撤 → 触发则置 PAUSED（返回 True）
+        - PAUSED 且冷却期满 → 自动恢复 RUNNING
+
+        ai_autonomous 下 process_candle 不执行，由 scheduler 单独驱动本方法，
+        保证实盘 AI 交易同样被账户级熔断保护（此前仅 validate_order 单点防线）。
+
+        只在 RUNNING/PAUSED 下生效：STOPPED/ERROR 引擎不参与熔断状态机，
+        避免用户停掉的机器人被冷却恢复自动复活。
+        """
+        if self.state not in (BotState.RUNNING, BotState.PAUSED):
+            return False
+        try:
+            account = await self.connector.get_account()
+            if not account.get("success"):
+                logger.error("Cannot get account info")
+                self._last_balance = None
+                return False
+            balance = account["data"]["balance"]
+            equity = balance + account["data"].get("profit", 0)
+            self._last_balance = balance
+            self._last_equity = equity
+
+            # Track peak balance for absolute drawdown detection (H3: 按账号分键)
+            await CircuitBreaker.update_peak_balance(self.redis, balance, account_login=self.account_login)
+
+            if await self._check_circuit_breakers(balance, equity):
+                return True
+
+            # 未触发但处于 PAUSED（冷却期）→ 检查能否自动恢复
+            if self.state == BotState.PAUSED and await self.circuit_breaker.can_resume():
+                logger.info(f"Circuit breaker cooldown complete [{self.symbol}] — resuming")
+                self.state = BotState.RUNNING
+                await self._log_event(BotEventType.STARTED, "Auto-resumed after circuit breaker cooldown")
+            return False
+        except Exception as e:
+            logger.warning(f"Risk gate failed [{self.symbol}]: {e!r}")
+            self._last_balance = None
+            return False
 
     async def _generate_signal(self) -> tuple[int, str, pd.DataFrame] | None:
         """Fetch OHLCV, calculate strategy, apply MTF filter. Returns (signal, label, df) or None."""
@@ -958,6 +1025,46 @@ class BotEngine:
         comment = f"{self.strategy.name}"
         tag = "📝 PAPER" if self.paper_trade else ""
 
+        # 统一硬闸门：引擎通道也走同一 preflight（点差/并发/账户级日亏/
+        # equity 回撤/频率/间隔/SL-TP），与 AI/手动通道同一真相源 ——
+        # 此前引擎自营完全绕过 validate_order，点差/每小时/总持仓等闸门
+        # 对引擎单不生效（评审 R5）。
+        from app.services.order_preflight import preflight_order as _engine_pf
+
+        try:
+            _pf_result = await _engine_pf(
+                self.connector,
+                self.redis,
+                None,
+                symbol=self.symbol,
+                order_type=order_type,
+                lot=lot,
+                sl=sl_tp.sl,
+                tp=sl_tp.tp,
+                strict_symbol=False,
+                direction=order_type,
+                entry_price=entry_price,
+                account_login=self.account_login,
+                check_live_auth=False,  # 引擎自营通道由用户显式启动，不套 LLM 授权开关
+            )
+        except Exception as e:
+            _pf_result = None
+            logger.warning(f"Engine preflight failed [{self.symbol}]: {e!r}")
+
+        if _pf_result is not None and not _pf_result.ok:
+            await self._log_event(BotEventType.TRADE_BLOCKED, f"{order_type} blocked: {_pf_result.reason}")
+            await self._push_event(
+                "bot_event", {"type": "trade_blocked", "signal": signal_label, "reason": _pf_result.reason}
+            )
+            return
+        if _pf_result is not None:
+            lot = _pf_result.ctx.lot  # 卷格/微量 cap 后的一致性手数
+            if not self.paper_trade and _pf_result.ctx.rollout_mode in ("shadow", "paper"):
+                await self._log_event(
+                    BotEventType.TRADE_BLOCKED, f"{order_type} blocked: rollout={_pf_result.ctx.rollout_mode}"
+                )
+                return
+
         start_time = time.monotonic()
         if self.paper_trade:
             result = self._create_paper_order(order_type, lot, entry_price, sl_tp, comment)
@@ -1042,6 +1149,15 @@ class BotEngine:
             pre_trade_snapshot=snapshot,
         )
         await self._save_trade(trade)
+
+        # 频率/间隔计数（引擎通道此前不计数 —— 每小时 ≤5 / 间隔 ≥120s
+        # 闸门只覆盖 AI/手动通道，引擎自营漏计）
+        try:
+            from mcp_server.guardrails import TradingGuardrails
+
+            await TradingGuardrails(self.redis).record_order_opened()
+        except Exception as gr_err:
+            logger.warning(f"Guardrail order-opened record failed [{self.symbol}]: {gr_err!r}")
 
         await self._log_event(
             BotEventType.TRADE_OPENED,
@@ -1221,10 +1337,29 @@ class BotEngine:
             # Safety: if fetch returned empty but we have known positions, skip sync
             # (likely a timeout, not all positions actually closed)
             if not positions and len(self._known_tickets) > 0 and not self.paper_trade:
-                logger.warning(
-                    f"Position fetch returned empty but {len(self._known_tickets)} known — skipping sync (possible timeout)"
-                )
-                return
+                # 取回为空：可能是桥超时，也可能是真全部平仓。用 MT5 历史对账
+                # 区分 —— 确认已平的照常记账（日亏/连亏数据源不能因超时漏记），
+                # 其余按超时跳过。
+                try:
+                    history_result = await self.connector.get_history(days=1)
+                    if history_result.get("success"):
+                        hist_tickets = {d["ticket"] for d in history_result.get("data", [])}
+                        really_closed = self._known_tickets & hist_tickets
+                        if really_closed:
+                            await self._handle_closed_trades(really_closed)
+                            self._known_tickets -= really_closed
+                        if self._known_tickets:
+                            logger.warning(
+                                f"Position fetch empty but {len(self._known_tickets)} known still open — skipping sync (possible timeout)"
+                            )
+                        return
+                    logger.warning(
+                        f"Position fetch empty and history check failed — skipping sync (possible timeout)"
+                    )
+                    return
+                except Exception as e:
+                    logger.warning(f"Position fetch empty; history check failed — skipping sync: {e!r}")
+                    return
 
             # Always track ALL open positions (including manually opened ones)
             self._known_tickets = self._known_tickets | current_tickets
@@ -1279,7 +1414,7 @@ class BotEngine:
             # 此前 record_trade_result 无任何生产调用点，daily_pnl 恒 0，
             # 日亏 3% 熔断永不触发（broker 层 validate_order 也读不到真实值）。
             try:
-                await self.circuit_breaker.record_trade_result(profit)
+                await self.circuit_breaker.record_trade_result(profit, ticket=ticket)
             except Exception as cb_err:
                 logger.error(f"Circuit breaker record failed for {ticket}: {cb_err!r}")
 
@@ -1289,7 +1424,7 @@ class BotEngine:
                 from mcp_server.guardrails import TradingGuardrails
 
                 gr = TradingGuardrails(self.redis)
-                await gr.record_trade_closed(is_win=profit > 0)
+                await gr.record_trade_closed(is_win=profit > 0, ticket=ticket)
             except Exception as gr_err:
                 logger.error(f"Guardrail trade-closed record failed for {ticket}: {gr_err!r}")
 
@@ -1896,10 +2031,12 @@ class BotEngine:
     async def reconcile_positions(self):
         """Compare DB open trades with MT5 positions to detect orphans and phantoms.
 
-        Runs on the engine's shared session; a failed statement elsewhere in the
-        bot can abort that session's transaction (asyncpg: current transaction
-        is aborted). Retry once after a rollback so a poisoned session self-heals
-        instead of erroring every 5-minute reconciliation cycle.
+        使用隔离 session（async_session），不再共享引擎会话 —— 共享会话在
+        其它协程失败后会被毒化（asyncpg: current transaction is aborted），
+        造成每 5 分钟 reconcile 连环报错
+        （"This session is provisioning a new connection; concurrent
+        operations are not permitted"）。Retry once so transient DB errors
+        self-heal.
         """
         if self.paper_trade:
             return
@@ -1918,15 +2055,16 @@ class BotEngine:
             except Exception as e:
                 logger.error(f"Position reconciliation error [{self.symbol}]: {e}", exc_info=True)
                 return
-            finally:
-                try:
-                    await self.db.rollback()
-                except Exception as rb_err:
-                    logger.error(f"Reconcile rollback failed [{self.symbol}]: {rb_err!r}")
 
     async def _reconcile_once(self) -> None:
-        """Single reconciliation pass; DB errors propagate to the retry loop."""
+        """Single reconciliation pass; DB errors propagate to the retry loop.
+
+        整个流程跑在独立 `async_session` 上：并发 reconcile 不再毒化引擎的
+        共享会话，也不被引擎其它协程的失败连坐。
+        """
         from sqlalchemy import select
+
+        from app.db.session import async_session
 
         # 1. Get current MT5 positions
         positions = await self.executor.get_open_positions(self.symbol)
@@ -1934,101 +2072,104 @@ class BotEngine:
 
         # 2. Get DB trades that should be open (no close_time), scoped to this account (H4)
         account_login = getattr(self, "account_login", "0") or "0"
-        stmt = select(Trade).where(
-            Trade.symbol == self.symbol,
-            Trade.close_time.is_(None),
-            Trade.account_login == account_login,
-        )
-        result = await self.db.execute(stmt)
-        db_trades = result.scalars().all()
-        db_tickets = {t.ticket for t in db_trades}
+        async with async_session() as session:
+            stmt = select(Trade).where(
+                Trade.symbol == self.symbol,
+                Trade.close_time.is_(None),
+                Trade.account_login == account_login,
+            )
+            result = await session.execute(stmt)
+            db_trades = result.scalars().all()
+            db_tickets = {t.ticket for t in db_trades}
 
-        # 3. Orphan detection: in MT5 but not in DB → auto-adopt
-        orphans = mt5_tickets - db_tickets
-        if orphans:
-            pos_map = {p["ticket"]: p for p in positions}
-            adopted = []
-            for ticket in orphans:
-                p = pos_map.get(ticket)
-                if not p:
-                    continue
-                try:
-                    open_time = (
-                        datetime.fromisoformat(p["open_time"])
-                        if isinstance(p.get("open_time"), str)
-                        else _naive_utc()
-                    )
-                    trade = Trade(
-                        ticket=ticket,
-                        account_login=account_login,  # H4: orphan 归属当前账号
-                        symbol=self.symbol,
-                        type=p.get("type", "BUY"),
-                        lot=p.get("lot", 0.01),
-                        open_price=p.get("open_price", 0),
-                        sl=p.get("sl", 0),
-                        tp=p.get("tp", 0),
-                        open_time=open_time,
-                        strategy_name=p.get("comment", "adopted_from_mt5") or "adopted_from_mt5",
-                    )
-                    self.db.add(trade)
-                    await self.db.commit()
-                    adopted.append(ticket)
-                    logger.info(f"Auto-adopted orphan [{self.symbol}]: ticket={ticket}")
-                except Exception as e:
-                    logger.warning(f"Failed to adopt orphan {ticket}: {e}")
+            # 3. Orphan detection: in MT5 but not in DB → auto-adopt
+            orphans = mt5_tickets - db_tickets
+            if orphans:
+                pos_map = {p["ticket"]: p for p in positions}
+                adopted = []
+                for ticket in orphans:
+                    p = pos_map.get(ticket)
+                    if not p:
+                        continue
                     try:
-                        await self.db.rollback()
-                    except Exception as rb_err:
-                        logger.error(f"Adopt-orphan rollback failed [{self.symbol}]: {rb_err!r}")
+                        open_time = (
+                            datetime.fromisoformat(p["open_time"])
+                            if isinstance(p.get("open_time"), str)
+                            else _naive_utc()
+                        )
+                        trade = Trade(
+                            ticket=ticket,
+                            account_login=account_login,  # H4: orphan 归属当前账号
+                            symbol=self.symbol,
+                            type=p.get("type", "BUY"),
+                            lot=p.get("lot", 0.01),
+                            open_price=p.get("open_price", 0),
+                            sl=p.get("sl", 0),
+                            tp=p.get("tp", 0),
+                            open_time=open_time,
+                            strategy_name=p.get("comment", "adopted_from_mt5") or "adopted_from_mt5",
+                        )
+                        session.add(trade)
+                        await session.commit()
+                        adopted.append(ticket)
+                        logger.info(f"Auto-adopted orphan [{self.symbol}]: ticket={ticket}")
+                    except Exception as e:
+                        logger.warning(f"Failed to adopt orphan {ticket}: {e}")
+                        try:
+                            await session.rollback()
+                        except Exception as rb_err:
+                            logger.error(f"Adopt-orphan rollback failed [{self.symbol}]: {rb_err!r}")
 
-            if adopted:
-                tickets_str = ", ".join(str(t) for t in sorted(adopted))
+                if adopted:
+                    tickets_str = ", ".join(str(t) for t in sorted(adopted))
+                    await self._log_event(
+                        BotEventType.ERROR,
+                        f"Auto-adopted orphaned positions: {tickets_str}",
+                    )
+                    if self.notifier:
+                        await self._notify(
+                            self.notifier._send(
+                                f"🔄 <b>Auto-adopted positions</b> [{self.symbol}]\n"
+                                f"Tickets: {tickets_str}\n"
+                                f"สร้าง record ใน DB ให้อัตโนมัติแล้ว"
+                            )
+                        )
+
+            # 4. Phantom detection: in DB but not in MT5
+            phantoms = db_tickets - mt5_tickets
+            if phantoms:
+                logger.warning(f"Phantom records [{self.symbol}]: {phantoms} (in DB, not in MT5)")
+                # Try to find close details from MT5 history
+                history_result = await self.connector.get_history(days=7)
+                history_deals = history_result.get("data", []) if history_result.get("success") else []
+                history_map = {d["ticket"]: d for d in history_deals}
+
+                for trade in db_trades:
+                    if trade.ticket not in phantoms:
+                        continue
+                    deal = history_map.get(trade.ticket)
+                    if deal:
+                        trade.close_price = deal["price"]
+                        trade.close_time = (
+                            datetime.fromisoformat(deal["time"]).replace(tzinfo=None)
+                            if deal.get("time")
+                            else _naive_utc()
+                        )
+                        trade.profit = deal.get("profit", 0)
+                        logger.info(
+                            f"Reconciled phantom #{trade.ticket}: closed @ {trade.close_price}, profit={trade.profit}"
+                        )
+                    else:
+                        # 不在 7 日历史 = 无法确认已平。此前在此处擅自标
+                        # 平仓 + profit=0，把仍真实持仓的单误标为已平，导致
+                        # DB 与 MT5 分叉（2026-09-19 GOLD 4 笔被误标实证）。
+                        # 保守处理：保持开仓状态，等下一次对账/真实平仓落账。
+                        logger.warning(
+                            f"Phantom #{trade.ticket}: not confirmed closed in 7-day history — leaving open"
+                        )
+
+                await session.commit()
                 await self._log_event(
                     BotEventType.ERROR,
-                    f"Auto-adopted orphaned positions: {tickets_str}",
+                    f"Phantom records reconciled: {phantoms}",
                 )
-                if self.notifier:
-                    await self._notify(
-                        self.notifier._send(
-                            f"🔄 <b>Auto-adopted positions</b> [{self.symbol}]\n"
-                            f"Tickets: {tickets_str}\n"
-                            f"สร้าง record ใน DB ให้อัตโนมัติแล้ว"
-                        )
-                    )
-
-        # 4. Phantom detection: in DB but not in MT5
-        phantoms = db_tickets - mt5_tickets
-        if phantoms:
-            logger.warning(f"Phantom records [{self.symbol}]: {phantoms} (in DB, not in MT5)")
-            # Try to find close details from MT5 history
-            history_result = await self.connector.get_history(days=7)
-            history_deals = history_result.get("data", []) if history_result.get("success") else []
-            history_map = {d["ticket"]: d for d in history_deals}
-
-            for trade in db_trades:
-                if trade.ticket not in phantoms:
-                    continue
-                deal = history_map.get(trade.ticket)
-                if deal:
-                    trade.close_price = deal["price"]
-                    trade.close_time = (
-                        datetime.fromisoformat(deal["time"]).replace(tzinfo=None)
-                        if deal.get("time")
-                        else _naive_utc()
-                    )
-                    trade.profit = deal.get("profit", 0)
-                    logger.info(
-                        f"Reconciled phantom #{trade.ticket}: closed @ {trade.close_price}, profit={trade.profit}"
-                    )
-                else:
-                    trade.close_time = _naive_utc()
-                    trade.profit = 0
-                    logger.warning(
-                        f"Reconciled phantom #{trade.ticket}: not found in 7-day history, marked closed with profit=0"
-                    )
-
-            await self.db.commit()
-            await self._log_event(
-                BotEventType.ERROR,
-                f"Phantom records reconciled: {phantoms}",
-            )
