@@ -21,8 +21,23 @@ class TestBotEngine:
             redis_client=redis_client,
             symbol="GOLD",
         )
-        engine.paper_trade = True
         return engine
+
+    async def test_default_attributes_initialized(self, engine):
+        """Regression: 7f5ed99 曾把属性初始化并入 set_account_login()，普通构造
+        路径拿不到默认属性（构造后不调用 set_account_login）。"""
+        assert engine.paper_trade is settings.paper_trade
+        assert engine.fixed_lot is None
+        assert engine.trailing_stop_enabled is True
+        assert engine.started_at is None
+        assert engine.last_signal_time is None
+        assert engine._position_atr == {}
+        assert engine._paper_positions == []
+        assert engine.account_login == "0"
+        # get_status / sync_positions 不应因缺属性抛 AttributeError
+        status = engine.get_status()
+        assert status["paper_trade"] == settings.paper_trade
+        assert status["fixed_lot"] is None
 
     async def test_initial_state(self, engine):
         assert engine.state == BotState.STOPPED
@@ -81,6 +96,7 @@ class TestBotEngine:
 
     async def test_paper_trade_mode(self, engine, make_ohlcv_df):
         """Paper trade should create virtual positions without calling real connector."""
+        engine.paper_trade = True
         await engine.start()
         # Skip warmup
         engine.started_at = datetime.now(UTC) - timedelta(hours=3)

@@ -294,6 +294,8 @@ class BotManager:
             engine._scheduler = self._scheduler
         if symbol in self._paper_trade_overrides:
             engine.paper_trade = self._paper_trade_overrides[symbol]
+        # H4: 新建引擎同步当前账号，避免 reload 后翻回默认 "0"
+        engine.set_account_login(self.current_account_login)
         return engine
 
     async def reload_engines(self) -> dict:

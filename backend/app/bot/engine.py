@@ -221,15 +221,6 @@ class BotEngine:
         self.account_login: str = "0"
         self._known_tickets: set[int] = set()  # Track open tickets for close detection
 
-    def set_account_login(self, account_login: str) -> None:
-        """更新所属 MT5 账号，并重建 circuit_breaker（H3：key 带账号维度）。
-
-        切换服务（manager.set_current_account）调用：风控状态随账号隔离，
-        不把新账号的日损/回撤算到旧账号头上。
-        """
-        self.account_login = account_login or "0"
-        self.circuit_breaker = CircuitBreaker(self.redis, self.symbol, account_login=self.account_login)
-
         # Lot sizing mode: None = auto (AI/Kelly/risk-based), float = fixed lot
         self.fixed_lot: float | None = None
 
@@ -258,6 +249,15 @@ class BotEngine:
         self._position_breakeven: set[int] = set()  # tickets moved to breakeven
         self.started_at: datetime | None = None
         self.last_signal_time: datetime | None = None
+
+    def set_account_login(self, account_login: str) -> None:
+        """更新所属 MT5 账号，并重建 circuit_breaker（H3：key 带账号维度）。
+
+        切换服务（manager.set_current_account）调用：风控状态随账号隔离，
+        不把新账号的日损/回撤算到旧账号头上。
+        """
+        self.account_login = account_login or "0"
+        self.circuit_breaker = CircuitBreaker(self.redis, self.symbol, account_login=self.account_login)
 
     def apply_profile(self, profile: dict) -> None:
         """Update engine + risk manager params from a profile dict (hot-reload path)."""
