@@ -315,6 +315,13 @@ class Settings(BaseSettings):
     # 国内网络 huggingface.co 模型端点常被阻断，部署侧显式设 HF_ENDPOINT=https://hf-mirror.com。
     laya_hf_endpoint: str = ""
 
+    # Trade Gate 「可否交易」门控（Phase 3.8 落地，默认关闭）
+    # LightGBM 二分类（由 scripts/laya_synth_baseline.py --save 训练，AUC≈0.739）。
+    # 在每笔交易前检查当前 OHLCV 状态是否值得开仓（can_trade 概率 ≥ 阈值）；不通过则拒绝。
+    # 默认 False：模型文件缺失时引擎照常运行（gate.is_ready=False → 放行）。
+    trade_gate_enabled: bool = False
+    trade_gate_model_path: str = "models/trade_gate.pkl"
+
     # Runner
     runner_backend: str = "process"  # "process" or "docker"
     docker_host: str = ""  # e.g. "tcp://vps:2376" for remote Docker

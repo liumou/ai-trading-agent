@@ -207,6 +207,8 @@ class BotEngine:
             target_r_multiple=profile.get("target_r_multiple"),
         )
         self.sentiment_analyzer: NewsSentimentAnalyzer | None = None
+        # Trade Gate 「可否交易」门控（Phase 3.8）：懒加载，默认关闭。
+        self._trade_gate = None  # TradeGate | None
         self.context_builder = AIContextBuilder(db_session)
         self._ai_context: dict | None = None  # Cached context, refreshed with sentiment
         self._optimizer = None
@@ -795,6 +797,33 @@ class BotEngine:
             self.executor.get_open_positions(self.symbol),
             self.circuit_breaker.get_daily_pnl(),
         )
+
+        # Trade Gate 「可否交易」门控（Phase 3.8，默认关闭）。
+        # 用当前 OHLCV 状态判断是否值得开仓；不通过则 blocked。
+        # 默认关闭 / 模型缺失 / OHLCV 不可用 → 放行（gate 是辅助过滤，不作为硬闸门）。
+        if settings.trade_gate_enabled:
+            try:
+                if self._trade_gate is None:
+                    from app.ml.trade_gate import TradeGate
+
+                    self._trade_gate = TradeGate(settings.trade_gate_model_path)
+                if self._trade_gate.is_ready:
+                    ohlcv = await self.market_data.get_ohlcv(self.symbol, self.timeframe, 200)
+                    if ohlcv is not None and len(ohlcv) > 60:
+                        can_trade, gate_prob = self._trade_gate.predict(ohlcv)
+                        if not can_trade:
+                            reason = (
+                                f"TradeGate blocked: current state not favorable for entry "
+                                f"(can_trade_prob={gate_prob:.3f})"
+                            )
+                            logger.info(f"Trade blocked: {reason}")
+                            await self._log_event(BotEventType.TRADE_BLOCKED, f"{signal_label} blocked: {reason}")
+                            await self._push_event(
+                                "bot_event", {"type": "trade_blocked", "signal": signal_label, "reason": reason}
+                            )
+                            return False
+            except Exception as e:  # gate 故障降级为放行（不阻断交易）
+                logger.warning(f"TradeGate check failed, allowing trade: {e}")
 
         trade_patterns = None
         if self._ai_context:
