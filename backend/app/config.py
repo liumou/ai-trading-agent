@@ -317,6 +317,26 @@ class Settings(BaseSettings):
     # HF 下载端点（C10：默认空=用官方 huggingface.co 或环境变量 HF_ENDPOINT）。
     # 国内网络 huggingface.co 模型端点常被阻断，部署侧显式设 HF_ENDPOINT=https://hf-mirror.com。
     laya_hf_endpoint: str = ""
+    # Laya 6 问交易判定门（Phase 3.x，veto-only 收紧层，默认关闭）。
+    # laya_gate_shadow=True：laya 判定与 LLM 并行跑、只记录不拦截（影子验证）。
+    # laya_gate_enforce=False：enforce 阶段 laya 判定参与拦截（须一致率达标后手动开启）。
+    # laya_gate_confidence_threshold：max-class 概率刻度（非熵置信度；JEV 0.55 作用于熵
+    #   刻度不可照搬——外部评审 H5），低置信/畸形一律 ESCALATE 交 LLM。
+    laya_gate_shadow: bool = False
+    laya_gate_enforce: bool = False
+    laya_gate_confidence_threshold: float = 0.6
+    # 灰度放行比例（0-100，Phase 4 用）：enforce 开启后按此比例抽样生效，
+    # 增量灰度 shadow → 10% → 50% → 100%，每档 ≥1 周；enforce=False 即 kill switch。
+    laya_gate_rollout_pct: int = 0
+    # 6 问推理超时（冷加载在 warmup 处理，这里只防 predict 卡死）
+    laya_gate_predict_timeout_s: float = 30.0
+    # engine 开仓侧观测开关（Phase 4，只观测不改行为）。
+    # True（用户 2026-09-22 批准打开）：每次开仓许可检查都让 laya 看同一份
+    #   行情/账户状态并记录「laya vs TradeGate+确定性链」分歧
+    #   （laya_engine_observations 专表）。
+    # 与 trade_gate_* / laya_gate_enforce 无关：本阶段不建 gate、不拦截、
+    # 不重复现有 shadow/enforce 结构；laya 故障只留痕 UNAVAILABLE。
+    laya_gate_engine_shadow: bool = True
 
     # Trade Gate 「可否交易」门控（Phase 3.8 落地，默认关闭）
     # LightGBM 二分类（由 scripts/laya_synth_baseline.py --save 训练，AUC≈0.739 —— 待 purge-gap）。

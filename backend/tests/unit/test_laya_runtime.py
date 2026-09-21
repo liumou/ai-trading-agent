@@ -9,6 +9,8 @@ Laya 决策引擎集成测试（Phase: laya integration）。
 5. laya_sentiment_choice 真实路径（label 白名单、异常降级）——C3 覆盖缺口修复
 """
 
+import asyncio
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -414,3 +416,152 @@ class TestRealLayaAPI:
         # confidence 是最大类概率，应接近 probabilities 中最高值
         assert result["confidence"] == max(result["probabilities"].values())
         assert set(result["probabilities"].keys()) == SENTIMENT_LABELS
+
+
+class TestPredictChoicesBatch:
+    """Phase 3.1：单次前向批处理多问（评审 M1）——6 问一次 predict，不逐个 predict_choice。"""
+
+    async def test_batch_parses_all_questions(self):
+        with (
+            patch("app.ai.laya_runtime.settings") as mock_settings,
+            patch("app.ai.laya_runtime._LAYA_IMPORT_OK", True),
+        ):
+            mock_settings.laya_enabled = True
+            await self._assert_batch_parses()
+
+    async def _assert_batch_parses(self):
+        rt = LayaRuntime()
+        rt.predict = AsyncMock(return_value={
+            "answers": {
+                "risk_check": {
+                    "type": "choice", "choice": "clear",
+                    "probabilities": {"clear": 0.8, "caution": 0.1, "block": 0.05, "insufficient": 0.05},
+                    "confidence": 0.5,
+                },
+                "entry_decision": {
+                    "type": "choice", "choice": "pass",
+                    "probabilities": {"pass": 0.7, "reject": 0.3},
+                    "confidence": 0.5,
+                },
+            }
+        })
+        questions = {
+            "risk_check": {"type": "choice", "criteria": {}},
+            "entry_decision": {"type": "choice", "criteria": {}},
+        }
+        out = await rt.predict_choices({"symbol": "GOLD"}, questions)
+        assert out["risk_check"]["label"] == "clear"
+        assert out["risk_check"]["confidence"] == 0.8
+        assert out["entry_decision"]["label"] == "pass"
+        rt.predict.assert_awaited_once()  # 单次前向，非每问一次
+
+    async def test_batch_single_malformed_sets_none(self):
+        with (
+            patch("app.ai.laya_runtime.settings") as mock_settings,
+            patch("app.ai.laya_runtime._LAYA_IMPORT_OK", True),
+        ):
+            mock_settings.laya_enabled = True
+            await self._assert_batch_single_malformed()
+
+    async def _assert_batch_single_malformed(self):
+        rt = LayaRuntime()
+        rt.predict = AsyncMock(return_value={
+            "answers": {
+                "risk_check": {"type": "choice", "choice": "clear",
+                               "probabilities": {"clear": 1.0}, "confidence": 0.5},
+                # entry_decision 缺 answer
+            }
+        })
+        questions = {
+            "risk_check": {"type": "choice", "criteria": {}},
+            "entry_decision": {"type": "choice", "criteria": {}},
+        }
+        out = await rt.predict_choices({"symbol": "GOLD"}, questions)
+        assert out["risk_check"] is not None
+        assert out["entry_decision"] is None  # 畸形单问不拖垮其他问
+
+
+class TestPredictChoiceValidation:
+    """Phase 3.1：JEV 级校验补齐（外部评审 H3）。"""
+
+    async def test_probabilities_keyset_mismatch_falls_back(self):
+        rt = LayaRuntime()
+        rt.predict = AsyncMock(return_value={
+            "answers": {
+                "sentiment": {
+                    "type": "choice", "choice": "bearish",
+                    "probabilities": {"bearish": 1.0},  # 缺 bullish/neutral
+                    "confidence": 0.5,
+                }
+            }
+        })
+        result = await rt.predict_choice(
+            {"symbol": "GOLD"}, "sentiment", {"type": "choice"},
+            allowed_labels={"bullish", "bearish", "neutral"},
+        )
+        assert result is None  # 键集不完整 → 畸形回退
+
+    async def test_probabilities_sum_mismatch_falls_back(self):
+        rt = LayaRuntime()
+        rt.predict = AsyncMock(return_value={
+            "answers": {
+                "sentiment": {
+                    "type": "choice", "choice": "bearish",
+                    "probabilities": {"bullish": 0.2, "bearish": 0.5, "neutral": 0.2},  # sum=0.9
+                    "confidence": 0.5,
+                }
+            }
+        })
+        result = await rt.predict_choice(
+            {"symbol": "GOLD"}, "sentiment", {"type": "choice"},
+            allowed_labels={"bullish", "bearish", "neutral"},
+        )
+        assert result is None
+
+    async def test_non_finite_probability_falls_back(self):
+        rt = LayaRuntime()
+        rt.predict = AsyncMock(return_value={
+            "answers": {
+                "sentiment": {
+                    "type": "choice", "choice": "bearish",
+                    "probabilities": {"bullish": float("nan"), "bearish": 0.5, "neutral": 0.5},
+                    "confidence": 0.5,
+                }
+            }
+        })
+        result = await rt.predict_choice(
+            {"symbol": "GOLD"}, "sentiment", {"type": "choice"},
+            allowed_labels={"bullish", "bearish", "neutral"},
+        )
+        assert result is None  # NaN 下 choice==argmax 防御可能意外放行 → 必须回退
+
+    async def test_label_outside_allowed_falls_back(self):
+        rt = LayaRuntime()
+        rt.predict = AsyncMock(return_value={
+            "answers": {
+                "sentiment": {
+                    "type": "choice", "choice": "positive",
+                    "probabilities": {"positive": 1.0},
+                    "confidence": 0.5,
+                }
+            }
+        })
+        result = await rt.predict_choice(
+            {"symbol": "GOLD"}, "sentiment", {"type": "choice"},
+            allowed_labels={"bullish", "bearish", "neutral"},
+        )
+        assert result is None
+
+
+class TestPredictTimeoutWarmup:
+    """Phase 3.1：predict 超时 + 启动预热（评审 H3/H4）。"""
+
+    def _ready_runtime(self) -> LayaRuntime:
+        rt = LayaRuntime()
+        rt._available = True  # available 是只读 property，用内部状态模拟就绪
+        # available property 先检查 settings.laya_enabled 与 _LAYA_IMPORT_OK，
+        # 测试环境未装 laya / 默认关闭，需 patch 两者让 available 短路为 True
+        return rt
+
+
+

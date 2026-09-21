@@ -291,6 +291,72 @@ class OrderAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class ManualShadowReview(Base):
+    """Laya 影子评审明细表（Phase 3.3，影子报表聚合用）。
+
+    评审 validation.md §1.4：影子明细进专表（order_audits.review 是 JSON 列，
+    聚合查询慢），order_audits.review 只加 review["laya"] 摘要（additive）。
+    每行 = 一笔 manual 单的 laya vs LLM 双路判定；agreement / dangerous_divergence
+    为报表聚合预计算列。
+    """
+
+    __tablename__ = "manual_shadow_reviews"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    audit_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    account_login: Mapped[str] = mapped_column(String(32), default="0", server_default="0")
+    symbol: Mapped[str] = mapped_column(String(20), default="", server_default="")
+    laya_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)  # APPROVED/CAUTION/REJECTED/ESCALATE/UNAVAILABLE
+    laya_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    laya_reasons: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    laya_checks: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    laya_answers: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    llm_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    llm_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agreement: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # laya==llm（ESCALATE/UNAVAILABLE 视为不一致）
+    dangerous_divergence: Mapped[bool] = mapped_column(Boolean, default=False)  # laya APPROVED & llm REJECTED
+    laya_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    fallback_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    state_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 离线回放/分歧复核用
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class LayaEngineObservation(Base):
+    """engine 开仓侧 laya 影子观测表（Phase 4，只观测不改行为）。
+
+    phase4-observation.md：engine 路径无 LLM 判定参照，观测对象是
+    「laya vs TradeGate+确定性链」分歧率。每行 = 一次开仓许可检查：
+    chain（TradeGate can_trade/prob + 最终 allowed）与 laya 6 问判定两侧都记录，
+    divergence_gate / divergence_final 为报表聚合预计算列。
+    观测写入 best-effort：失败只记日志，绝不影响交易路径。
+    """
+
+    __tablename__ = "laya_engine_observations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), default="", server_default="")
+    timeframe: Mapped[str] = mapped_column(String(20), default="", server_default="")
+    signal_label: Mapped[str] = mapped_column(String(50), default="", server_default="")
+    signal: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1/0/-1
+    balance: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    # 现有链路侧
+    chain_can_trade: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # None=弃权/未评估
+    chain_prob: Mapped[float | None] = mapped_column(Float, nullable=True)
+    allowed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # _check_trade_permission 最终
+    # laya 侧
+    laya_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    laya_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    laya_reasons: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    laya_checks: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    laya_answers: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 分歧分类（gate=TradeGate 口径，final=含确定性链口径）
+    divergence_gate: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    divergence_final: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    laya_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    state_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 离线复核/回放用
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
 # ─── Secrets Vault ────────────────────────────────────────────────────────────
 
 

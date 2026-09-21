@@ -810,6 +810,50 @@ class BotEngine:
         recent_wr_prefetched: float | None = None,
         df: pd.DataFrame | None = None,
     ) -> bool:
+        """开仓许可检查（Phase 4 观测包装）。
+
+        保持原签名与返回值不变；额外启动 laya 影子观测器（只记录、零副作用）：
+        - 观测器与 inner 的确定性检查并行，positions/daily_pnl 与 TradeGate
+          判定由 inner 注入，等最终结果后 best-effort 落库。
+        - laya 故障/超时/未启用绝不改变返回结果（H-3 影子非干扰性）。
+        """
+        from app.ai.laya_engine_observation import start_engine_observation
+
+        obs = start_engine_observation(
+            symbol=self.symbol,
+            timeframe=self.timeframe,
+            signal=signal,
+            signal_label=signal_label,
+            balance=balance,
+            df=df,
+            recent_wr=recent_wr_prefetched,
+        )
+        allowed: bool | None = None
+        try:
+            allowed = await self._check_trade_permission_inner(
+                signal,
+                signal_label,
+                balance,
+                ai_sentiment,
+                recent_wr_prefetched=recent_wr_prefetched,
+                df=df,
+                _engine_obs=obs,
+            )
+            return allowed
+        finally:
+            if obs is not None:
+                obs.finish(allowed)
+
+    async def _check_trade_permission_inner(
+        self,
+        signal: int,
+        signal_label: str,
+        balance: float,
+        ai_sentiment: dict | None,
+        recent_wr_prefetched: float | None = None,
+        df: pd.DataFrame | None = None,
+        _engine_obs=None,
+    ) -> bool:
         """Check risk limits, portfolio exposure, and correlation conflicts. Returns True if allowed."""
         import asyncio as _asyncio
 
@@ -817,6 +861,8 @@ class BotEngine:
             self.executor.get_open_positions(self.symbol),
             self.circuit_breaker.get_daily_pnl(),
         )
+        if _engine_obs is not None:
+            _engine_obs.set_account(positions, daily_pnl)
 
         # Trade Gate 「可否交易」门控（Phase 3.8 落地）。
         # 用 OHLCV 状态判断是否值得开仓；shadow 记录 / enforce 否决。
@@ -837,6 +883,8 @@ class BotEngine:
                     if ohlcv is not None and len(ohlcv) > 1:
                         gate_df = ohlcv.iloc[:-1]
                         can_trade, gate_prob = self._trade_gate.predict(gate_df)
+                        if _engine_obs is not None:
+                            _engine_obs.set_chain(can_trade, gate_prob)
                         if can_trade is None:
                             # 弃权（数据不足/模型故障）：影子记录，绝不阻断
                             logger.info(f"TradeGate abstained (data insufficient) on {signal_label}")

@@ -16,7 +16,7 @@ laya 是「非自回归单次前向的结构化判定引擎」（choice / score 
 import asyncio
 import os
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Collection, Dict, Optional
 
 from loguru import logger
 
@@ -84,14 +84,29 @@ class LayaRuntime:
                 raise RuntimeError(f"laya load failed: {e}") from e
             return self._agent
 
-    async def predict(self, state: Any, questions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """异步推理：包到线程池，避免阻塞事件循环。不可用时抛 RuntimeError 由调用方降级。"""
+    async def predict(
+        self, state: Any, questions: Dict[str, Dict[str, Any]], *, timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """异步推理：包到线程池，避免阻塞事件循环。不可用时抛 RuntimeError 由调用方降级。
+
+        timeout：秒（可选）。冷加载 ~136s 与异常卡死不得拖垮请求路径——
+        传入 wait_for 让调用方能按预算失败并降级（评审 H3）。
+        """
         if not self.available:
             raise RuntimeError("laya unavailable")
-        return await asyncio.to_thread(self._predict_sync, state, questions)
+        coro = asyncio.to_thread(self._predict_sync, state, questions)
+        if timeout is not None:
+            coro = asyncio.wait_for(coro, timeout)
+        return await coro
 
     async def predict_choice(
-        self, state: Any, question_key: str, question: Dict[str, Any]
+        self,
+        state: Any,
+        question_key: str,
+        question: Dict[str, Any],
+        *,
+        allowed_labels: Optional[Collection[str]] = None,
+        timeout: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """异步 choice 推理并安全解析返回（label 白名单 + confidence 类型收窄）。
 
@@ -104,35 +119,129 @@ class LayaRuntime:
         **所选类别的最大类概率**（阈值判断的自然语义），原熵置信度保留为 entropy_confidence。
         """
         try:
-            result = await self.predict(state, {question_key: question})
+            result = await self.predict(state, {question_key: question}, timeout=timeout)
             ans = result["answers"][question_key]
-            label = str(ans["choice"])
-            probabilities = ans.get("probabilities", {})
-            if not isinstance(probabilities, dict) or not probabilities:
-                logger.warning(f"[laya] {question_key} returned empty probabilities")
-                return None
-            # 最大类概率 = 模型对所选类别的把握（用于预筛阈值判断）
-            max_prob = float(max(probabilities.values()))
-            # 防御（M2）：choice 必须等于 argmax，否则 confidence 与 label 错位。
-            # 实测 laya 0.3.4 返回 choice=argmax；若异常输出不一致（choice 非最高概率类），
-            # 视为低置信畸形结果，交由调用方降级——绝不把错位 confidence 传给阈值判断。
-            choice_prob = float(probabilities.get(label, 0.0))
-            if choice_prob < max_prob - 1e-9:
-                logger.warning(
-                    f"[laya] {question_key} choice {label!r} != argmax (prob {choice_prob:.3f} < {max_prob:.3f}), "
-                    f"treating as low-confidence"
-                )
-                return None
-            # laya 原生熵置信度（保留参考）
-            entropy_conf = float(ans.get("confidence", 0.0))
+            return self._parse_choice(ans, question_key, allowed_labels=allowed_labels)
         except Exception as e:
             logger.warning(f"[laya] {question_key} inference failed: {e}")
             return None
+
+    async def predict_choices(
+        self,
+        state: Any,
+        questions: Dict[str, Dict[str, Any]],
+        *,
+        allowed_labels: Optional[Dict[str, Collection[str]]] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """单次前向批处理多问 choice（评审 M1：6 问逐个 predict_choice 是 6 次前向 1.2-3s）。
+
+        返回 {question_key: parsed_or_None}——单问畸形/失败只置 None，不影响其他问；
+        调用方（收敛器）对畸形问整体 ESCALATE。
+        """
+        if not self.available:
+            raise RuntimeError("laya unavailable")
+        result = await self.predict(state, questions, timeout=timeout)
+        answers = result.get("answers", {}) if isinstance(result, dict) else {}
+        out: Dict[str, Optional[Dict[str, Any]]] = {}
+        for key, question in questions.items():
+            ans = answers.get(key) if isinstance(answers, dict) else None
+            if not isinstance(ans, dict):
+                logger.warning(f"[laya] {key} missing answer")
+                out[key] = None
+                continue
+            labels = None
+            if allowed_labels:
+                labels = allowed_labels.get(key)
+            out[key] = self._parse_choice(ans, key, allowed_labels=labels)
+        return out
+
+    async def warmup(self, timeout: Optional[float] = None) -> bool:
+        """启动预热：冷加载（~136s）不得污染影子基线段（评审 H3/H4）。
+
+        返回是否成功；失败仅记日志（不崩溃），运行期首次 predict 再试。
+        """
+        try:
+            if not self.available:
+                return False
+            coro = asyncio.to_thread(self._load)
+            if timeout is not None:
+                coro = asyncio.wait_for(coro, timeout)
+            await coro
+            logger.info("[laya] warmup complete")
+            return True
+        except Exception as e:  # pragma: no cover - 依赖/网络/权重故障降级
+            logger.warning(f"[laya] warmup failed (will retry at predict): {e}")
+            return False
+
+    @staticmethod
+    def _parse_choice(
+        ans: Dict[str, Any],
+        question_key: str,
+        *,
+        allowed_labels: Optional[Collection[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """JEV 级 choice 解析与校验（外部评审 H3：对齐 QuantDinger 五项）。
+
+        校验链：label 白名单 → probabilities 键集完整 → sum≈1 → 数值 finite →
+        choice==argmax → confidence 收窄。任一失败返回 None（调用方降级）。
+        """
+        import math
+
+        label = ans.get("choice")
+        if label is None:
+            logger.warning(f"[laya] {question_key} missing choice")
+            return None
+        label = str(label)
+        if allowed_labels is not None and label not in allowed_labels:
+            logger.warning(f"[laya] {question_key} label {label!r} not in allowed set")
+            return None
+
+        probabilities = ans.get("probabilities", {})
+        if not isinstance(probabilities, dict) or not probabilities:
+            logger.warning(f"[laya] {question_key} returned empty probabilities")
+            return None
+        try:
+            probs = {str(k): float(v) for k, v in probabilities.items()}
+        except (TypeError, ValueError):
+            logger.warning(f"[laya] {question_key} probabilities not numeric")
+            return None
+        # 键集完整（与 label 候选对齐时）
+        if allowed_labels is not None and set(probs.keys()) != set(allowed_labels):
+            logger.warning(
+                f"[laya] {question_key} probabilities keys {sorted(probs)} != allowed {sorted(allowed_labels)}"
+            )
+            return None
+        # finite + [0,1]
+        if any(not math.isfinite(v) or not (0.0 <= v <= 1.0) for v in probs.values()):
+            logger.warning(f"[laya] {question_key} probabilities out of range")
+            return None
+        # sum ≈ 1（容差 1e-2，QuantDinger 用 1e-3；宽松避免 fp 误差）
+        if abs(sum(probs.values()) - 1.0) > 1e-2:
+            logger.warning(
+                f"[laya] {question_key} probabilities sum {sum(probs.values()):.4f} != 1"
+            )
+            return None
+
+        max_prob = float(max(probs.values()))
+        # choice 必须是 argmax（M2 防御）
+        choice_prob = float(probs.get(label, 0.0))
+        if choice_prob < max_prob - 1e-9:
+            logger.warning(
+                f"[laya] {question_key} choice {label!r} != argmax (prob {choice_prob:.3f} < {max_prob:.3f}), "
+                f"treating as low-confidence"
+            )
+            return None
+        # 原生熵置信度（保留参考，非判定依据）
+        try:
+            entropy_conf = float(ans.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            entropy_conf = 0.0
         return {
             "label": label,
             "confidence": max_prob,
             "entropy_confidence": entropy_conf,
-            "probabilities": probabilities,
+            "probabilities": probs,
         }
 
     def _predict_sync(self, state: Any, questions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:

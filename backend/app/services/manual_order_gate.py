@@ -167,6 +167,10 @@ class ManualOrderGate:
             await self._ai_error_event(audit_id, f"LLM review crashed: {e!s:.200}")
 
     async def _review(self, audit_id: int, snapshot: dict):
+        # Laya 影子评审（veto-only，评审共识）：与 LLM 并行跑，只记录不拦截。
+        # laya 故障/超时绝不改变 LLM 路径结果（影子非干扰性，验证 H-3）。
+        laya_task = asyncio.create_task(self._laya_shadow_review(snapshot))
+
         # 超时只约束 LLM 调用本身 —— 不能包住执行段，否则「订单已成交但
         # 审计行被取消」会造成不可回滚的孤行。
         try:
@@ -199,7 +203,17 @@ class ManualOrderGate:
             return
         stored = dict(audit.review or {})
         stored["llm"] = verdict_data
+        # laya 影子结果（verdict/概率/收敛器/延迟）——laya 不可用时为 None 不写
+        try:
+            laya_review = await laya_task
+        except Exception as e:  # noqa: BLE001 - 影子任务绝不影响主判定
+            logger.warning(f"[laya] shadow task failed: {e}")
+            laya_review = None
+        if laya_review is not None:
+            stored["laya"] = laya_review
         await self._update_audit(audit_id, review=stored)
+        # 影子明细进专表（best-effort：失败只记日志，绝不影响主判定路径）
+        await self._persist_shadow_review(audit, snapshot, laya_review, verdict_data)
 
         if verdict == "REJECTED":
             reason = verdict_data.get("reasoning") or "AI review rejected the order"
@@ -218,6 +232,90 @@ class ManualOrderGate:
 
         # APPROVED → 执行前重验硬状态（评审 H-1：审查期间状态可能漂移）
         await self._execute_approved(audit_id, stored)
+
+    async def _laya_shadow_review(self, snapshot: dict) -> dict | None:
+        """Laya 6 问影子评审（veto-only 收紧层，只记录不拦截）。
+
+        - 返回 None：laya 未启用/不可用 → 跳过影子（不影响 LLM 路径）。
+        - 返回 dict：{engine:"laya", decision, confidence, reasons, checks, answers, latency_ms}
+          或 {engine:"laya", decision:"UNAVAILABLE", error, latency_ms}（故障留痕）。
+        - 永不抛错：调用方 await 后无须再防御（评审 H4 影子隔离）。
+        """
+        if not (settings.laya_gate_shadow or settings.laya_gate_enforce):
+            return None
+        try:
+            from app.ai.laya_gate import laya_gate_review
+
+            started = time.perf_counter()
+            review = await asyncio.wait_for(
+                laya_gate_review(snapshot, timeout=settings.laya_gate_predict_timeout_s),
+                timeout=settings.laya_gate_predict_timeout_s + 5.0,
+            )
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            if review is None:
+                return {"engine": "laya", "decision": "UNAVAILABLE", "latency_ms": latency_ms}
+            review["latency_ms"] = latency_ms
+            return review
+        except asyncio.TimeoutError:
+            logger.warning(f"[laya] shadow review timed out ({settings.laya_gate_predict_timeout_s}s)")
+            return {"engine": "laya", "decision": "UNAVAILABLE", "error": "timeout"}
+        except Exception as e:  # noqa: BLE001 - 影子故障只留痕
+            logger.warning(f"[laya] shadow review failed: {e}")
+            return {"engine": "laya", "decision": "UNAVAILABLE", "error": str(e)[:200]}
+
+    async def _persist_shadow_review(
+        self,
+        audit,
+        snapshot: dict,
+        laya_review: dict | None,
+        verdict_data: dict | None,
+    ) -> None:
+        """影子明细落 manual_shadow_reviews 专表（validation.md §1.4 存储设计）。
+
+        - laya 未跑（None）→ 跳过（不留半行）。
+        - agreement：laya 三值 verdict 与 LLM 三值相等；ESCALATE/UNAVAILABLE → None（不算一致）。
+        - dangerous_divergence：laya=APPROVED 且 LLM=REJECTED（唯一致命方向，零容忍指标）。
+        - state_snapshot：全量落库，供离线回放凑样本与分歧人工复核（评审 H-2）。
+        - best-effort：任何异常仅记日志——影子数据丢失不 blocker 主判定。
+        """
+        if laya_review is None or verdict_data is None:
+            return
+        try:
+            from app.db.models import ManualShadowReview
+            from app.db.session import async_session
+
+            laya_verdict = laya_review.get("decision")
+            llm_verdict = verdict_data.get("verdict")
+            agreement = None
+            if laya_verdict in _VERDICTS and isinstance(llm_verdict, str):
+                agreement = laya_verdict == llm_verdict
+            dangerous = bool(laya_verdict == "APPROVED" and llm_verdict == "REJECTED")
+            async with async_session() as session:
+                session.add(ManualShadowReview(
+                    audit_id=audit.id,
+                    account_login=str(audit.account_login or "0"),
+                    symbol=audit.symbol or "",
+                    laya_verdict=laya_verdict,
+                    laya_confidence=laya_review.get("confidence"),
+                    laya_reasons=laya_review.get("reasons"),
+                    laya_checks=laya_review.get("checks"),
+                    laya_answers=laya_review.get("answers"),
+                    llm_verdict=llm_verdict,
+                    llm_confidence=verdict_data.get("confidence"),
+                    agreement=agreement,
+                    dangerous_divergence=dangerous,
+                    laya_latency_ms=int(laya_review.get("latency_ms", 0)),
+                    fallback_reason=(
+                        str(laya_review.get("error"))[:100]
+                        if laya_review.get("decision") == "UNAVAILABLE"
+                        else None
+                    ),
+                    state_snapshot=snapshot,
+                ))
+                await session.commit()
+                logger.debug(f"[laya] shadow review persisted: audit={audit.id} laya={laya_verdict} llm={llm_verdict}")
+        except Exception as e:  # noqa: BLE001 - 影子数据 best-effort
+            logger.warning(f"[laya] shadow review persist failed (audit={audit.id}): {e}")
 
     def _normalize_verdict(self, raw: dict | None) -> dict | None:
         """verdict 白名单校验：缺失/大小写/同义词一律视为畸形（fail-closed）。"""
