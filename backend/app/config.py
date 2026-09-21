@@ -1,5 +1,7 @@
 import json
+from urllib.parse import urlparse
 
+from loguru import logger
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
@@ -302,7 +304,7 @@ class Settings(BaseSettings):
     # 非自回归单次前向的结构化判定引擎（choice/score/noul）。本项目用它做
     # 高频分类预筛（情绪三分类等），不替换 LLM 的深度决策/长文生成。
     # 默认 False：未装 laya 依赖 / 未下载模型权重时系统照常运行（try-import 降级）。
-    laya_enabled: bool = False
+    laya_enabled: bool = True
     # 模型标识：本地路径优先（缓存目录下），否则视为 HF repo id（走 HF_ENDPOINT 镜像）。
     laya_model: str = "convaiinnovations/laya"  # english 421M；多语言用 convaiinnovations/laya-multilingual(322M)
     # 分类预筛置信度阈值：laya 判定 confidence ≥ 阈值则直接采用；否则回退 LLM 深析。
@@ -359,7 +361,40 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",")]
+        """CORS 白名单（规范化后）。只保留形如 ``http(s)://host[:port]`` 的 origin。
+
+        显式过滤而不是原样透传：`CORS_ORIGINS` 里一个拼写错误（例如
+        ``http:/localhost:3000`` 少一个斜杠）会让该 origin 静默失效 —— 浏览器端
+        表现成每个预检请求都收到 `400 Disallowed CORS origin`，服务端日志只有
+        一行 "Disallowed CORS origin"，排查成本极高。这里丢弃非法条目并告警，
+        让配置错误在启动日志里就暴露。
+
+        ``*`` 原样保留：``auth._assert_auth_consistent()`` 依赖它出现在白名单里
+        来拒绝启动（通配符 + 携带凭据的 Cookie 违反 CORS 规范）。
+        """
+        origins: list[str] = []
+        for raw in self.cors_origins.split(","):
+            origin = raw.strip().rstrip("/")
+            if not origin:
+                continue
+            if origin == "*":
+                origins.append(origin)
+                continue
+            parsed = urlparse(origin)
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.netloc
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+            ):
+                logger.warning(
+                    f"CORS_ORIGINS entry ignored (expected http(s)://host[:port]): {raw.strip()!r}"
+                )
+                continue
+            if origin not in origins:
+                origins.append(origin)
+        return origins
 
     # Trusted Host header allowlist. Empty = allow all (dev). Set in prod to
     # block Host header injection / cache poisoning via spoofed forwarded
