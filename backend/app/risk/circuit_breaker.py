@@ -220,12 +220,17 @@ class CircuitBreaker:
         max_drawdown_pct: float,
         account_login: str | None = None,
         symbol: str | None = None,
+        min_ref: float | None = None,
     ) -> tuple[bool, float]:
         """日内 equity（余额 + 浮动盈亏）回撤闸门。
 
-        参考值 = 当日所见最高 equity（key 带秒级重置 TTL，跨日自动失效；
-        首个观测值即当日基准）。回撤 ≥ max_drawdown_pct 返回 True=停新开仓。
-        max_drawdown_pct <= 0 视为禁用。返回 (halted, ref_equity)。
+        参考值 = 当日所见最高 equity（key 带秒级重置 TTL，跨日自动失效）。
+        首次采样（ref 为空）时基准取 ``max(equity, min_ref)`` —— ``min_ref``
+        是当日初始余额（账户级当日已实现盈亏回填后反推），保证引擎当日
+        中途重启/迟启动时**不洗白已发生的亏损**：若已深亏，基准钉在初始
+        余额高位，立即触发。``min_ref=None`` 保持旧行为（首个观测值即基准）。
+        回撤 ≥ max_drawdown_pct 返回 True=停新开仓。max_drawdown_pct <= 0
+        视为禁用。返回 (halted, ref_equity)。
         """
         if max_drawdown_pct <= 0 or equity <= 0:
             return False, 0.0
@@ -234,6 +239,8 @@ class CircuitBreaker:
         ref_raw = await redis_client.get(key)
         if ref_raw is None:
             ref = equity
+            if min_ref is not None and min_ref > ref:
+                ref = min_ref
             await redis_client.set(key, str(ref), ex=ttl)
         else:
             ref = float(ref_raw)
@@ -267,6 +274,18 @@ class CircuitBreaker:
         return [s for s, p in SYMBOL_PROFILES.items() if "canonical" not in p] or settings.symbol_list
 
     @staticmethod
+    def net_pnl(deal: dict) -> float:
+        """成交净盈亏 = profit + commission + swap（缺字段按 0）。
+
+        日亏/连亏记账必须按净额 —— 只记 profit 会低估真实亏损（佣金/隔夜
+        利息通常为负），日亏 3% 闸门偏松，实际亏损更大才触发。
+        """
+        profit = deal.get("profit", 0) or 0
+        commission = deal.get("commission", 0) or 0
+        swap = deal.get("swap", 0) or 0
+        return float(profit) + float(commission) + float(swap)
+
+    @staticmethod
     async def backfill_today(
         connector,
         redis_client,
@@ -289,18 +308,32 @@ class CircuitBreaker:
             return 0
         cb = CircuitBreaker(redis_client, symbol=symbol, account_login=account_login)
         gr = TradingGuardrails(redis_client)
-        n = 0
+        # 按 position_id（桥端 ticket）聚合全部退出 deal 的净 P&L：同一仓位
+        # 分多次平仓（未来部分平仓）时，逐条记录会被 ticket 幂等跳过后续段，
+        # 日亏低估。无 ticket 的 deal 逐条记录（向后兼容）。
+        aggregated: dict[int, float] = {}
+        no_ticket: list[float] = []
         for d in hist.get("data", []):
             deal_sym = (d.get("symbol") or "").upper().replace("_", "")
             if deal_sym != sym_norm:
                 continue
+            net = CircuitBreaker.net_pnl(d)  # 含佣金/隔夜利息，否则日亏低估
             ticket = d.get("ticket")
-            profit = d.get("profit", 0) or 0
-            await cb.record_trade_result(profit, ticket=ticket)
-            await gr.record_trade_closed(is_win=profit > 0, ticket=ticket)
+            if ticket is None:
+                no_ticket.append(net)
+            else:
+                aggregated[ticket] = aggregated.get(ticket, 0.0) + net
+        n = 0
+        for ticket, net in aggregated.items():
+            await cb.record_trade_result(net, ticket=ticket)
+            await gr.record_trade_closed(is_win=net > 0, ticket=ticket)
+            n += 1
+        for net in no_ticket:
+            await cb.record_trade_result(net)
+            await gr.record_trade_closed(is_win=net > 0)
             n += 1
         if n:
-            logger.info(f"Circuit breaker backfill [{symbol}]: {n} closed deals reconciled")
+            logger.info(f"Circuit breaker backfill [{symbol}]: {n} positions reconciled")
         return n
 
     @staticmethod

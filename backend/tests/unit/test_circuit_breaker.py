@@ -206,6 +206,49 @@ class TestEquityDrawdownGate:
         assert ref == pytest.approx(9700.0)
 
 
+class TestEquityDrawdownRefFloor:
+    """R3：equity 回撤基准支持 min_ref 下限（当日初始余额）。
+
+    背景：ref 首次采样=当前 equity。若引擎当日中途重启/迟启动且已深亏
+    （如 -8%），ref 被钉在低位 → 当日"再跌 3%"失效。min_ref 让基准
+    至少不低于"当日初始余额"，重启不洗白已发生的亏损。
+    """
+
+    async def test_first_observation_with_min_ref_floor(self, redis_client):
+        # 当日已亏：初始余额 10000（min_ref），当前 equity 9200（-8%）
+        halted, ref = await CircuitBreaker.is_equity_drawdown_halted(
+            redis_client, equity=9200.0, max_drawdown_pct=0.03, symbol="GOLD", min_ref=10000.0
+        )
+        # 相对当日初始余额已超 3% → 应立即触发（不洗白）
+        assert halted is True
+        assert ref == pytest.approx(10000.0)
+
+    async def test_min_ref_ignored_when_equity_above(self, redis_client):
+        # equity 高于 min_ref → ref 用 equity（正常运行不受影响）
+        halted, ref = await CircuitBreaker.is_equity_drawdown_halted(
+            redis_client, equity=10100.0, max_drawdown_pct=0.03, symbol="GOLD", min_ref=10000.0
+        )
+        assert halted is False
+        assert ref == pytest.approx(10100.0)
+
+    async def test_min_ref_does_not_affect_subsequent_peak_tracking(self, redis_client):
+        # min_ref 只作用于首次采样；后续仍跟踪运行峰值
+        await CircuitBreaker.is_equity_drawdown_halted(
+            redis_client, equity=9200.0, max_drawdown_pct=0.03, symbol="GOLD", min_ref=10000.0
+        )
+        # 反弹到 10500（新高）→ ref 跟随；回撤 4% 触发
+        halted, ref = await CircuitBreaker.is_equity_drawdown_halted(
+            redis_client, equity=10500.0, max_drawdown_pct=0.03, symbol="GOLD"
+        )
+        assert halted is False
+        assert ref == pytest.approx(10500.0)
+        halted, ref = await CircuitBreaker.is_equity_drawdown_halted(
+            redis_client, equity=10080.0, max_drawdown_pct=0.03, symbol="GOLD"
+        )
+        assert halted is True
+        assert ref == pytest.approx(10500.0)
+
+
 class TestBackfillToday:
     """启动回填：用 MT5 历史补齐漏记的当日已实现 P&L / 连亏计数。"""
 
@@ -240,6 +283,71 @@ class TestBackfillToday:
         connector.get_history.return_value = {"success": False, "data": [], "error": "bridge down"}
         n = await CircuitBreaker.backfill_today(connector, redis_client, "GOLD")
         assert n == 0
+
+    async def test_backfill_counts_net_pnl_including_commission_swap(self, redis_client):
+        """R2：回填记账必须含 commission/swap —— 否则日亏低估、风控偏松。
+
+        profit=-90、commission=-3、swap=-2 → 净亏 -95（而非 -90）。
+        """
+        from unittest.mock import AsyncMock
+
+        connector = AsyncMock()
+        connector.get_history.return_value = {
+            "success": True,
+            "data": [
+                {"ticket": 2001, "symbol": "GOLD_", "profit": -90.0, "commission": -3.0, "swap": -2.0},
+            ],
+        }
+        n = await CircuitBreaker.backfill_today(connector, redis_client, "GOLD")
+        assert n == 1
+        cb = CircuitBreaker(redis_client, "GOLD")
+        assert await cb.get_daily_pnl() == pytest.approx(-95.0)
+
+    async def test_backfill_missing_commission_swap_defaults_zero(self, redis_client):
+        """旧桥响应无 commission/swap 字段 → 按 0 处理，不崩溃。"""
+        from unittest.mock import AsyncMock
+
+        connector = AsyncMock()
+        connector.get_history.return_value = {
+            "success": True,
+            "data": [
+                {"ticket": 2002, "symbol": "GOLD_", "profit": -90.0},
+            ],
+        }
+        n = await CircuitBreaker.backfill_today(connector, redis_client, "GOLD")
+        assert n == 1
+        cb = CircuitBreaker(redis_client, "GOLD")
+        assert await cb.get_daily_pnl() == pytest.approx(-90.0)
+
+    async def test_net_pnl_helper(self):
+        """net_pnl 辅助函数：profit+commission+swap，缺字段按 0。"""
+        assert CircuitBreaker.net_pnl({"profit": 100.0, "commission": -2.0, "swap": -1.5}) == pytest.approx(96.5)
+        assert CircuitBreaker.net_pnl({"profit": 100.0}) == pytest.approx(100.0)
+        assert CircuitBreaker.net_pnl({"profit": 0.0}) == 0.0
+
+    async def test_backfill_aggregates_partial_close_deals(self, redis_client):
+        """R4（F1 防御）：同一 position_id 分多次平仓（未来部分平仓）时，
+        按 position 聚合全部退出 deal 的净 P&L —— 否则 ticket 幂等会跳过
+        后续 deal，日亏低估。"""
+        from unittest.mock import AsyncMock
+
+        connector = AsyncMock()
+        connector.get_history.return_value = {
+            "success": True,
+            "data": [
+                {"ticket": 3001, "symbol": "GOLD_", "profit": -50.0, "commission": -1.0, "swap": -1.0},
+                {"ticket": 3001, "symbol": "GOLD_", "profit": -30.0, "commission": -1.0, "swap": -1.0},
+            ],
+        }
+        n = await CircuitBreaker.backfill_today(connector, redis_client, "GOLD")
+        assert n == 1  # 2 条 deal 同 position，聚合为 1 笔
+        cb = CircuitBreaker(redis_client, "GOLD")
+        # 净合计 = (-50-1-1) + (-30-1-1) = -84
+        assert await cb.get_daily_pnl() == pytest.approx(-84.0)
+        assert await cb.get_trade_count() == 1
+        # 幂等：再次回填不重复
+        await CircuitBreaker.backfill_today(connector, redis_client, "GOLD")
+        assert await cb.get_daily_pnl() == pytest.approx(-84.0)
 
 
 class TestSecondsUntilReset:

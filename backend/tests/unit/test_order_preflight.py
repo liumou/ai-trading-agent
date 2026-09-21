@@ -218,6 +218,11 @@ async def test_account_scoped_daily_pnl_key(ok_connector, redis_client, ok_guard
     —— 否则读到旧前缀的空 key,日亏闸门静默失效。"""
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.01}
+    # R3：balance 放大到 50000 —— balance=10000 + daily_pnl=-500 会触发新的
+    # equity 回撤 min_ref 闸门（当日初始余额 10500，回撤 4.76%>3%，本应拒单
+    # 且符合风控目标）。此测试聚焦 daily_pnl key 前缀验证，避免 equity 闸门
+    # 干扰 key 前缀断言。
+    ok_connector.get_account.return_value = {"success": True, "data": {"balance": 50000.0, "profit": 0.0}}
     # 引擎切换后写入的带账号前缀 key
     await redis_client.set("circuit:acc:123:daily_pnl:GOLD", "-500")
     # 旧前缀 key 故意不写(模拟切换后为空)

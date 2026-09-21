@@ -42,10 +42,13 @@ class HealthMonitor:
             self._is_degraded = False
             logger.info("MT5 Bridge connectivity restored — resuming trading")
 
-            # Resume all paused engines
+            # Resume only bridge-failure-paused engines. 熔断/equity 回撤暂停
+            # （pause_reason="circuit"）由引擎自身 _run_risk_gate 冷却后恢复，
+            # 桥恢复不得无差别解除 —— 否则本应停止的交易被桥抖动意外放行。
             for _symbol, engine in self._manager.engines.items():
-                if engine.state == BotState.PAUSED:
+                if engine.state == BotState.PAUSED and engine.pause_reason == "bridge":
                     engine.state = BotState.RUNNING
+                    engine.pause_reason = None
                     await engine._log_event(BotEventType.STARTED, "Auto-resumed: MT5 Bridge connectivity restored")
 
             if self._notifier:
@@ -71,6 +74,7 @@ class HealthMonitor:
             for _symbol, engine in self._manager.engines.items():
                 if engine.state == BotState.RUNNING:
                     engine.state = BotState.PAUSED
+                    engine.pause_reason = "bridge"
                     await engine._log_event(
                         BotEventType.ERROR,
                         f"MT5 Bridge unreachable ({self._consecutive_failures} consecutive failures) — trading paused",

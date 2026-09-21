@@ -388,7 +388,9 @@ class BotScheduler:
         if trading_mode == "strategy":
             for sym in active_symbols:
                 engine = engines.get(sym)
-                if engine and engine.state.value == "RUNNING":
+                # RUNNING + PAUSED 都驱动：PAUSED 引擎需能执行 process_candle
+                # 开头的 _run_risk_gate（冷却期满自愈），否则熔断暂停永不恢复。
+                if engine and engine.state.value in ("RUNNING", "PAUSED"):
                     try:
                         await engine.process_candle()
                     except Exception as e:
@@ -397,7 +399,9 @@ class BotScheduler:
         else:
             for sym in active_symbols:
                 engine = engines.get(sym)
-                if engine and engine.state.value == "RUNNING":
+                # RUNNING + PAUSED 都驱动 —— PAUSED（熔断/equity 暂停）引擎必须
+                # 周期性执行 _run_risk_gate，否则自动恢复分支是死代码。
+                if engine and engine.state.value in ("RUNNING", "PAUSED"):
                     try:
                         # ai_autonomous 下 process_candle 早退 —— 风控回路
                         # 必须在 scheduler 这里独立驱动，否则账户级熔断/

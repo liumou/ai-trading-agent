@@ -252,11 +252,18 @@ async def preflight_order(
 
     # 6b. equity 日内回撤闸门（余额 + 浮动盈亏）。只看已实现会让持仓
     #     浮亏 8% 完全隐形；参考值=当日峰值 equity，跨日自动失效。
+    #     min_ref = 当日初始余额（balance - 账户级当日已实现盈亏）→ 引擎当日
+    #     重启/迟启动时基准不洗白已亏损。
     if redis is not None:
         try:
             equity = account.get("balance", 0) + account.get("profit", 0)
+            min_ref = None
+            if account_daily_pnl is not None:
+                _day_start = account.get("balance", 0) - account_daily_pnl
+                if _day_start > 0:
+                    min_ref = _day_start
             eq_halted, eq_ref = await CircuitBreaker.is_equity_drawdown_halted(
-                redis, equity, settings.max_equity_drawdown, account_login, symbol
+                redis, equity, settings.max_equity_drawdown, account_login, symbol, min_ref=min_ref
             )
             if eq_halted:
                 return _reject(

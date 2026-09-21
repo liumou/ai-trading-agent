@@ -251,6 +251,7 @@ class BotEngine:
         self.last_signal_time: datetime | None = None
         self._last_balance: float | None = None  # 风控回路缓存（_run_risk_gate 每次刷新）
         self._last_equity: float = 0.0
+        self.pause_reason: str | None = None  # 暂停原因：bridge=桥故障 / circuit=熔断或equity回撤；None=未暂停
 
     def set_account_login(self, account_login: str) -> None:
         """更新所属 MT5 账号，并重建 circuit_breaker（H3：key 带账号维度）。
@@ -580,11 +581,12 @@ class BotEngine:
             if self.notifier:
                 await self._notify(self.notifier.send_error_alert(f"Bot engine error: {e}"))
 
-    async def _check_circuit_breakers(self, balance: float, equity: float | None = None) -> bool:
+    async def _check_circuit_breakers(self, balance: float, equity: float | None = None, min_ref: float | None = None) -> bool:
         """Check per-symbol and global circuit breakers. Returns True if trading should stop.
 
         ``equity`` = 余额 + 浮动盈亏；传入时追加日内 equity 回撤检查
         （浮动亏损对纯已实现检查是隐形的，ai_autonomous 实盘下尤其关键）。
+        ``min_ref`` = equity 回撤基准的下限（当日初始余额，重启不洗白已亏损）。
         """
         import asyncio as _asyncio
 
@@ -599,6 +601,7 @@ class BotEngine:
 
         if symbol_triggered:
             self.state = BotState.PAUSED
+            self.pause_reason = "circuit"
             await self._log_event(BotEventType.CIRCUIT_BREAKER, "Circuit breaker triggered")
             if self.notifier:
                 await self._notify(self.notifier.send_error_alert("⚡ Circuit breaker triggered — bot paused"))
@@ -606,6 +609,7 @@ class BotEngine:
 
         if global_triggered:
             self.state = BotState.PAUSED
+            self.pause_reason = "circuit"
             await self._log_event(
                 BotEventType.CIRCUIT_BREAKER, "Portfolio circuit breaker triggered (global daily loss)"
             )
@@ -622,6 +626,7 @@ class BotEngine:
         )
         if drawdown_halted:
             self.state = BotState.PAUSED
+            self.pause_reason = "circuit"
             await self._log_event(BotEventType.CIRCUIT_BREAKER, "Absolute drawdown limit reached — trading halted")
             if self.notifier:
                 await self._notify(
@@ -640,9 +645,11 @@ class BotEngine:
                 settings.max_equity_drawdown,
                 account_login=self.account_login,
                 symbol=self.symbol,
+                min_ref=min_ref,
             )
             if equity_halted:
                 self.state = BotState.PAUSED
+                self.pause_reason = "circuit"
                 await self._log_event(
                     BotEventType.CIRCUIT_BREAKER,
                     f"Equity intraday drawdown: equity={equity:.2f}, ref={eq_ref:.2f} — trading halted",
@@ -686,13 +693,30 @@ class BotEngine:
             # Track peak balance for absolute drawdown detection (H3: 按账号分键)
             await CircuitBreaker.update_peak_balance(self.redis, balance, account_login=self.account_login)
 
-            if await self._check_circuit_breakers(balance, equity):
+            # equity 回撤基准的下限 = 当日初始余额：当前余额 - 账户级当日已实现
+            # 盈亏（backfill 已补全）。引擎当日中途重启/迟启动时，若当日已深亏，
+            # 基准保持高位，不会因"首次采样值=低位"而洗白当日亏损。
+            min_ref = None
+            try:
+                active_symbols = await CircuitBreaker.get_active_symbols(self._manager)
+                day_pnl = await CircuitBreaker.get_global_daily_pnl(
+                    self.redis, active_symbols, self.account_login
+                )
+                if day_pnl != 0:
+                    min_ref = balance - day_pnl
+                    if min_ref <= 0:
+                        min_ref = None  # 无效下限不参与（避免基准取 0/负）
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"Equity min_ref computation failed [{self.symbol}]: {e!r}")
+
+            if await self._check_circuit_breakers(balance, equity, min_ref=min_ref):
                 return True
 
             # 未触发但处于 PAUSED（冷却期）→ 检查能否自动恢复
             if self.state == BotState.PAUSED and await self.circuit_breaker.can_resume():
                 logger.info(f"Circuit breaker cooldown complete [{self.symbol}] — resuming")
                 self.state = BotState.RUNNING
+                self.pause_reason = None
                 await self._log_event(BotEventType.STARTED, "Auto-resumed after circuit breaker cooldown")
             return False
         except Exception as e:
@@ -1390,17 +1414,26 @@ class BotEngine:
         """Fetch close details from MT5 history and update DB."""
         history_result = await self.connector.get_history(days=1)
         history_deals = history_result.get("data", []) if history_result.get("success") else []
-        history_map = {d["ticket"]: d for d in history_deals}
+        # 按 position_id 聚合全部退出 deal 的净 P&L —— 同一仓位分多次平仓
+        # （部分平仓）时逐条记录会漏记，覆盖最后一条也会低估日亏。
+        history_net: dict[int, float] = {}
+        for d in history_deals:
+            if d.get("ticket") is not None:
+                history_net[d["ticket"]] = history_net.get(d["ticket"], 0.0) + CircuitBreaker.net_pnl(d)
+        # 保留价格/时间用第一条匹配 deal（display 用），记账用聚合净额
+        history_deal_map = {d["ticket"]: d for d in history_deals}
 
         for ticket in closed_tickets:
             self._position_atr.pop(ticket, None)
             self._position_entry_time.pop(ticket, None)
             self._position_partial_closed.discard(ticket)
             self._position_breakeven.discard(ticket)
-            deal = history_map.get(ticket)
+            deal = history_deal_map.get(ticket)
 
             close_price = deal["price"] if deal else 0
-            profit = deal["profit"] if deal else 0
+            # 净盈亏（含佣金/隔夜利息 + 聚合部分平仓段）—— 只记 profit 会低估
+            # 日亏，闸门偏松
+            profit = history_net.get(ticket, 0.0)
             close_time = (
                 datetime.fromisoformat(deal["time"]).replace(tzinfo=None)
                 if deal and deal.get("time")
