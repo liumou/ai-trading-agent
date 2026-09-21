@@ -113,6 +113,16 @@ class LayaRuntime:
                 return None
             # 最大类概率 = 模型对所选类别的把握（用于预筛阈值判断）
             max_prob = float(max(probabilities.values()))
+            # 防御（M2）：choice 必须等于 argmax，否则 confidence 与 label 错位。
+            # 实测 laya 0.3.4 返回 choice=argmax；若异常输出不一致（choice 非最高概率类），
+            # 视为低置信畸形结果，交由调用方降级——绝不把错位 confidence 传给阈值判断。
+            choice_prob = float(probabilities.get(label, 0.0))
+            if choice_prob < max_prob - 1e-9:
+                logger.warning(
+                    f"[laya] {question_key} choice {label!r} != argmax (prob {choice_prob:.3f} < {max_prob:.3f}), "
+                    f"treating as low-confidence"
+                )
+                return None
             # laya 原生熵置信度（保留参考）
             entropy_conf = float(ans.get("confidence", 0.0))
         except Exception as e:

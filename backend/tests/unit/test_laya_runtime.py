@@ -60,10 +60,15 @@ class TestLayaRuntimeDefault:
             assert await laya_sentiment_choice("headline") is None
 
     def test_config_default_is_false(self):
-        """C1 回归：真实 config 默认值必须是 False（曾误翻为 True，注释/计划/测试三方矛盾）。"""
-        from app.config import settings
+        """C1 回归：真实 config 默认值必须是 False（曾误翻为 True，注释/计划/测试三方矛盾）。
 
-        assert settings.laya_enabled is False
+        M3：断言 pydantic 字段默认值元数据，不实例化 Settings——避免触发 .env / 环境变量
+        读取（开发机 .env 若设 LAYA_ENABLED=true 会让实例化后的值非 False，误伤本回归）。
+        字段默认值 is False 直接反映 config.py 里的代码默认，是"曾翻 True 会复现"的最强断言。
+        """
+        from app.config import Settings
+
+        assert Settings.model_fields["laya_enabled"].default is False
 
 
 class TestLayaSentimentChoiceDirect:
@@ -188,6 +193,44 @@ class TestPredictChoiceParsing:
         rt.predict = AsyncMock(return_value={"answers": {"other": {}}})
         result = await rt.predict_choice({"symbol": "GOLD"}, "sentiment", {"type": "choice"})
         assert result is None
+
+    async def test_choice_not_argmax_falls_back(self):
+        """M2：choice ≠ argmax（概率错位）→ 返回 None 降级，不把错位 confidence 传给阈值。
+
+        防御 laya 异常输出：choice 声明的类不是最大概率类时，confidence（max-class prob）
+        与 label 错位会静默失真阈值判断。此处模拟该畸形返回，应回落而非放行。
+        """
+        rt = LayaRuntime()
+        rt.predict = AsyncMock(return_value={
+            "answers": {
+                "sentiment": {
+                    "type": "choice",
+                    "choice": "neutral",  # 声明 neutral，但最大概率是 bullish
+                    "probabilities": {"bullish": 0.9, "bearish": 0.05, "neutral": 0.05},
+                    "confidence": 0.5,
+                }
+            }
+        })
+        result = await rt.predict_choice({"symbol": "GOLD"}, "sentiment", {"type": "choice"})
+        assert result is None
+
+    async def test_choice_argmax_normal_returns(self):
+        """M2 对照：choice = argmax（正常路径）→ 正常返回，不被防御误伤。"""
+        rt = LayaRuntime()
+        rt.predict = AsyncMock(return_value={
+            "answers": {
+                "sentiment": {
+                    "type": "choice",
+                    "choice": "bullish",
+                    "probabilities": {"bullish": 0.9, "bearish": 0.05, "neutral": 0.05},
+                    "confidence": 0.5,
+                }
+            }
+        })
+        result = await rt.predict_choice({"symbol": "GOLD"}, "sentiment", {"type": "choice"})
+        assert result is not None
+        assert result["label"] == "bullish"
+        assert result["confidence"] == 0.9
 
 
 class TestSentimentPrefilter:
