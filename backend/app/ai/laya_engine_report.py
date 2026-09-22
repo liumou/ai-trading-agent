@@ -20,15 +20,13 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Sequence
 
 from app.ai.laya_engine_observation import (
     DIV_CAUTION_ALLOW,
     DIV_CAUTION_DENY,
     DIV_CHAIN_ABSTAIN,
     DIV_LAYA_ABSENT,
-    DIV_LAYA_ESCALATE,
-    DIV_LAYA_UNAVAILABLE,
     DIV_LOOSEN,
     DIV_NONE,
     DIV_TIGHTEN,
@@ -43,14 +41,22 @@ def _pct(x: int, n: int) -> float:
 
 
 def percentiles(values: Sequence[float], ps: Sequence[float]) -> Dict[str, float]:
-    """简单百分位（laya_gate_report 内联实现的等价物，n=0 返回 0.0）。"""
+    """线性插值分位（与 laya_gate_report.latency_percentiles 同定义，n=0 返回 0.0）。"""
     if not values:
         return {f"p{int(p * 100)}": 0.0 for p in ps}
     xs = sorted(values)
     out: Dict[str, float] = {}
     for p in ps:
-        idx = min(len(xs) - 1, int(math.ceil(p * len(xs))) - 1)
-        out[f"p{int(round(p * 100))}"] = float(xs[max(0, idx)])
+        if len(xs) == 1:
+            out[f"p{int(round(p * 100))}"] = float(xs[0])
+            continue
+        k = (len(xs) - 1) * p
+        lo = int(math.floor(k))
+        hi = int(math.ceil(k))
+        if lo == hi:
+            out[f"p{int(round(p * 100))}"] = float(xs[lo])
+        else:
+            out[f"p{int(round(p * 100))}"] = float(xs[lo] + (xs[hi] - xs[lo]) * (k - lo))
     return out
 
 
@@ -65,7 +71,8 @@ def build_engine_report(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         return {
             "n": 0, "laya_available": 0, "laya_unavailable": 0, "chain_abstain": 0,
             "tighten_gate": 0, "loosen_gate": 0, "tighten_final": 0, "loosen_final": 0,
-            "none_gate": 0, "caution_gate": 0, "tighten_cases": [], "loosen_cases": [],
+            "none_gate": 0, "caution_gate": 0, "laya_absent": 0,
+            "tighten_cases": [], "loosen_cases": [],
             "laya_latency_ms": {"p50": 0.0, "p95": 0.0}, "signal_labels": {},
         }
 

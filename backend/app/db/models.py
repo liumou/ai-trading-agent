@@ -318,7 +318,7 @@ class ManualShadowReview(Base):
     laya_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     fallback_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
     state_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 离线回放/分歧复核用
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
 class LayaEngineObservation(Base):
@@ -336,7 +336,7 @@ class LayaEngineObservation(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), default="", server_default="")
     timeframe: Mapped[str] = mapped_column(String(20), default="", server_default="")
-    signal_label: Mapped[str] = mapped_column(String(50), default="", server_default="")
+    signal_label: Mapped[str] = mapped_column(String(50), default="", server_default="", index=True)
     signal: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1/0/-1
     balance: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     # 现有链路侧

@@ -21,6 +21,8 @@ data_quality 为纯审计问：不参与收敛判定，但 insufficient 会附�
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from app.config import settings
+
 # 6 问候选集（GOLD/M15/MT5 语义白名单）
 LAYA_GATE_OPTIONS: Dict[str, set[str]] = {
     "data_quality": {"sufficient", "partial", "insufficient"},
@@ -241,7 +243,9 @@ async def laya_gate_review(
         allowed_labels=LAYA_GATE_OPTIONS,
         timeout=timeout,
     )
-    decision = converge_laya_verdict(answers, min_confidence=0.6)
+    decision = converge_laya_verdict(
+        answers, min_confidence=settings.laya_gate_confidence_threshold
+    )
     return {
         "decision": decision.verdict,
         "confidence": decision.confidence,

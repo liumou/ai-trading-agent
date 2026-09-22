@@ -132,3 +132,38 @@ class TestBuildReport:
         assert r["fallback_rate"] == 0.5
         assert r["laya_latency_ms"]["p50"] == 300.0
         assert "per_question" in r
+
+
+class TestBoundaryCases:
+    """L8：Kappa/Wilson/分母语义边界。"""
+
+    def test_kappa_n1_single_class_guard(self):
+        # n=1 全单类 → pe→1，守卫返回 0.0（避免除零；n 太小时 Kappa 无意义）
+        assert cohen_kappa([("APPROVED", "APPROVED")]) == 0.0
+
+    def test_kappa_single_class_all_agree_guard(self):
+        # 全单类（row/col 只在一个类）→ pe→1，守卫返回 0.0（避免除零）
+        pairs = [("APPROVED", "APPROVED")] * 5
+        assert cohen_kappa(pairs) == 0.0
+
+    def test_wilson_zero_agreement(self):
+        assert wilson_lower_bound(0, 10) == 0.0
+
+    def test_wilson_n1_is_conservative(self):
+        # n=1 的 Wilson 95% 单侧下限保守（≈0.21），不等于 1——小样本不能宣称高一致
+        v = wilson_lower_bound(1, 1)
+        assert 0.0 < v < 1.0
+
+    def test_raw_agreement_excludes_escalate(self):
+        # ESCALATE/UNAVAILABLE 排除出分母（三值口径），不计为不一致
+        pairs = [("APPROVED", "APPROVED"), ("ESCALATE", "APPROVED"), ("UNAVAILABLE", "REJECTED")]
+        assert raw_agreement(pairs) == 1.0
+
+    def test_percentiles_single_value(self):
+        assert latency_percentiles([100.0], 0.95) == 100.0
+
+    def test_percentiles_empty(self):
+        assert latency_percentiles([], 0.95) == 0.0
+
+    def test_fallback_rate_mixed(self):
+        assert fallback_rate(["APPROVED", "ESCALATE", "UNAVAILABLE"]) == 2 / 3

@@ -96,6 +96,20 @@ class TestSnapshot:
         )
         assert s1["order"]["side"] == "SELL"
 
+    def test_dict_positions_compacted(self):
+        """H1：生产路径 positions 是 list[dict]（order_executor），必须正确压缩。"""
+        positions = [
+            {"symbol": "GOLD", "type": "BUY", "volume": 0.1, "profit": 3.2},
+            {"symbol": "GOLD", "type": "SELL", "volume": 0.2, "profit": -1.0},
+        ]
+        snap = build_laya_engine_snapshot(
+            symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
+            balance=10000.0, df=_df(), positions=positions, daily_pnl=0.0, recent_wr=None,
+        )
+        assert snap["positions"][0] == {"symbol": "GOLD", "type": "BUY", "volume": 0.1, "profit": 3.2}
+        assert snap["positions"][1]["symbol"] == "GOLD"
+        assert snap["positions"][1]["profit"] == -1.0
+
 
 class TestClassifyDivergence:
     @pytest.mark.parametrize("chain,laya,gate_kind", [
@@ -121,15 +135,66 @@ class TestClassifyDivergence:
         assert d["gate"] == DIV_TIGHTEN
         assert d["final"] == DIV_NONE
 
-    def test_final_fallback(self):
+    def test_final_none_when_no_allowed(self):
+        """L1：无最终判定（allowed=None）→ final 口径不记录（None），不静默回退。"""
         d = classify_divergence(True, "REJECTED", final_allowed=None)
-        assert d["final"] == DIV_TIGHTEN
+        assert d["gate"] == DIV_TIGHTEN
+        assert d["final"] is None
+
+    @pytest.mark.parametrize("chain,laya,final,gate_kind,final_kind", [
+        # 全矩阵：chain ∈ {True, False, None} × laya ∈ {APPROVED, CAUTION, REJECTED, ESCALATE, UNAVAILABLE, None}
+        (True, "APPROVED", True, DIV_NONE, DIV_NONE),
+        (True, "CAUTION", True, DIV_CAUTION_ALLOW, DIV_CAUTION_ALLOW),
+        (True, "REJECTED", True, DIV_TIGHTEN, DIV_TIGHTEN),
+        (True, "ESCALATE", True, DIV_TIGHTEN, DIV_TIGHTEN),
+        (True, "UNAVAILABLE", True, DIV_LAYA_UNAVAILABLE, DIV_LAYA_UNAVAILABLE),
+        (True, None, True, DIV_LAYA_ABSENT, DIV_LAYA_ABSENT),
+        (False, "APPROVED", False, DIV_LOOSEN, DIV_LOOSEN),
+        (False, "CAUTION", False, DIV_CAUTION_DENY, DIV_CAUTION_DENY),
+        (False, "REJECTED", False, DIV_NONE, DIV_NONE),
+        (False, "ESCALATE", False, DIV_LAYA_ESCALATE, DIV_LAYA_ESCALATE),
+        (False, "UNAVAILABLE", False, DIV_LAYA_UNAVAILABLE, DIV_LAYA_UNAVAILABLE),
+        (False, None, False, DIV_LAYA_ABSENT, DIV_LAYA_ABSENT),
+        (None, "APPROVED", None, DIV_CHAIN_ABSTAIN, None),
+        (None, "CAUTION", None, DIV_CHAIN_ABSTAIN, None),
+        (None, "REJECTED", None, DIV_CHAIN_ABSTAIN, None),
+        (None, "ESCALATE", None, DIV_CHAIN_ABSTAIN, None),
+        (None, "UNAVAILABLE", None, DIV_CHAIN_ABSTAIN, None),
+        (None, None, None, DIV_LAYA_ABSENT, None),
+        # 双口径分离：chain 放行但最终不放行 → gate=收紧, final=一致
+        (True, "REJECTED", False, DIV_TIGHTEN, DIV_NONE),
+        # 双口径分离：chain 不放行但最终放行 → gate=放松, final=一致
+        (False, "APPROVED", True, DIV_LOOSEN, DIV_NONE),
+    ])
+    def test_full_matrix(self, chain, laya, final, gate_kind, final_kind):
+        d = classify_divergence(chain, laya, final_allowed=final)
+        assert d["gate"] == gate_kind
+        assert d["final"] == final_kind
+
+    def test_unknown_verdict_treated_unavailable(self):
+        """M5：未知 laya verdict（畸形/未来值）→ UNAVAILABLE，而非「影子未启用」。"""
+        d = classify_divergence(True, "MAYBE")
+        assert d["gate"] == DIV_LAYA_UNAVAILABLE
+        d2 = classify_divergence(True, "MAYBE", final_allowed=False)
+        assert d2["final"] == DIV_LAYA_UNAVAILABLE
 
 
 class TestStartObservation:
     @patch("app.ai.laya_engine_observation.settings")
-    def test_disabled_returns_none(self, m_settings):
+    def test_shadow_disabled_returns_none(self, m_settings):
         m_settings.laya_gate_engine_shadow = False
+        m_settings.laya_enabled = True
+        obs = start_engine_observation(
+            symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
+            balance=1.0, df=None,
+        )
+        assert obs is None
+
+    @patch("app.ai.laya_engine_observation.settings")
+    def test_laya_disabled_returns_none(self, m_settings):
+        """M8：laya_enabled=False 时连观测任务都不建（不落噪音行）。"""
+        m_settings.laya_gate_engine_shadow = True
+        m_settings.laya_enabled = False
         obs = start_engine_observation(
             symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
             balance=1.0, df=None,
@@ -139,6 +204,7 @@ class TestStartObservation:
     @patch("app.ai.laya_engine_observation.settings")
     async def test_enabled_returns_observer(self, m_settings):
         m_settings.laya_gate_engine_shadow = True
+        m_settings.laya_enabled = True
         obs = start_engine_observation(
             symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
             balance=1.0, df=None,
@@ -385,3 +451,130 @@ class TestReport:
         r = build_engine_report([])
         assert r["n"] == 0
         assert r["laya_latency_ms"] == {"p50": 0.0, "p95": 0.0}
+
+
+class TestPersistOrm:
+    """M6：engine 侧 _persist 用 fake session 实跑 ORM 构造（仿 Phase 3 TestShadowPersist）。
+
+    生命周期测试把 _persist mock 掉，真实列映射从未执行——若与 models/迁移不一致测试全绿。
+    """
+
+    @patch("app.ai.laya_engine_observation.settings")
+    async def test_persist_builds_orm_row(self, m_settings):
+        m_settings.laya_gate_engine_shadow = True
+        m_settings.laya_gate_predict_timeout_s = 5.0
+        obs = EngineLayaObservation(
+            symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
+            balance=10000.0, df=_df(), recent_wr=0.6,
+        )
+        inserted = {}
+        fake_session = MagicMock()
+
+        class FakeSessionCtx:
+            async def __aenter__(self):
+                return fake_session
+
+            async def __aexit__(self, *exc):
+                return False
+
+        with (
+            patch("app.db.session.async_session", return_value=FakeSessionCtx()),
+            patch.object(fake_session, "add", side_effect=lambda obj: inserted.update(vars(obj))),
+            patch.object(fake_session, "commit", new=AsyncMock()),
+        ):
+            await obs._persist(
+                snapshot={"order": {"signal": 1}, "account": {"balance": 10000.0}},
+                laya_review={"decision": "REJECTED", "confidence": 0.8, "reasons": ["risk"],
+                             "checks": {}, "answers": {}, "engine": "laya"},
+                latency_ms=120,
+                divergence={"gate": DIV_TIGHTEN, "final": DIV_TIGHTEN},
+            )
+
+        assert inserted["symbol"] == "GOLD"
+        assert inserted["signal_label"] == "BUY"
+        assert inserted["signal"] == 1
+        assert inserted["balance"] == 10000.0
+        assert inserted["chain_can_trade"] is None
+        assert inserted["laya_verdict"] == "REJECTED"
+        assert inserted["laya_confidence"] == 0.8
+        assert inserted["divergence_gate"] == DIV_TIGHTEN
+        assert inserted["divergence_final"] == DIV_TIGHTEN
+        assert inserted["laya_latency_ms"] == 120
+        assert inserted["state_snapshot"]["account"]["balance"] == 10000.0
+
+    def test_model_columns_match_migration(self):
+        """模型列与迁移列一致（防 create_all 环境与 alembic 结构漂移）。"""
+        from pathlib import Path
+
+        from app.db.models import LayaEngineObservation
+
+        migration = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "c2d3e4f5a6b7_laya_engine_observations.py"
+        text = migration.read_text()
+        import re
+
+        mig_cols = set(re.findall(r'sa\.Column\("([a-z_]+)"', text))
+        model_cols = set(LayaEngineObservation.__table__.columns.keys())
+        assert mig_cols == model_cols, f"migration {mig_cols - model_cols} vs model {model_cols - mig_cols}"
+
+
+class TestEngineH3EndToEnd:
+    """L8：engine 侧 H-3 端到端——wrapper 创建真实观测器且 laya 崩溃时，返回值不变。"""
+
+    def _engine(self):
+        from app.bot.engine import BotEngine
+
+        eng = BotEngine.__new__(BotEngine)
+        eng.symbol = "GOLD"
+        eng.timeframe = "M15"
+        return eng
+
+    @patch("app.ai.laya_engine_observation.settings")
+    @patch("app.ai.laya_gate.laya_gate_review", new_callable=AsyncMock)
+    async def test_laya_crash_does_not_change_result(self, m_review, m_settings):
+        """真实 start_engine_observation + laya_gate_review 抛异常 → 许可结果不变。"""
+        m_settings.laya_gate_engine_shadow = True
+        m_settings.laya_enabled = True
+        m_settings.laya_gate_predict_timeout_s = 5.0
+        m_review.side_effect = RuntimeError("laya exploded")
+
+        eng = self._engine()
+
+        async def _inner(*a, **k):
+            return True
+
+        with (
+            patch.object(eng, "_check_trade_permission_inner", new=_inner),
+            patch.object(EngineLayaObservation, "_persist", new=AsyncMock()),
+        ):
+            result = await eng._check_trade_permission(1, "BUY", 10000.0, None, df=_df())
+
+        assert result is True  # laya 崩溃不影响交易结果
+
+    @patch("app.ai.laya_engine_observation.start_engine_observation")
+    async def test_start_exception_does_not_change_result(self, m_start):
+        """H2：start_engine_observation 抛异常 → 返回值不变、不抛错。"""
+        m_start.side_effect = RuntimeError("import failed")
+        eng = self._engine()
+
+        async def _inner(*a, **k):
+            return False
+
+        with patch.object(eng, "_check_trade_permission_inner", new=_inner):
+            result = await eng._check_trade_permission(1, "BUY", 10000.0, None, df=_df())
+
+        assert result is False
+
+
+class TestConfigDefaults:
+    """L3 回归：laya_gate_engine_shadow 代码默认值是 True（用户批准打开），
+    与 docstring/注释一致；laya_enabled 保持 False（C1）。"""
+
+    def test_engine_shadow_default_true(self):
+        from app.config import Settings
+
+        assert Settings.model_fields["laya_gate_engine_shadow"].default is True
+
+    def test_laya_enabled_default_false(self):
+        from app.config import Settings
+
+        assert Settings.model_fields["laya_enabled"].default is False

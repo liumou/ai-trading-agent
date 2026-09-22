@@ -37,10 +37,21 @@ class TestLayaShadowDisabled:
     async def test_disabled_skips_shadow(self):
         gate = _make_gate()
         with patch("app.services.manual_order_gate.settings") as mock_settings:
+            mock_settings.laya_enabled = True
             mock_settings.laya_gate_shadow = False
             mock_settings.laya_gate_enforce = False
             result = await gate._laya_shadow_review(_snapshot())
             assert result is None  # 未启用 → 不跑影子
+
+    async def test_laya_disabled_skips_shadow(self):
+        """M8：laya_enabled=False 时整个影子链路跳过（不落噪音行）。"""
+        gate = _make_gate()
+        with patch("app.services.manual_order_gate.settings") as mock_settings:
+            mock_settings.laya_enabled = False
+            mock_settings.laya_gate_shadow = True
+            mock_settings.laya_gate_enforce = False
+            result = await gate._laya_shadow_review(_snapshot())
+            assert result is None
 
 
 class TestLayaShadowReview:
@@ -246,3 +257,61 @@ class TestShadowPersist:
             await gate._persist_shadow_review(
                 audit, _snapshot(), {"decision": "APPROVED", "engine": "laya"}, {"verdict": "APPROVED"}
             )
+
+
+class TestShadowAwaitBudget:
+    """M1：laya 影子超过预算 → 订单路径立即放行，落库后台补写。"""
+
+    @patch("app.services.manual_order_gate.LAYA_SHADOW_AWAIT_BUDGET_S", 0.05)
+    async def test_slow_laya_does_not_block_order(self):
+        gate = _make_gate()
+        gate._load_audit = AsyncMock(return_value=MagicMock(review={}, status="PENDING_REVIEW"))
+        gate._update_audit = AsyncMock()
+        gate.ai_client.complete_json_async = AsyncMock(return_value={
+            "verdict": "APPROVED", "confidence": 0.9,
+            "risk_flags": [], "emotional_indicators": [], "reasoning": "ok",
+        })
+        gate._execute_approved = AsyncMock()
+        deferred = AsyncMock()
+
+        async def _slow_laya(self, _snap):
+            await asyncio.sleep(0.2)
+            return {"engine": "laya", "decision": "APPROVED", "latency_ms": 200}
+
+        with (
+            patch("app.services.manual_order_gate.settings") as mock_settings,
+            patch.object(ManualOrderGate, "_laya_shadow_review", new=_slow_laya),
+            patch.object(ManualOrderGate, "_deferred_persist_shadow", new=deferred),
+        ):
+            mock_settings.laya_gate_shadow = True
+            mock_settings.laya_gate_enforce = False
+            mock_settings.laya_gate_predict_timeout_s = 30
+            await gate._review(1, _snapshot())
+
+        # 订单在预算内放行并执行（不等 laya 慢任务）
+        gate._execute_approved.assert_awaited_once()
+        # 后台补写任务已调度（给事件循环一个 tick）
+        await asyncio.sleep(0)
+        assert deferred.await_count >= 1
+        # 主路径 review 摘要里没有 laya（未在预算内返回）——不写半行
+        stored = gate._update_audit.await_args.kwargs["review"]
+        assert "laya" not in stored
+
+
+class TestShadowReviewTimeoutBranch:
+    """真实 _laya_shadow_review 的 TimeoutError 分支（评审缺口补测）。"""
+
+    @patch("app.ai.laya_gate.laya_gate_review", new_callable=AsyncMock)
+    async def test_timeout_returns_unavailable(self, m_review):
+        gate = _make_gate()
+        m_review.side_effect = asyncio.TimeoutError()  # 内部 predict 超时冒泡
+        with patch("app.services.manual_order_gate.settings") as mock_settings:
+            mock_settings.laya_enabled = True
+            mock_settings.laya_gate_shadow = True
+            mock_settings.laya_gate_enforce = False
+            mock_settings.laya_gate_predict_timeout_s = 0.05
+            result = await gate._laya_shadow_review(_snapshot())
+
+        assert result["engine"] == "laya"
+        assert result["decision"] == "UNAVAILABLE"
+        assert result["error"] == "timeout"

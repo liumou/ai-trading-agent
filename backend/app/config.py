@@ -330,6 +330,9 @@ class Settings(BaseSettings):
     laya_gate_rollout_pct: int = 0
     # 6 问推理超时（冷加载在 warmup 处理，这里只防 predict 卡死）
     laya_gate_predict_timeout_s: float = 30.0
+    # 启动期 warmup 预算（秒）：import laya + 权重加载/下载在线程内执行，
+    # 超时只告警不 fail-stop（运行期 predict 超时才 fail-stop）。
+    laya_gate_warmup_timeout_s: float = 600.0
     # engine 开仓侧观测开关（Phase 4，只观测不改行为）。
     # True（用户 2026-09-22 批准打开）：每次开仓许可检查都让 laya 看同一份
     #   行情/账户状态并记录「laya vs TradeGate+确定性链」分歧

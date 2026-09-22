@@ -5,7 +5,8 @@
   的分歧率，不是一致率。
 - 全程零副作用：观测器不返回能否交易、不拦截、不推送；laya 故障/超时只留痕
   UNAVAILABLE。laya 异常绝不影响 `_check_trade_permission` 的结果（H-3 影子非干扰性）。
-- `laya_gate_engine_shadow` 默认 False；本阶段不存在 enforce（不建 gate 形态）。
+- `laya_gate_engine_shadow` 默认 True（用户 2026-09-22 批准打开，观测-only）；
+  本阶段不存在 enforce（不建 gate 形态）。
 
 分歧定义（收紧/放松口径，见 phase4-observation.md）：
 - tighten（收紧分歧，重点）：现有链路放行，但 laya 判 REJECTED/ESCALATE →
@@ -23,9 +24,8 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from loguru import logger
 
@@ -111,6 +111,18 @@ def build_market_summary(df: Any) -> Dict[str, float | str]:
 
 
 def _compact_position(p: Any) -> Dict[str, Any]:
+    """持仓压缩为审计友好 dict。
+
+    H1 修复：生产路径 `order_executor.get_open_positions()` 返回 `list[dict]`
+    （内部即 `p.get("symbol")`），须兼容 dict；对象形态（测试/其他调用方）走 getattr。
+    """
+    if isinstance(p, dict):
+        return {
+            "symbol": p.get("symbol", ""),
+            "type": p.get("type", ""),
+            "volume": p.get("volume"),
+            "profit": p.get("profit"),
+        }
     try:
         return {
             "symbol": getattr(p, "symbol", ""),
@@ -181,9 +193,10 @@ def classify_divergence(
     缺失时退化为 gate 口径。
     """
     gate_kind = _classify(chain_can_trade, laya_verdict)
-    final_ref = final_allowed if final_allowed is not None else chain_can_trade
-    final_kind = _classify(final_ref, laya_verdict)
-    return {"gate": gate_kind, "final": final_kind}
+    # L1：无最终判定（allowed=None，如 inner 异常）→ final 口径不记录，防误计分歧
+    if final_allowed is None:
+        return {"gate": gate_kind, "final": None}
+    return {"gate": gate_kind, "final": _classify(final_allowed, laya_verdict)}
 
 
 def _classify(chain: Optional[bool], laya: Optional[str]) -> str:
@@ -201,7 +214,8 @@ def _classify(chain: Optional[bool], laya: Optional[str]) -> str:
         return DIV_NONE if chain else DIV_LOOSEN
     if laya == "CAUTION":
         return DIV_CAUTION_ALLOW if chain else DIV_CAUTION_DENY
-    return DIV_LAYA_ABSENT
+    # M5：未知 verdict（畸形/未来新增值）→ 视为不可用，而非「影子未启用」
+    return DIV_LAYA_UNAVAILABLE
 
 
 # ─── 观测器（只记录，零副作用）────────────────────────────────────────────
@@ -389,7 +403,9 @@ def start_engine_observation(
     仅由 `laya_gate_engine_shadow` 控制；laya 依赖/模型不可用时观测器会
     落 UNAVAILABLE 行（兜底率可观测），绝不影响交易路径。
     """
-    if not settings.laya_gate_engine_shadow:
+    # M8：laya 完全未启用时不建观测任务、不落 UNAVAILABLE 噪音行
+    # （laya_enabled 与 shadow 都开才观测；故障留痕仍由 _run_laya_review 处理）
+    if not (settings.laya_gate_engine_shadow and settings.laya_enabled):
         return None
     return EngineLayaObservation(
         symbol=symbol,

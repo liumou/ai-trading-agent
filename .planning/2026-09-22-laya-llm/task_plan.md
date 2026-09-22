@@ -6,6 +6,9 @@
 ## Next Step
 观测开关已打开（2026-09-22 用户批准）：代码默认 `laya_gate_engine_shadow=True` + `.env` 设 `LAYA_ENABLED=true` / `LAYA_GATE_SHADOW=true` / `LAYA_GATE_ENGINE_SHADOW=true` / `LAYA_HF_ENDPOINT=hf-mirror` → **待部署**（`alembic upgrade head` 建 `laya_engine_observations` + 重建/重启容器）→ 进入 **4 周观测期**；满 4 周或 ≥150 样本出分歧报告（scripts/laya_engine_report.py），再决定收敛为 veto-only 或终止。
 
+## Next Step
+R2 修复已执行完成（204 passed, 1 skipped，无回归）→ **进入观测期**（部署侧：重建/重启容器后自动生效；4 周或 ≥150 样本出分歧报告）。
+
 ## Current Phase
 Phase 2（complete，评审修订完成）→ Phase 3 待用户批准
 
@@ -71,3 +74,19 @@ Phase 2（complete，评审修订完成）→ Phase 3 待用户批准
 | 子代理角色模型路由不可用（model_not_found） | 改用默认模型重发；4 路全部完成 |
 | 并发上限（thread limit） | 先等待/关闭已完成代理再补发，最终 4 路齐 |
 | 测试基线不可复现（之前称 59 passed） | 实测相关文件 43 passed/1 skipped；全量 876 passed/23 failed 且失败与本次无关——回归门固定子集 |
+
+
+## Review Fix Phase（R2，用户已批准 2026-09-22，执行完成）
+- [x] **H1** `_compact_position` 支持 dict+对象，补 dict 用例（数据污染）
+- [x] **H2** engine wrapper 观测创建/收尾全包 try/except，故障注入测试
+- [x] **M1** manual gate 关键路径 laya 等待预算 ≤3s，落库 fire-and-forget
+- [x] **M2** laya_runtime 推理串行化 + 超时 fail-stop，补超时测试
+- [x] **M3** laya import 懒加载/线程内 + 启动期 warmup 接线（main.py lifespan）
+- [x] **M4** TestPredictTimeoutWarmup 补真实用例
+- [x] **M5** classify_divergence 21 组合 + 未知值→UNAVAILABLE
+- [x] **M6** engine _persist ORM 映射实测 + 模型/迁移列一致性
+- [x] **M7** min_confidence 接 settings.laya_gate_confidence_threshold
+- [x] **M8** engine + manual 侧 laya_enabled 门控（未启用不建任务/不落噪音行）
+- [x] **L1-L6** final 口径回退、索引一致、docstring、报表 schema/分位、未用 import
+- [x] **L8** 测试边界补强（Kappa/Wilson/converger 优先级/超时分支/engine H-3 端到端）
+- **验收**：laya 相关套件 ≥160 passed；H1/H2/M1 有专项断言；无行为变更

@@ -150,3 +150,15 @@
 - M6 云/本地差异：预载预热/权重持久化/内存预算/零外发。
 - M7 可抄细节：decision_key 内容寻址缓存、max_calls_per_run=25、point-in-time stale_after=3×interval、幂等审计信封、按策略 opt-in + 回测绕过。
 - L8 判据 crypto 绑定 → 改写 MT5 语义；L9 JEV 仅结构同构，宜称「同类 System One」。
+
+
+## §8 第二轮多路评审结论（2026-09-22，提交 1f51b41）
+
+评审：OCR 委托模式（13 文件）+ 三路并行（架构/安全风控/测试验证）+ 主持人复核证据。
+完整清单：`reviews/review-r2-code-review.md`。
+
+- **结论**：并发骨架整体成立；2 高危（H1 持仓快照恒为空、H2 engine wrapper 异常泄漏）必须在观测期数据产生前修，否则污染 4 周分歧数据集。
+- **High**：H1 `_compact_position` getattr 取 dict 值恒空；H2 wrapper import/start/finish 未隔离，laya 故障可致整机 ERROR。
+- **Medium**：M1 manual gate 同步 await laya（最坏推迟订单 ~35s）；M2 超时不终止推理线程+共享 _agent 无串行化；M3 事件循环同步 import laya；M4 空测试类虚标；M5 classify 矩阵不全+未知值落入 ABSENT；M6 engine _persist ORM 未实测；M7 min_confidence 硬编码；M8 未判 laya_enabled 致噪音行+敏感快照。
+- **Low**：L1-L8（final 口径回退、索引与模型不一致、docstring 默认值、报表 schema/分位、未用 import、供应链识别、测试边界补强）。
+- **供应链（L7）**：权重无 revision/校验和 → Phase 5 root-of-trust，本轮不修。

@@ -422,10 +422,7 @@ class TestPredictChoicesBatch:
     """Phase 3.1：单次前向批处理多问（评审 M1）——6 问一次 predict，不逐个 predict_choice。"""
 
     async def test_batch_parses_all_questions(self):
-        with (
-            patch("app.ai.laya_runtime.settings") as mock_settings,
-            patch("app.ai.laya_runtime._LAYA_IMPORT_OK", True),
-        ):
+        with patch("app.ai.laya_runtime.settings") as mock_settings:
             mock_settings.laya_enabled = True
             await self._assert_batch_parses()
 
@@ -456,10 +453,7 @@ class TestPredictChoicesBatch:
         rt.predict.assert_awaited_once()  # 单次前向，非每问一次
 
     async def test_batch_single_malformed_sets_none(self):
-        with (
-            patch("app.ai.laya_runtime.settings") as mock_settings,
-            patch("app.ai.laya_runtime._LAYA_IMPORT_OK", True),
-        ):
+        with patch("app.ai.laya_runtime.settings") as mock_settings:
             mock_settings.laya_enabled = True
             await self._assert_batch_single_malformed()
 
@@ -559,9 +553,93 @@ class TestPredictTimeoutWarmup:
     def _ready_runtime(self) -> LayaRuntime:
         rt = LayaRuntime()
         rt._available = True  # available 是只读 property，用内部状态模拟就绪
-        # available property 先检查 settings.laya_enabled 与 _LAYA_IMPORT_OK，
-        # 测试环境未装 laya / 默认关闭，需 patch 两者让 available 短路为 True
+        # available 先检查 settings.laya_enabled；M3 后导入/加载走线程内 _load，
+        # 测试环境未装 laya / 默认关闭，用 _available=True 短路
         return rt
 
 
 
+
+
+class TestPredictTimeoutAndFailStop:
+    """M2/M4：predict 超时 → fail-stop（runtime 置不可用），防推理线程/队列无限堆积。
+
+    底层 to_thread 线程 wait_for 无法取消，会继续跑完（本测试用 0.2s 有界 sleep 模拟，
+    避免遗留长线程）；超时后不再放行新推理（available=False）。
+    """
+
+    @patch("app.ai.laya_runtime.settings")
+    async def test_predict_timeout_marks_unavailable(self, m_settings):
+        import time
+
+        m_settings.laya_enabled = True
+        rt = LayaRuntime()
+        rt._available = True
+
+        def _slow_predict_sync(*a, **k):
+            time.sleep(0.2)
+            return {"answers": {}}
+
+        with patch.object(rt, "_predict_sync", new=_slow_predict_sync):
+            with pytest.raises(asyncio.TimeoutError):
+                await rt.predict({"x": 1}, {"q": {}}, timeout=0.05)
+        assert rt.available is False  # fail-stop
+
+    @patch("app.ai.laya_runtime.settings")
+    async def test_predict_after_failstop_raises(self, m_settings):
+        m_settings.laya_enabled = True
+        rt = LayaRuntime()
+        rt._available = False
+        with pytest.raises(RuntimeError):
+            await rt.predict({"x": 1}, {"q": {}})
+
+    @patch("app.ai.laya_runtime.settings")
+    async def test_predict_ok_when_under_budget(self, m_settings):
+        m_settings.laya_enabled = True
+        rt = LayaRuntime()
+        rt._available = True
+
+        def _fast_predict_sync(*a, **k):
+            return {"answers": {"q": {"type": "choice", "choice": "x", "probabilities": {"x": 1.0}}}}
+
+        with patch.object(rt, "_predict_sync", new=_fast_predict_sync):
+            out = await rt.predict({"x": 1}, {"q": {}}, timeout=5.0)
+        assert out["answers"]["q"]["choice"] == "x"
+        assert rt.available is True
+
+
+class TestWarmupReal:
+    """M4：warmup 成功 / 加载失败 / 超时（超时不 fail-stop，慢下载可重试）。"""
+
+    @patch("app.ai.laya_runtime.settings")
+    async def test_warmup_success_when_loaded(self, m_settings):
+        m_settings.laya_enabled = True
+        rt = LayaRuntime()
+        rt._agent = object()
+        assert await rt.warmup(timeout=1.0) is True
+
+    @patch("app.ai.laya_runtime.settings")
+    async def test_warmup_load_failure_returns_false(self, m_settings):
+        m_settings.laya_enabled = True
+        rt = LayaRuntime()
+
+        def _boom():
+            raise RuntimeError("no weights")
+
+        with patch.object(rt, "_load", new=_boom):
+            assert await rt.warmup(timeout=1.0) is False
+
+    @patch("app.ai.laya_runtime.settings")
+    async def test_warmup_timeout_returns_false_not_failstop(self, m_settings):
+        import time
+
+        m_settings.laya_enabled = True
+        rt = LayaRuntime()
+
+        def _slow_load():
+            time.sleep(0.2)
+            return object()
+
+        with patch.object(rt, "_load", new=_slow_load):
+            assert await rt.warmup(timeout=0.02) is False
+        assert rt.available is True  # 不 fail-stop

@@ -85,3 +85,24 @@
   应用 `b0c1d2e3f4a5`（manual_shadow_reviews）+ `c2d3e4f5a6b7`（laya_engine_observations）
 - 验证：alembic 版本 = c2d3e4f5a6b7（head）；两表存在；laya_engine_observations 19 列齐全
 - 运行环境唯一待办：重建/重启容器让 .env 与依赖生效（本地 venv 未装 laya/torch，运行环境是 Docker）
+
+
+### 2026-09-22（第十轮：第二轮多路评审）
+- OCR 委托模式（open-code-review v1.12.8）选定 13 文件 + 三路并行评审（架构 Rawls / 安全 Mendel / 测试 Bernoulli）+ 主持人复核
+- 结果：2 High（H1 持仓快照恒空 getattr-on-dict、H2 engine wrapper 异常泄漏 H-3 路径）、8 Medium（M1 手工单 await laya 35s / M2 超时线程堆积 / M3 事件循环 import laya / M4 空测试类 / M5 classify 矩阵不全 / M6 _persist 未实测 / M7 min_confidence 硬编码 / M8 未判 laya_enabled）、8 Low（L1-L8）
+- 评审文档：`reviews/review-r2-code-review.md`；findings.md §8
+- **修复计划已写入 task_plan.md（Review Fix Phase R2），待用户批准后执行**
+
+
+### 2026-09-22（第十一轮：R2 修复执行完成）
+- 用户批准 R2 修复计划 → 全部完成：
+  - H1 持仓 dict 压缩 / H2 wrapper 异常隔离 / M1 手工单 3s 预算+后台补写 / M2 推理锁+超时 fail-stop / M3 懒加载导入+启动 warmup / M4 超时/预热用例 / M5 classify 全矩阵+未知值 / M6 _persist ORM 实测 / M7 阈值接线 / M8 laya_enabled 门控 / L1-L6 / L8 边界
+- 源码：laya_runtime / laya_engine_observation / laya_engine_report / laya_gate / engine / manual_order_gate / models / config / main.py
+- 一致性：迁移索引与模型对齐（signal_label/created_at index=True）
+- 测试：laya 相关 8 文件 **204 passed, 1 skipped**（较修复前 150 +54），无回归
+- 新增报警/降级语义：predict 超时 fail-stop（runtime 置不可用）、warmup 超时不 fail-stop、启动期线程内预热
+
+### 2026-09-22（第十一轮收尾：最终核验）
+- 重跑 laya 相关 9 文件套件（含 scheduler_risk_gate）：**208 passed, 1 skipped**，原 8 文件口径 204 passed，无回归
+- 确认 `app/main.py:60` 已导入 settings；`main.py:305-310` laya_enabled 时启动期线程内 warmup（timeout 取自 `laya_gate_warmup_timeout_s`）
+- R2 全部完成；未提交 git；无新迁移（模型索引与已建 PG 表一致）

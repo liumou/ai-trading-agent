@@ -129,3 +129,78 @@ class TestDataQualityAuditOnly:
         # 白名单契约：data_quality 三值，entry_decision 二值
         assert LAYA_GATE_OPTIONS["data_quality"] == {"sufficient", "partial", "insufficient"}
         assert LAYA_GATE_OPTIONS["entry_decision"] == {"pass", "reject"}
+
+
+class TestCrossRulePriority:
+    """L8：跨规则优先级——insufficient/低置信 先于 block（规则 2/3 先于 4）。"""
+
+    def test_insufficient_wins_over_risk_block(self):
+        answers = _full(risk_check=_ans("block"), signal_alignment=_ans("insufficient"))
+        d = converge_laya_verdict(answers, min_confidence=MIN_CONF)
+        assert d.verdict == VERDICT_ESCALATE
+
+    def test_low_confidence_wins_over_risk_block(self):
+        answers = _full(risk_check=_ans("block", 0.5))
+        d = converge_laya_verdict(answers, min_confidence=MIN_CONF)
+        assert d.verdict == VERDICT_ESCALATE
+
+    def test_structural_malformed_wins_over_block(self):
+        answers = _full(risk_check=_ans("block"))
+        answers["entry_decision"] = {"label": "pass"}  # 缺 confidence
+        d = converge_laya_verdict(answers, min_confidence=MIN_CONF)
+        assert d.verdict == VERDICT_ESCALATE
+
+
+class TestConfidenceBoundary:
+    """L8：阈值恰好 0.6 通过；越界/NaN → ESCALATE。"""
+
+    def test_confidence_equal_threshold_passes(self):
+        answers = _full(risk_check=_ans("clear", 0.6))
+        d = converge_laya_verdict(answers, min_confidence=0.6)
+        assert d.verdict == VERDICT_APPROVED
+
+    def test_confidence_above_one_escalates(self):
+        answers = _full(risk_check=_ans("clear", 1.5))
+        d = converge_laya_verdict(answers, min_confidence=0.6)
+        assert d.verdict == VERDICT_ESCALATE
+
+    def test_confidence_nan_escalates(self):
+        import math
+
+        answers = _full(risk_check=_ans("clear", math.nan))
+        d = converge_laya_verdict(answers, min_confidence=0.6)
+        assert d.verdict == VERDICT_ESCALATE
+
+
+class TestGateReviewConfigWiring:
+    """M7：laya_gate_review 使用 settings.laya_gate_confidence_threshold（非硬编码 0.6）。"""
+
+    async def _review(self, threshold: float, confidence: float):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        rt = MagicMock()
+        rt.available = True
+        rt.predict_choices = AsyncMock(return_value={
+            "data_quality": {"label": "sufficient", "confidence": 0.9},
+            "signal_alignment": {"label": "aligned", "confidence": confidence},
+            "market_regime": {"label": "favorable", "confidence": 0.9},
+            "risk_check": {"label": "clear", "confidence": 0.9},
+            "execution_quality": {"label": "clear", "confidence": 0.9},
+            "entry_decision": {"label": "pass", "confidence": 0.9},
+        })
+        with (
+            patch("app.ai.laya_runtime.get_laya_runtime", return_value=rt),
+            patch("app.ai.laya_gate.settings") as m_settings,
+        ):
+            from app.ai.laya_gate import laya_gate_review
+
+            m_settings.laya_gate_confidence_threshold = threshold
+            return await laya_gate_review({"x": 1}, timeout=5.0)
+
+    async def test_higher_threshold_escalates_same_confidence(self):
+        d = await self._review(threshold=0.75, confidence=0.7)
+        assert d["decision"] == VERDICT_ESCALATE
+
+    async def test_default_threshold_approves_same_confidence(self):
+        d = await self._review(threshold=0.6, confidence=0.7)
+        assert d["decision"] == VERDICT_APPROVED

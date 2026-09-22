@@ -817,17 +817,23 @@ class BotEngine:
           判定由 inner 注入，等最终结果后 best-effort 落库。
         - laya 故障/超时/未启用绝不改变返回结果（H-3 影子非干扰性）。
         """
-        from app.ai.laya_engine_observation import start_engine_observation
+        obs = None
+        try:
+            # H2：观测创建全包异常隔离——laya 模块 import 失败 / create_task
+            # 在 loop 关闭竞态抛错，都不得穿透改变交易结果（H-3）。
+            from app.ai.laya_engine_observation import start_engine_observation
 
-        obs = start_engine_observation(
-            symbol=self.symbol,
-            timeframe=self.timeframe,
-            signal=signal,
-            signal_label=signal_label,
-            balance=balance,
-            df=df,
-            recent_wr=recent_wr_prefetched,
-        )
+            obs = start_engine_observation(
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                signal=signal,
+                signal_label=signal_label,
+                balance=balance,
+                df=df,
+                recent_wr=recent_wr_prefetched,
+            )
+        except Exception as e:  # noqa: BLE001 - 影子故障零影响
+            logger.warning(f"[laya-engine-obs] observation start failed (ignored): {e}")
         allowed: bool | None = None
         try:
             allowed = await self._check_trade_permission_inner(
@@ -842,7 +848,10 @@ class BotEngine:
             return allowed
         finally:
             if obs is not None:
-                obs.finish(allowed)
+                try:
+                    obs.finish(allowed)
+                except Exception as e:  # noqa: BLE001 - 收尾异常不得顶掉返回值
+                    logger.warning(f"[laya-engine-obs] observation finish failed (ignored): {e}")
 
     async def _check_trade_permission_inner(
         self,

@@ -22,31 +22,27 @@ from loguru import logger
 
 from app.config import settings
 
-# try-import 降级：未安装 laya 依赖时系统照常运行（沿用 mcp_server 的 _AGENT_AVAILABLE 模式）
-try:
-    import laya as _laya  # type: ignore
-    _LAYA_IMPORT_OK = True
-except Exception:  # pragma: no cover - 依赖缺失时的降级路径
-    _laya = None  # type: ignore
-    _LAYA_IMPORT_OK = False
-
-
 class LayaRuntime:
     """Laya 推理运行时单例。懒加载 + 线程安全 + 事件循环友好。"""
 
     def __init__(self) -> None:
         self._agent: Any = None
-        self._lock = threading.Lock()
+        self._laya: Any = None  # 懒加载模块（M3：import 走线程内 _load）
+        self._lock = threading.Lock()  # 加载锁（幂等、串行）
+        self._predict_lock = threading.Lock()  # 推理锁（M2：共享 Agent 状态串行化）
         self._available: Optional[bool] = None  # None=未探测
 
     @property
     def available(self) -> bool:
-        """laya 是否可用（依赖已装 + 模型已加载或可加载）。"""
-        if not settings.laya_enabled or not _LAYA_IMPORT_OK:
+        """laya 是否可用（已启用且未被故障禁用）。
+
+        M3：首次探测不导入（import laya 是重型栈，走线程内 _load），
+        依赖缺失/加载失败由 _load 置 available=False。
+        """
+        if not settings.laya_enabled:
             return False
         if self._available is None:
-            # 首次探测：不实际加载模型，只确认依赖在（模型懒加载到首次 predict）
-            self._available = _LAYA_IMPORT_OK and settings.laya_enabled
+            self._available = True  # 假定可用，由首次 predict/warmup 实证
         return bool(self._available)
 
     def _load(self) -> Any:
@@ -74,9 +70,15 @@ class LayaRuntime:
                     if os.path.isdir(local):
                         model_id = local
 
+                # M3：import laya（torch/transformers 栈）在线程内执行（warmup/predict
+                # 的 to_thread），绝不阻塞事件循环。
+                if self._laya is None:
+                    import laya as _laya_mod  # type: ignore  # noqa: PLC0415
+
+                    self._laya = _laya_mod
                 # 显式 device="cpu"：避开 OOM 回落路径（Agent.device 可变共享状态），
                 # 并保证在无 GPU 的 Railway 上行为确定。CPU 单次 ~200-500ms 可接受。
-                self._agent = _laya.load(model_id, device="cpu")
+                self._agent = self._laya.load(model_id, device="cpu")
                 logger.info(f"[laya] runtime loaded: model={settings.laya_model}")
             except Exception as e:  # pragma: no cover - 依赖/网络/权重故障降级
                 logger.error(f"[laya] load failed, disabled: {e}")
@@ -95,9 +97,19 @@ class LayaRuntime:
         if not self.available:
             raise RuntimeError("laya unavailable")
         coro = asyncio.to_thread(self._predict_sync, state, questions)
-        if timeout is not None:
-            coro = asyncio.wait_for(coro, timeout)
-        return await coro
+        try:
+            if timeout is not None:
+                coro = asyncio.wait_for(coro, timeout)
+            return await coro
+        except asyncio.TimeoutError:
+            # M2 fail-stop：wait_for 只取消 await，底层线程会继续跑完；
+            # 置不可用防止反复超时导致推理线程/队列无限堆积拖垮进程。
+            logger.error(
+                f"[laya] predict timed out after {timeout}s — marking runtime unavailable "
+                "(fail-stop；重启进程后由 warmup 重新加载)"
+            )
+            self._available = False
+            raise
 
     async def predict_choice(
         self,
@@ -170,6 +182,11 @@ class LayaRuntime:
             await coro
             logger.info("[laya] warmup complete")
             return True
+        except asyncio.TimeoutError:
+            # 启动期慢下载：加载线程继续跑（有锁，幂等），不 fail-stop；
+            # 运行期 predict 若仍超时则由 predict 的 fail-stop 兜底。
+            logger.warning(f"[laya] warmup timed out after {timeout}s (load continues in thread; will retry at predict)")
+            return False
         except Exception as e:  # pragma: no cover - 依赖/网络/权重故障降级
             logger.warning(f"[laya] warmup failed (will retry at predict): {e}")
             return False
@@ -246,7 +263,10 @@ class LayaRuntime:
 
     def _predict_sync(self, state: Any, questions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         agent = self._load()
-        return agent.system_one(state, questions)
+        # M2：Agent.device/dtype 是可变共享状态（docstring 自认），推理必须串行化，
+        # 防并发 system_one 数据竞争与 OOM 回落竞态。
+        with self._predict_lock:
+            return agent.system_one(state, questions)
 
 
 # 模块级单例

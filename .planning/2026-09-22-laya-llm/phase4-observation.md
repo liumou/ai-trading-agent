@@ -39,7 +39,7 @@ Phase 4 想在开仓前**偷偷加一台只记录、不发言的旁听席**：�
 1. `backend/app/ai/laya_engine_observation.py`：纯函数——从同一份 OHLCV df + 上下文构造 laya state，跑 6 问 + 收敛器，返回结构化记录
 2. `backend/app/bot/engine.py:_check_trade_permission` 内加一个调用点：`asyncio.create_task` 或同步 best-effort 落库，**任何异常只记日志、绝不影响返回结果**
 3. 新表 + alembic 迁移（沿用 Phase 3.3 的专表模式，与 ManualShadowReview 并列）
-4. 配置：`laya_gate_engine_shadow=True`（默认关）+ `laya_gate_engine_report` CLI 或复用 `scripts/laya_gate_report.py` 扩展
+4. 配置：`laya_gate_engine_shadow=True`（2026-09-22 用户批准打开，默认 True；kill switch 改回 false）+ `laya_engine_report.py` CLI
 5. 报表指标：分歧率、收紧分歧数、放松分歧数、弃权率、延迟——**不设 PASS/FAIL 门槛，只出描述性统计**
 
 ## 样本与时间盒
