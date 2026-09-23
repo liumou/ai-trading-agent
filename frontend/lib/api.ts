@@ -1,7 +1,23 @@
 import axios from "axios";
 
+/**
+ * 推导后端 API 基址：与前端访问主机保持同主机，端口取后端默认 8002。
+ * 使本机、局域网任意 IP、Tailscale 等一切访问方式都能自动连到同一台机器的后端，
+ * 避免生产包把 localhost/具体 IP 埋死导致局域网设备请求自己而失败。
+ * - SSR/构建期返回兜底（此时无 window，浏览器端会再解析）
+ * - 若显式设置 NEXT_PUBLIC_API_URL 则优先使用（公网 CDN/反代场景）
+ */
+function resolveApiBaseUrl(): string {
+  if (typeof window === "undefined") {
+    return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8002";
+  }
+  const protocol = window.location.protocol === "https:" ? "https" : "http";
+  const port = process.env.NEXT_PUBLIC_BACKEND_PORT || "8002";
+  return `${protocol}://${window.location.hostname}:${port}`;
+}
+
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
+  baseURL: process.env.NEXT_PUBLIC_API_URL || resolveApiBaseUrl(),
   timeout: 10000,
 });
 

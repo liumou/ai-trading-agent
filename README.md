@@ -67,6 +67,17 @@
 > ⚠️ **本机开发无 Docker 时**：Postgres/Redis 用远端 Tailscale 地址（见 `backend/.env.example`）。
 > 有 Docker 时 `docker-compose up -d` 起本机实例（Postgres:5434 / Redis:6380，改 `.env` 指向它们）。
 
+### 局域网 / Tailscale 访问
+
+前端 `api.ts` / `websocket.ts` **运行时自动推导后端地址**（`协议://<访问前端的主机>:8002`），因此无需把 `IP/localhost` 写死进 `.env`：
+
+- **本机**：`http://localhost:3000`（API → `http://localhost:8002`）
+- **局域网设备**：`http://<Mac-IP>:3000`（API 自动指向 `http://<Mac-IP>:8002`）
+- **Tailscale 设备**：`http://<Tailscale-IP>:3000`（API 自动指向 `http://<Tailscale-IP>:8002`）
+
+> 后端端口默认 8002，可通过 `frontend/.env` 的 `NEXT_PUBLIC_BACKEND_PORT` 覆盖；公网反代场景可用 `NEXT_PUBLIC_API_URL` 显式覆盖（见 `frontend/.env` 注释）。
+> 后端已监听 `0.0.0.0` 并允许常见局域网/Tailscale Origin 的 CORS——换 IP 后如遇跨域报错，把新 IP 追加进 `backend/.env` 的 `CORS_ORIGINS`。
+
 ---
 
 ## 🚀 快速上手（5 分钟跑起来）
@@ -426,7 +437,7 @@ cd frontend && npx tsc --noEmit && npm run build
 |---|---|---|
 | MT5 Bridge 连不上 / 401 | bridge 未启动、防火墙、API key 不一致 | Windows 上 `./start-mt5bridge.bat`；`backend/.env` 的 `MT5_BRIDGE_URL`/`MT5_BRIDGE_API_KEY` 与 Windows 端一致 |
 | `/health` 显示 degraded | MT5 bridge 离线（by design） | 检查 bridge；不影响配置/回测 |
-| 前端连不上后端 | `NEXT_PUBLIC_API_URL` 指向了旧端口 | 前端 `.env` 指向 `http://localhost:8002` |
+| 前端连不上后端 | 后端端口非 8002 或旧构建仍埋死 IP/localhost | 确认后端在 `:8002`；重新构建前端（`npm run build`）让自动推导生效；仅公网场景设 `NEXT_PUBLIC_API_URL` 覆盖 |
 | alembic 迁移失败 | 缺 `DATABASE_URL_SYNC` 或 PYTHONPATH 不对 | 在 `backend/` 目录执行；确认 `.env` 有 `DATABASE_URL_SYNC` |
 | 保存品种报 1500 被拒 | `ml_tp_pips × pip_value` 相对波幅超 6× | 按报错提示改小（GOLD 填 10~15 即可） |
 | 训练失败 HOLD 占绝大多数 | `ml_tp_pips` 相对波幅过小，屏障几个月碰不到 | 加大 `ml_tp_pips`（GOLD 推荐 4.4~13.3） |

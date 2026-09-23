@@ -36,7 +36,17 @@ function openSocket() {
     return;
   }
 
-  const baseWsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
+  // 推导 WebSocket 基址：与前端访问主机保持同主机（同 resolveApiBaseUrl 原则）。
+  // 局域网/Tailscale 等一切访问方式都能自动连到同一台机器的后端。
+  const baseWsUrl =
+    process.env.NEXT_PUBLIC_WS_URL ||
+    (() => {
+      if (typeof window === "undefined") return "ws://localhost:8002/ws";
+      const wsProtocol =
+        window.location.protocol === "https:" ? "wss" : "ws";
+      const port = process.env.NEXT_PUBLIC_BACKEND_PORT || "8002";
+      return `${wsProtocol}://${window.location.hostname}:${port}/ws`;
+    })();
   const token =
     typeof window !== "undefined" ? localStorage.getItem("token") || "" : "";
   const wsUrl = token ? `${baseWsUrl}?token=${token}` : baseWsUrl;

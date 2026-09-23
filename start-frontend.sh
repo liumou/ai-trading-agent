@@ -21,13 +21,18 @@ echo "========================================"
 
 cd "$FRONTEND_DIR"
 
-# NEXT_PUBLIC_* 在 build 时就地嵌入 —— 没有 .env 时先按后端 :8002 生成，
-# 否则页面会去请求默认的 :8000 而连不上后端。
+# 前端运行时自动推导后端地址（lib/api.ts / lib/websocket.ts）：
+#   协议://<访问前端的主机>:<BACKEND_PORT>
+# 本机(localhost)、局域网任意 IP、Tailscale IP 均自动连到同一台机器的后端。
+# 因此无需在此写死 IP/localhost；仅当后端不在 :8002 或需公网覆盖时才取消注释。
 if [ ! -f ".env" ]; then
-    echo "[INFO] 生成 frontend/.env，API 指向 http://localhost:$BACKEND_PORT ..."
+    echo "[INFO] 生成 frontend/.env（空配置，API 地址运行时自动推导）..."
     cat > .env <<EOF
-NEXT_PUBLIC_API_URL=http://localhost:$BACKEND_PORT
-NEXT_PUBLIC_WS_URL=ws://localhost:$BACKEND_PORT/ws
+# 运行时自动推导后端地址（见 lib/api.ts）。后端端口默认 $BACKEND_PORT。
+# NEXT_PUBLIC_BACKEND_PORT=$BACKEND_PORT
+# 如需显式覆盖（公网部署）：
+# NEXT_PUBLIC_API_URL=http://localhost:$BACKEND_PORT
+# NEXT_PUBLIC_WS_URL=ws://localhost:$BACKEND_PORT/ws
 EOF
 fi
 
