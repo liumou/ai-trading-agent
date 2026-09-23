@@ -322,7 +322,15 @@ class RiskManager:
                     eff_threshold = min(eff_threshold + AI_WORST_HOUR_THRESHOLD_BOOST, AI_MAX_THRESHOLD)
 
         # AI sentiment filter (optional)
+        # C4 修复：仅当情绪来自 Claude 深析（engine=="llm" 或字段缺失的旧缓存）时才应用过滤。
+        # laya 预筛行的 confidence 是 max-class 概率（非 Claude 自报置信度），刻度不同，
+        # 若直接参与本闸门会静默改变通过率（laya 命中率远高于 Claude 行）——概率模型
+        # 不得作风控拦截依据（调研不变量）。laya 行已在 news_sentiment 内用 laya_confidence_threshold
+        # 自行把关，此处不再重复拦截。
         if self.use_ai_filter and ai_sentiment and signal != 0:
+            engine = ai_sentiment.get("engine")
+            if engine == "laya":
+                return True, "OK"
             confidence = ai_sentiment.get("confidence", 0)
             label = ai_sentiment.get("label", "neutral")
 

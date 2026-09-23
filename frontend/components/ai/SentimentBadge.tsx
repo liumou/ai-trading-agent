@@ -9,6 +9,8 @@ type Props = {
   score: number;
   confidence?: number;
   size?: "sm" | "md" | "lg";
+  /** 情绪判定来源：laya（预筛命中）| llm（Claude 深析）。显示一个小标记。 */
+  engine?: string;
 };
 
 const colorMap: Record<string, string> = {
@@ -29,7 +31,7 @@ const sizeMap = {
   lg: { badge: "text-sm px-3 py-1.5 gap-2", icon: "size-4" },
 };
 
-export default function SentimentBadge({ label, score, confidence, size = "md" }: Props) {
+export default function SentimentBadge({ label, score, confidence, size = "md", engine }: Props) {
   const t = useTranslations("ai.sentiment");
   const color = colorMap[label] || colorMap.neutral;
   const Icon = iconMap[label] || iconMap.neutral;
@@ -45,6 +47,11 @@ export default function SentimentBadge({ label, score, confidence, size = "md" }
       </span>
       {confidence !== undefined && (
         <span className="opacity-40">{(confidence * 100).toFixed(0)}%</span>
+      )}
+      {engine && (
+        <span className={cn("opacity-50 uppercase tracking-wide", engine === "laya" ? "text-info" : "")}>
+          {engine}
+        </span>
       )}
     </span>
   );

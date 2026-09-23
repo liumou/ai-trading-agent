@@ -26,15 +26,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const isLocal = typeof window !== "undefined" &&
+    // Dev-only auth bypass: must opt in via NEXT_PUBLIC_DEV_NOAUTH=1 on a local host
+    // (same gate as app/login/page.tsx). Ungated it wrote the "__noauth__" sentinel into
+    // localStorage even when the backend had auth enabled — every request then 401s
+    // ("Invalid or expired token"), the api interceptor clears the token and bounces to
+    // /login, and this effect re-injects the sentinel: an endless 400/401 loop, and the
+    // dashboard never loads any data (MT5 shows as disconnected while it is actually up).
+    const isLocal =
+      typeof window !== "undefined" &&
       (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-    if (isLocal) {
+    const bypassEnabled = process.env.NEXT_PUBLIC_DEV_NOAUTH === "1";
+    if (isLocal && bypassEnabled) {
       if (!localStorage.getItem("token")) localStorage.setItem("token", "__noauth__");
       setAuthChecked(true);
       return;
     }
 
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    const storedToken = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    // A leftover "__noauth__" sentinel is not a session — it only ever worked while the
+    // backend ran with auth disabled. Drop it so the user lands on the login form instead
+    // of being stuck in the 401 redirect loop.
+    if (storedToken === "__noauth__") {
+      localStorage.removeItem("token");
+    }
+    const token = storedToken === "__noauth__" ? null : storedToken;
     if (!token) {
       router.replace("/login");
       return;

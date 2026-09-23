@@ -207,6 +207,8 @@ class BotEngine:
             target_r_multiple=profile.get("target_r_multiple"),
         )
         self.sentiment_analyzer: NewsSentimentAnalyzer | None = None
+        # Trade Gate 「可否交易」门控（Phase 3.8）：懒加载，默认关闭。
+        self._trade_gate = None  # TradeGate | None
         self.context_builder = AIContextBuilder(db_session)
         self._ai_context: dict | None = None  # Cached context, refreshed with sentiment
         self._optimizer = None
@@ -452,6 +454,7 @@ class BotEngine:
             # Pre-fetch recent_wr in isolated session so _check_trade_permission does
             # NOT hold the shared db_session across broker-API awaits in _size_and_place_order.
             recent_wr_pref: float | None = None
+            recent_profits_pref: list[float] | None = None
             try:
                 from sqlalchemy import select as _sel_wr
 
@@ -473,6 +476,7 @@ class BotEngine:
                     _recent = _res_wr.scalars().all()
                 if len(_recent) >= 10:
                     recent_wr_pref = sum(1 for t in _recent if t.profit > 0) / len(_recent)
+                    recent_profits_pref = [float(t.profit) for t in _recent if t.profit is not None]
             except Exception as _wr_err:
                 logger.warning(f"recent_wr prefetch failed [{self.symbol}] — using default threshold: {_wr_err}")
                 recent_wr_pref = None
@@ -483,6 +487,8 @@ class BotEngine:
                 balance,
                 ai_sentiment,
                 recent_wr_prefetched=recent_wr_pref,
+                recent_profits=recent_profits_pref,
+                df=df,
             ):
                 return
 
@@ -493,14 +499,17 @@ class BotEngine:
                 from app.strategy.quant_signals import compute_all_signals
 
                 prices = df["close"].values if len(df) > 30 else None
-                # Count available data sources to set proportional requirement
+                # Count available data sources to set proportional requirement.
+                # C4 修复：laya 预筛行不算作独立 AI 数据源（它不参与投票），
+                # 否则会占名额却必投 False，对 gate 造成不对称收紧。
+                ai_source_available = bool(ai_sentiment) and ai_sentiment.get("engine") != "laya"
                 available_sources = sum(
                     [
                         prices is not None and len(prices) > 30,  # quant
                         hasattr(self.strategy, "_last_ml_signal"),  # ML
                         hasattr(self, "_last_hmm_probs"),  # regime
                         True,  # risk/reward (always available)
-                        ai_sentiment is not None,  # AI
+                        ai_source_available,  # AI
                     ]
                 )
                 # Skip gate if not enough data sources ready (< 3)
@@ -536,14 +545,20 @@ class BotEngine:
                 sl_est, tp_est = self.risk_manager.resolve_sl_tp_distances(atr_val)
                 rr_data = {"ratio": tp_est / sl_est if sl_est > 0 else 0}
 
-                ai_agrees = ai_sentiment and ai_sentiment.get("label") in (
+                # C4 修复：laya 预筛行不参与 ConfirmationGate 投票（其 confidence 刻度与
+                # Claude 自报置信度不同，且 neutral 对任意方向都"同意"——会成无意义赞成票）。
+                # gate 完全不消费 laya 行：ai_gate_active=False → ai_data 里 confidence/reasoning
+                # 归零，票既不赞成也不反对。available_sources 计数（engine.py 上方）同样排除
+                # laya 行（见 ai_source_available），避免占名额却必投 False 的不对称收紧。
+                ai_gate_active = bool(ai_sentiment) and ai_sentiment.get("engine") != "laya"
+                ai_agrees = ai_gate_active and ai_sentiment.get("label") in (
                     "bullish" if signal == 1 else "bearish",
                     "neutral",
                 )
                 ai_data = {
                     "agrees": bool(ai_agrees),
-                    "confidence": ai_sentiment.get("confidence", 0) if ai_sentiment else 0,
-                    "reasoning": ai_sentiment.get("label", "") if ai_sentiment else "",
+                    "confidence": ai_sentiment.get("confidence", 0) if ai_gate_active else 0,
+                    "reasoning": ai_sentiment.get("label", "") if ai_gate_active else "",
                 }
 
                 gate_result = gate.evaluate(
@@ -773,11 +788,20 @@ class BotEngine:
         return signal, signal_label, df
 
     async def _get_ai_sentiment(self) -> dict | None:
-        """Get AI sentiment if enabled. Returns sentiment dict or None."""
+        """Get AI sentiment if enabled. Returns sentiment dict or None.
+
+        C4 修复：随行携带 engine 来源（llm|laya）。下游风险闸/ConfirmationGate 据此
+        区分"Claude 深析"与"laya 预筛命中"——两者 confidence 刻度不同（Claude 自报置信度
+        vs laya max-class 概率），混用会静默改变闸门通过率（见 news_sentiment.py docstring）。
+        """
         if self.sentiment_analyzer and self.risk_manager.use_ai_filter:
             sentiment = await self.sentiment_analyzer.get_latest_sentiment(self.symbol)
             if sentiment is not None and sentiment.confidence > 0:
-                return {"label": sentiment.label, "confidence": sentiment.confidence}
+                return {
+                    "label": sentiment.label,
+                    "confidence": sentiment.confidence,
+                    "engine": sentiment.engine,
+                }
         return None
 
     async def _check_trade_permission(
@@ -787,6 +811,62 @@ class BotEngine:
         balance: float,
         ai_sentiment: dict | None,
         recent_wr_prefetched: float | None = None,
+        recent_profits: list[float] | None = None,
+        df: pd.DataFrame | None = None,
+    ) -> bool:
+        """开仓许可检查（Phase 4 观测包装）。
+
+        保持原签名与返回值不变；额外启动 laya 影子观测器（只记录、零副作用）：
+        - 观测器与 inner 的确定性检查并行，positions/daily_pnl 与 TradeGate
+          判定由 inner 注入，等最终结果后 best-effort 落库。
+        - laya 故障/超时/未启用绝不改变返回结果（H-3 影子非干扰性）。
+        """
+        obs = None
+        try:
+            # H2：观测创建全包异常隔离——laya 模块 import 失败 / create_task
+            # 在 loop 关闭竞态抛错，都不得穿透改变交易结果（H-3）。
+            from app.ai.laya_engine_observation import start_engine_observation
+
+            obs = start_engine_observation(
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                signal=signal,
+                signal_label=signal_label,
+                balance=balance,
+                df=df,
+                recent_wr=recent_wr_prefetched,
+                recent_profits=recent_profits,
+            )
+        except Exception as e:  # noqa: BLE001 - 影子故障零影响
+            logger.warning(f"[laya-engine-obs] observation start failed (ignored): {e}")
+        allowed: bool | None = None
+        try:
+            allowed = await self._check_trade_permission_inner(
+                signal,
+                signal_label,
+                balance,
+                ai_sentiment,
+                recent_wr_prefetched=recent_wr_prefetched,
+                df=df,
+                _engine_obs=obs,
+            )
+            return allowed
+        finally:
+            if obs is not None:
+                try:
+                    obs.finish(allowed)
+                except Exception as e:  # noqa: BLE001 - 收尾异常不得顶掉返回值
+                    logger.warning(f"[laya-engine-obs] observation finish failed (ignored): {e}")
+
+    async def _check_trade_permission_inner(
+        self,
+        signal: int,
+        signal_label: str,
+        balance: float,
+        ai_sentiment: dict | None,
+        recent_wr_prefetched: float | None = None,
+        df: pd.DataFrame | None = None,
+        _engine_obs=None,
     ) -> bool:
         """Check risk limits, portfolio exposure, and correlation conflicts. Returns True if allowed."""
         import asyncio as _asyncio
@@ -795,6 +875,63 @@ class BotEngine:
             self.executor.get_open_positions(self.symbol),
             self.circuit_breaker.get_daily_pnl(),
         )
+        if _engine_obs is not None:
+            _engine_obs.set_account(positions, daily_pnl)
+
+        # Trade Gate 「可否交易」门控（Phase 3.8 落地）。
+        # 用 OHLCV 状态判断是否值得开仓；shadow 记录 / enforce 否决。
+        # C2/I1 修复：拆 shadow（记录不否决）+ enforce（否决）双开关，弃权(None, _) 绝不阻断——
+        # 数据/schema 问题只作影子记录，绝不静默停单。df 复用调用方已取的（避免二次网络往返）。
+        if settings.trade_gate_shadow or settings.trade_gate_enforce:
+            try:
+                if self._trade_gate is None:
+                    from app.ml.trade_gate import TradeGate
+
+                    self._trade_gate = TradeGate(settings.trade_gate_model_path)
+                if self._trade_gate.is_ready:
+                    # 优先复用调用方已 fetch 的 df，避免 I2 的二次 OHLCV 往返。
+                    ohlcv = df
+                    if ohlcv is None or len(ohlcv) <= 60:
+                        ohlcv = await self.market_data.get_ohlcv(self.symbol, self.timeframe, DEFAULT_OHLCV_BARS)
+                    # 决策用已确认的上一根 bar（iloc[-2]），gate 评分同源——修复 bar N vs N-1 语义错位。
+                    if ohlcv is not None and len(ohlcv) > 1:
+                        gate_df = ohlcv.iloc[:-1]
+                        can_trade, gate_prob = self._trade_gate.predict(gate_df)
+                        if _engine_obs is not None:
+                            _engine_obs.set_chain(can_trade, gate_prob)
+                        if can_trade is None:
+                            # 弃权（数据不足/模型故障）：影子记录，绝不阻断
+                            logger.info(f"TradeGate abstained (data insufficient) on {signal_label}")
+                            await self._log_event(
+                                BotEventType.TRADE_BLOCKED,
+                                f"{signal_label} shadow: TradeGate abstained (data insufficient)",
+                            )
+                        elif not can_trade:
+                            if settings.trade_gate_enforce:
+                                reason = (
+                                    f"TradeGate blocked: current state not favorable for entry "
+                                    f"(can_trade_prob={gate_prob:.3f})"
+                                )
+                                logger.info(f"Trade blocked: {reason}")
+                                await self._log_event(
+                                    BotEventType.TRADE_BLOCKED, f"{signal_label} blocked: {reason}"
+                                )
+                                await self._push_event(
+                                    "bot_event",
+                                    {"type": "trade_blocked", "signal": signal_label, "reason": reason},
+                                )
+                                if self.notifier:
+                                    await self._notify(
+                                        self.notifier._send(f"🚫 <b>{signal_label} TradeGate Blocked</b>\n{reason}")
+                                    )
+                                return False
+                            # shadow 模式：记录判定但不否决
+                            await self._log_event(
+                                BotEventType.TRADE_BLOCKED,
+                                f"{signal_label} shadow: TradeGate would block (can_trade_prob={gate_prob:.3f})",
+                            )
+            except Exception as e:  # gate 故障降级为放行（不阻断交易）
+                logger.warning(f"TradeGate check failed, allowing trade: {e}")
 
         trade_patterns = None
         if self._ai_context:

@@ -297,6 +297,18 @@ async def lifespan(app: FastAPI):
     sentiment_analyzer = NewsSentimentAnalyzer(ai_client, db_session, redis_client)
     manager.set_sentiment_analyzer(sentiment_analyzer)
 
+    # Laya 运行时预热（M3）：import laya + 权重加载在线程内执行，绝不阻塞事件循环。
+    # 冷加载 ~136s，启动期即后台加载；失败仅降级观测（UNAVAILABLE），不影响交易。
+    try:
+        from app.ai.laya_runtime import get_laya_runtime
+
+        if settings.laya_enabled:
+            app.state.laya_warmup_task = asyncio.create_task(
+                get_laya_runtime().warmup(timeout=settings.laya_gate_warmup_timeout_s)
+            )
+    except Exception as e:  # noqa: BLE001 - 预热失败非致命
+        logger.warning(f"Laya warmup start failed (non-fatal): {e}")
+
     # Initialize historical data collector (uses first engine's market_data)
     first_engine = next(iter(manager.engines.values()))
     hist_collector = HistoricalDataCollector(first_engine.market_data, db_session)

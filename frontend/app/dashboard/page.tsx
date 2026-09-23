@@ -568,7 +568,7 @@ export default function DashboardPage() {
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2 sm:gap-3">
                       <span>{activeSymbolInfo?.display_name || activeSymbol}</span>
-                      <SentimentBadge label={sentiment?.label || "neutral"} score={sentiment?.score || 0} size="sm" />
+                      <SentimentBadge label={sentiment?.label || "neutral"} score={sentiment?.score || 0} size="sm" engine={sentiment?.engine} />
                     </div>
                     <TimeframeSelector value={chartTimeframe} onChange={setChartTimeframe} />
                   </div>

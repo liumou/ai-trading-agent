@@ -39,8 +39,13 @@ out/
 Thumbs.db
 
 # ML models
-backend/models/
+# trade_gate.pkl 是 TradeGate 引擎的必需产物（引擎启动即加载，缺失 → 门控空转），
+# 必须入库；其余 pickle/模型产物一般不入库。backend/models/ 改为 backend/models/*
+# 是因为整目录忽略会阻止 git 枚举目录内文件，否定豁免单文件就永远不会生效。
+backend/models/*
+!backend/models/trade_gate.pkl
 *.pkl
+!backend/models/trade_gate.pkl
 
 # Backups
 backups/

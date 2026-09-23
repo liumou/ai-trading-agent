@@ -1,0 +1,106 @@
+{
+  "variant": "a",
+  "n": 60,
+  "verdict_dist": {
+    "ESCALATE": 60
+  },
+  "latency_ms_median": 1509.5,
+  "per_question": {
+    "data_quality": {
+      "partial": 58,
+      "insufficient": 2
+    },
+    "signal_alignment": {
+      "conflict": 30,
+      "insufficient": 30
+    },
+    "market_regime": {
+      "adverse": 13,
+      "neutral": 39,
+      "favorable": 7,
+      "insufficient": 1
+    },
+    "risk_check": {
+      "block": 24,
+      "clear": 36
+    },
+    "execution_quality": {
+      "clear": 60
+    },
+    "entry_decision": {
+      "reject": 36,
+      "pass": 24
+    }
+  },
+  "success_2h": {
+    "base_rate": 0.4666666666666667,
+    "entry_pass_rate": 0.5416666666666666,
+    "by_verdict": {
+      "APPROVED": [
+        NaN,
+        0
+      ],
+      "CAUTION": [
+        NaN,
+        0
+      ],
+      "REJECTED": [
+        NaN,
+        0
+      ],
+      "ESCALATE": [
+        0.4666666666666667,
+        60
+      ]
+    }
+  },
+  "success_6h": {
+    "base_rate": 0.55,
+    "entry_pass_rate": 0.5416666666666666,
+    "by_verdict": {
+      "APPROVED": [
+        NaN,
+        0
+      ],
+      "CAUTION": [
+        NaN,
+        0
+      ],
+      "REJECTED": [
+        NaN,
+        0
+      ],
+      "ESCALATE": [
+        0.55,
+        60
+      ]
+    }
+  },
+  "success_1d": {
+    "base_rate": 0.5166666666666667,
+    "entry_pass_rate": 0.625,
+    "by_verdict": {
+      "APPROVED": [
+        NaN,
+        0
+      ],
+      "CAUTION": [
+        NaN,
+        0
+      ],
+      "REJECTED": [
+        NaN,
+        0
+      ],
+      "ESCALATE": [
+        0.5166666666666667,
+        60
+      ]
+    }
+  },
+  "ece_entry_2h": 0.13138,
+  "divergence": {
+    "laya_escalate": 60
+  },
+  "chain_agree_rate": 0.0
+}

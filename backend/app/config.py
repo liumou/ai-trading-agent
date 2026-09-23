@@ -1,5 +1,7 @@
 import json
+from urllib.parse import urlparse
 
+from loguru import logger
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
@@ -298,6 +300,62 @@ class Settings(BaseSettings):
     ml_rollback_accuracy_floor: float = 0.30  # rollback if accuracy drops below this
     ml_rollback_min_predictions: int = 50  # minimum predictions before rollback check
 
+    # Laya 决策引擎（Phase: laya integration，默认关闭）
+    # 非自回归单次前向的结构化判定引擎（choice/score/noul）。本项目用它做
+    # 高频分类预筛（情绪三分类等），不替换 LLM 的深度决策/长文生成。
+    # 默认 False：未装 laya 依赖 / 未下载模型权重时系统照常运行（try-import 降级）。
+    # C1 修复：曾误翻为 True，此处与注释/计划/测试三方一致回退 False。
+    laya_enabled: bool = False
+    # 模型标识：本地路径优先（缓存目录下），否则视为 HF repo id（走 HF_ENDPOINT 镜像）。
+    laya_model: str = "convaiinnovations/laya"  # english 421M；多语言用 convaiinnovations/laya-multilingual(322M)
+    # 分类预筛置信度阈值：laya 判定 confidence ≥ 阈值则直接采用；否则回退 LLM 深析。
+    laya_confidence_threshold: float = 0.85
+    # 策略名抽取的置信阈值（I3 修复）：laya 策略分类低于此阈值时回退 keyword 匹配。
+    laya_strategy_confidence_threshold: float = 0.6
+    # 模型权重缓存目录（默认 ~/.cache/huggingface）。生产部署建议构建时预缓存到镜像。
+    laya_model_cache_dir: str = ""
+    # HF 下载端点（C10：默认空=用官方 huggingface.co 或环境变量 HF_ENDPOINT）。
+    # 国内网络 huggingface.co 模型端点常被阻断，部署侧显式设 HF_ENDPOINT=https://hf-mirror.com。
+    laya_hf_endpoint: str = ""
+    # Laya 6 问交易判定门（Phase 3.x，veto-only 收紧层，默认关闭）。
+    # laya_gate_shadow=True：laya 判定与 LLM 并行跑、只记录不拦截（影子验证）。
+    # laya_gate_enforce=False：enforce 阶段 laya 判定参与拦截（须一致率达标后手动开启）。
+    # laya_gate_confidence_threshold：max-class 概率刻度（非熵置信度；JEV 0.55 作用于熵
+    #   刻度不可照搬——外部评审 H5），低置信/畸形一律 ESCALATE 交 LLM。
+    laya_gate_shadow: bool = False
+    laya_gate_enforce: bool = False
+    laya_gate_confidence_threshold: float = 0.6
+    # 灰度放行比例（0-100，Phase 4 用）：enforce 开启后按此比例抽样生效，
+    # 增量灰度 shadow → 10% → 50% → 100%，每档 ≥1 周；enforce=False 即 kill switch。
+    laya_gate_rollout_pct: int = 0
+    # 6 问推理超时（冷加载在 warmup 处理，这里只防 predict 卡死）
+    laya_gate_predict_timeout_s: float = 30.0
+    # 6 问 state 渲染形态（2026-09-22 真实数据实测）：JSON 数字形态模型判
+    # data_quality=partial/insufficient 达 97%；同一证据渲染为自然语言短句后
+    # sufficient 61% + ECE(entry,2h) 0.131→0.068。默认 prose，可翻回 json 对照。
+    laya_state_prose: bool = True
+    # 启动期 warmup 预算（秒）：import laya + 权重加载/下载在线程内执行，
+    # 超时只告警不 fail-stop（运行期 predict 超时才 fail-stop）。
+    laya_gate_warmup_timeout_s: float = 600.0
+    # engine 开仓侧观测开关（Phase 4，只观测不改行为）。
+    # True（用户 2026-09-22 批准打开）：每次开仓许可检查都让 laya 看同一份
+    #   行情/账户状态并记录「laya vs TradeGate+确定性链」分歧
+    #   （laya_engine_observations 专表）。
+    # 与 trade_gate_* / laya_gate_enforce 无关：本阶段不建 gate、不拦截、
+    # 不重复现有 shadow/enforce 结构；laya 故障只留痕 UNAVAILABLE。
+    laya_gate_engine_shadow: bool = True
+
+    # Trade Gate 「可否交易」门控（Phase 3.8 落地，默认关闭）
+    # LightGBM 二分类（由 scripts/laya_synth_baseline.py --save 训练，AUC≈0.739 —— 待 purge-gap）。
+    # 在每笔交易前检查当前 OHLCV 状态是否值得开仓（can_trade 概率 ≥ 阈值）。
+    # I1 修复：拆两个开关——
+    #   trade_gate_shadow=True：记录 gate 判定与概率、不否决交易（影子验证，计划硬要求）。
+    #   trade_gate_enforce=True：判定不通过则拒绝交易。
+    # 默认：shadow 开启、enforce 关闭 —— 模型文件缺失时引擎照常运行（is_ready=False → 弃权放行）。
+    trade_gate_shadow: bool = True
+    trade_gate_enforce: bool = False
+    trade_gate_model_path: str = "models/trade_gate.pkl"
+
     # Runner
     runner_backend: str = "process"  # "process" or "docker"
     docker_host: str = ""  # e.g. "tcp://vps:2376" for remote Docker
@@ -347,7 +405,40 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",")]
+        """CORS 白名单（规范化后）。只保留形如 ``http(s)://host[:port]`` 的 origin。
+
+        显式过滤而不是原样透传：`CORS_ORIGINS` 里一个拼写错误（例如
+        ``http:/localhost:3000`` 少一个斜杠）会让该 origin 静默失效 —— 浏览器端
+        表现成每个预检请求都收到 `400 Disallowed CORS origin`，服务端日志只有
+        一行 "Disallowed CORS origin"，排查成本极高。这里丢弃非法条目并告警，
+        让配置错误在启动日志里就暴露。
+
+        ``*`` 原样保留：``auth._assert_auth_consistent()`` 依赖它出现在白名单里
+        来拒绝启动（通配符 + 携带凭据的 Cookie 违反 CORS 规范）。
+        """
+        origins: list[str] = []
+        for raw in self.cors_origins.split(","):
+            origin = raw.strip().rstrip("/")
+            if not origin:
+                continue
+            if origin == "*":
+                origins.append(origin)
+                continue
+            parsed = urlparse(origin)
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.netloc
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+            ):
+                logger.warning(
+                    f"CORS_ORIGINS entry ignored (expected http(s)://host[:port]): {raw.strip()!r}"
+                )
+                continue
+            if origin not in origins:
+                origins.append(origin)
+        return origins
 
     # Trusted Host header allowlist. Empty = allow all (dev). Set in prod to
     # block Host header injection / cache poisoning via spoofed forwarded
