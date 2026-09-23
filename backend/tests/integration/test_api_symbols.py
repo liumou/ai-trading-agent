@@ -456,6 +456,102 @@ class TestAdmissionGate:
         assert body["volume_step"] == 0.05
         assert body["contract_size"] == 100.0
 
+    @pytest.mark.asyncio
+    async def test_toggle_on_auto_fixes_stale_asset_class(self, gate_client, db_session):
+        """存量品种（旧推断逻辑遗留的 asset_class）启用时自动修正为券商路径推断值。
+
+        覆盖线上 GER40Cash 报错：DB 存 'forex'，券商路径
+        'Derivatives\\Cash\\Cash Indices\\GER40Cash' 推断 'index'。修正后交叉校验
+        通过，品种成功启用。
+        """
+        client, connector = gate_client
+        cfg = SymbolConfig(
+            symbol="GER40Cash",
+            display_name="Germany 40",
+            broker_alias="GER40Cash",
+            asset_class="forex",  # 旧推断逻辑遗留的错误值
+            is_enabled=False,
+            ml_status="pending",
+            default_timeframe="M15",
+            pip_value=1.0,
+            default_lot=0.5,
+            max_lot=5.0,
+            price_decimals=1,
+            sl_atr_mult=1.5,
+            tp_atr_mult=2.0,
+            contract_size=25.0,
+            ml_tp_pips=50.0,
+            ml_sl_pips=50.0,
+            ml_forward_bars=10,
+            ml_timeframe="M15",
+        )
+        db_session.add(cfg)
+        await db_session.commit()
+
+        connector.get_symbol_spec.return_value = _spec_ok(
+            symbol="GER40Cash",
+            path="Derivatives\\Cash\\Cash Indices\\GER40Cash",
+            digits=1,
+            point=0.5,
+            trade_contract_size=25.0,
+            volume_min=0.1,
+            volume_step=0.1,
+        )
+        resp = await client.post("/api/symbols/GER40Cash/toggle")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["is_enabled"] is True
+        assert body["asset_class"] == "index"
+
+        # 数据库同步更新，再次禁用/启用不会重蹈覆辙
+        await db_session.refresh(cfg)
+        assert cfg.asset_class == "index"
+        resp = await client.post("/api/symbols/GER40Cash/toggle")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["is_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_toggle_on_keeps_matching_asset_class(self, gate_client, db_session):
+        """类别已与券商路径推断一致的行，启用时不被改动。"""
+        client, connector = gate_client
+        cfg = SymbolConfig(
+            symbol="US30",
+            display_name="US30 Index",
+            broker_alias="US30",
+            asset_class="index",
+            is_enabled=False,
+            ml_status="pending",
+            default_timeframe="M15",
+            pip_value=1.0,
+            default_lot=0.5,
+            max_lot=5.0,
+            price_decimals=1,
+            sl_atr_mult=1.5,
+            tp_atr_mult=2.0,
+            contract_size=1.0,
+            ml_tp_pips=50.0,
+            ml_sl_pips=50.0,
+            ml_forward_bars=10,
+            ml_timeframe="M15",
+        )
+        db_session.add(cfg)
+        await db_session.commit()
+
+        connector.get_symbol_spec.return_value = _spec_ok(
+            symbol="US30",
+            path="Derivatives\\Cash\\Cash Indices\\US30",
+            digits=1,
+            point=0.1,
+            trade_contract_size=1.0,
+        )
+        resp = await client.post("/api/symbols/US30/toggle")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["is_enabled"] is True
+        assert body["asset_class"] == "index"
+        await db_session.refresh(cfg)
+        assert cfg.asset_class == "index"
+
 
 class TestRetrain:
     @pytest.mark.asyncio

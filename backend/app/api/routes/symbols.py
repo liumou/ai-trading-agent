@@ -918,6 +918,25 @@ async def toggle_symbol(
         # 已被下架或改为 CLOSEONLY）。禁用方向不做拦截。
         broker_name = cfg.broker_alias or cfg.symbol
         spec = await _require_broker_spec(request, broker_name)
+        # 存量品种的 asset_class 可能写自旧推断逻辑（只读路径首段，未命中即默认
+        # forex），与升级后的券商路径推断（如 GER40Cash → index）不一致，会在下面的
+        # 交叉校验 400、导致用户无法激活。券商是事实源：路径存在时自动修正库值为
+        # 推断值并记入审计，再以修正后的类别走常规交叉校验，避免把用户锁死。
+        path = spec.get("path") or ""
+        inferred = _infer_asset_class(path) if path else None
+        if inferred and inferred != cfg.asset_class:
+            old_class, cfg.asset_class = cfg.asset_class, inferred
+            logger.info(
+                f"Symbol {symbol}: asset_class auto-fixed {old_class} -> {inferred} on enable "
+                f"(broker path {path!r})"
+            )
+            await _audit(
+                db,
+                request,
+                "symbol_asset_class_fixed",
+                symbol,
+                {"broker_path": path, "old": old_class, "new": inferred},
+            )
         _cross_check_asset_class(spec, cfg.asset_class)
         _check_lot_against_volume(cfg.default_lot, cfg.volume_min, cfg.volume_step)
         # 回填以券商为准的规格字段，使订单侧手数防线生效。存量行的 volume 列
