@@ -52,6 +52,26 @@ class TestMarketSummary:
         for key in ("change_1_pct", "change_5_pct", "vol_14", "range_position_50"):
             assert key in s
         assert 0.0 <= s["range_position_50"] <= 1.0
+        # Phase 1 证据面扩展：轻量指标/支撑阻力/量比
+        for key in ("ma5", "ma10", "ma20", "rsi14", "atr14", "atr_pct",
+                    "macd_state", "macd_histogram", "volume_ratio_20",
+                    "support", "resistance"):
+            assert key in s, key
+
+    def test_freshness_with_datetime_index_and_timeframe(self):
+        df = _df(60)
+        df.index = pd.date_range("2026-09-20 00:00", periods=len(df), freq="15min")
+        s = build_market_summary(df, timeframe="M15")
+        assert "latest_bar_time_utc" in s
+        assert "data_age_seconds" in s
+        assert "is_stale" in s
+        assert isinstance(s["is_stale"], bool)
+
+    def test_unknown_timeframe_skips_freshness(self):
+        df = _df(60)
+        df.index = pd.date_range("2026-09-20 00:00", periods=len(df), freq="15min")
+        s = build_market_summary(df, timeframe="")
+        assert "data_age_seconds" not in s
 
     def test_short_df_returns_empty(self):
         assert build_market_summary(pd.DataFrame({"close": [1.0]})) == {}
@@ -77,6 +97,7 @@ class TestSnapshot:
             balance=10000.0, df=_df(), positions=[P()] * 6, daily_pnl=-50.0,
             recent_wr=0.6,
         )
+        assert snap["context_version"] == 2
         assert snap["order"]["side"] == "BUY"
         assert snap["order"]["signal"] == 1
         assert snap["account"]["balance"] == 10000.0
@@ -88,6 +109,25 @@ class TestSnapshot:
         assert snap["market"]["symbol"] == "GOLD"
         assert snap["market"]["timeframe"] == "M15"
         assert "last_close" in snap["market"]
+
+    def test_recent_profits_summary(self):
+        """Phase 1：最近平仓盈亏 → consecutive_losses + recent_exit_pnl（对齐 JEV）。"""
+        snap = build_laya_engine_snapshot(
+            symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
+            balance=10000.0, df=_df(), positions=[], daily_pnl=0.0,
+            recent_wr=0.6, recent_profits=[-3.0, -1.5, 2.0, 4.0],
+        )
+        assert snap["account"]["recent_exit_pnl"] == [-3.0, -1.5, 2.0, 4.0]
+        assert snap["account"]["consecutive_losses"] == 2
+
+    def test_recent_profits_empty_omits_keys(self):
+        snap = build_laya_engine_snapshot(
+            symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
+            balance=10000.0, df=_df(), positions=[], daily_pnl=0.0,
+            recent_wr=0.6, recent_profits=[],
+        )
+        assert "recent_exit_pnl" not in snap["account"]
+        assert "consecutive_losses" not in snap["account"]
 
     def test_signal_signs(self):
         s1 = build_laya_engine_snapshot(
@@ -106,9 +146,23 @@ class TestSnapshot:
             symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
             balance=10000.0, df=_df(), positions=positions, daily_pnl=0.0, recent_wr=None,
         )
-        assert snap["positions"][0] == {"symbol": "GOLD", "type": "BUY", "volume": 0.1, "profit": 3.2}
+        assert snap["positions"][0] == {
+            "symbol": "GOLD", "type": "BUY", "volume": 0.1, "profit": 3.2,
+            "entry_price": None, "current_price": None,
+        }
         assert snap["positions"][1]["symbol"] == "GOLD"
         assert snap["positions"][1]["profit"] == -1.0
+
+    def test_dict_positions_entry_current_compacted(self):
+        """MT5 Bridge 若带 price_open/price_current → 归一化为 entry_price/current_price。"""
+        positions = [{"symbol": "GOLD", "type": "BUY", "volume": 0.1, "profit": 3.2,
+                      "price_open": 3150.0, "price_current": 3153.0}]
+        snap = build_laya_engine_snapshot(
+            symbol="GOLD", timeframe="M15", signal=1, signal_label="BUY",
+            balance=10000.0, df=_df(), positions=positions, daily_pnl=0.0, recent_wr=None,
+        )
+        assert snap["positions"][0]["entry_price"] == 3150.0
+        assert snap["positions"][0]["current_price"] == 3153.0
 
 
 class TestClassifyDivergence:

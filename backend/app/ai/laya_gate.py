@@ -42,6 +42,12 @@ CONVERGENCE_QUESTIONS = (
     "entry_decision",
 )
 
+# prose state 字符预算（确定性护栏）：laya 每问 state room = 512 - head_len - 1；
+# 本项目 6 问 head 74-98 token → 最坏 room=413（risk_check）。实测混合文本约
+# 2.4-2.6 chars/token；900 字符 ≈ 350-375 token，保留 ~40 token 余量。
+# 超预算先丢低优先级行（flags→trades→positions），再硬截断尾部。
+_PROSE_BUDGET_CHARS = 900
+
 VERDICT_APPROVED = "APPROVED"
 VERDICT_CAUTION = "CAUTION"
 VERDICT_REJECTED = "REJECTED"
@@ -220,6 +226,189 @@ def build_laya_state(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _field(obj: Any, name: str, default: Any = None) -> Any:
+    """dict 或对象统一取字段（与 _compact_position 同款容错）。"""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _fmt_position(p: Any) -> Optional[str]:
+    """压缩一条持仓/成交为一行文本；无可用字段返回 None。"""
+    sym = _field(p, "symbol")
+    typ = _field(p, "type")
+    vol = _field(p, "volume")
+    if vol is None:
+        vol = _field(p, "lot")  # ManualGate 持仓/成交用 lot 而非 volume
+    profit = _field(p, "profit")
+    entry = _field(p, "entry_price")
+    if entry is None:
+        entry = _field(p, "price_open")
+    current = _field(p, "current_price")
+    if current is None:
+        current = _field(p, "price_current")
+    bits = []
+    if sym:
+        bits.append(str(sym))
+    if typ:
+        bits.append(str(typ))
+    if vol is not None:
+        bits.append(f"vol={vol}")
+    if profit is not None:
+        bits.append(f"profit={profit}")
+    if entry is not None:
+        bits.append(f"entry={entry}")
+    if current is not None:
+        bits.append(f"cur={current}")
+    return " ".join(bits) if bits else None
+
+
+def render_laya_state_prose(snapshot: Dict[str, Any]) -> str:
+    """把 6 问快照渲染为自然语言证据文本（2026-09-22 真实数据实测改良）。
+
+    背景：laya 的 state 被 `json.dumps` 后直接拼接进 prompt，JSON 数字形态
+    模型几乎不读（data_quality=partial/insufficient 达 97%）；同一证据渲染为
+    短句文本后模型判 sufficient 61%、ECE(entry,2h) 0.131→0.068。
+    本函数是纯确定性渲染：只消费快照已有字段（order/account/positions/
+    recent_trades/rule_flags/market），零额外 I/O；总量控制在 512 token 内
+    （位置/近期成交最多各 4 条，字段短句化）。
+    """
+    order = snapshot.get("order") or {}
+    account = snapshot.get("account") or {}
+    market = snapshot.get("market") or {}
+    positions = snapshot.get("positions") or []
+    recent_trades = snapshot.get("recent_trades") or []
+    rule_flags = snapshot.get("rule_flags") or []
+
+    symbol = _field(order, "symbol") or market.get("symbol") or "?"
+    timeframe = _field(order, "timeframe") or market.get("timeframe") or "?"
+    side = str(_field(order, "side") or "FLAT").upper()
+    signal = _field(order, "signal")
+    signal_label = _field(order, "signal_label")
+    sig_txt = f"signal={signal}"
+    if signal_label:
+        sig_txt += f" ({signal_label})"
+
+    lines = [f"{symbol} {timeframe} manual order review.", f"Order: {side} on {symbol} {timeframe} ({sig_txt})."]
+
+    # 订单大小与保护（ManualGate 快照：lot/sl/tp/type；engine 快照无这些字段 → 不输出）
+    obits = []
+    if _field(order, "lot") is not None:
+        obits.append(f"lot {_field(order, 'lot')}")
+    if _field(order, "type"):
+        obits.append(f"type {_field(order, 'type')}")
+    if _field(order, "sl") is not None:
+        obits.append(f"stop loss {_field(order, 'sl')}")
+    if _field(order, "tp") is not None:
+        obits.append(f"take profit {_field(order, 'tp')}")
+    if obits:
+        lines.append("Order details: " + "; ".join(obits) + ".")
+
+    acct_bits = []
+    if _field(account, "balance") is not None:
+        acct_bits.append(f"balance {_field(account, 'balance')}")
+    if _field(account, "positions_count") is not None:
+        acct_bits.append(f"open positions {_field(account, 'positions_count')}")
+    if _field(account, "daily_pnl") is not None:
+        acct_bits.append(f"daily pnl {_field(account, 'daily_pnl')}")
+    if _field(account, "equity") is not None:
+        acct_bits.append(f"equity {_field(account, 'equity')}")
+    if _field(account, "floating_profit") is not None:
+        acct_bits.append(f"floating profit {_field(account, 'floating_profit')}")
+    if _field(account, "realized_daily_pnl") is not None:
+        acct_bits.append(f"realized daily pnl {_field(account, 'realized_daily_pnl')}")
+    if _field(account, "recent_win_rate") is not None:
+        acct_bits.append(f"recent win rate {_field(account, 'recent_win_rate')}")
+    if _field(account, "consecutive_losses") is not None:
+        acct_bits.append(f"consecutive losses {_field(account, 'consecutive_losses')}")
+    lines.append("Account: " + "; ".join(acct_bits) + "." if acct_bits else "Account: no account data.")
+
+    mbits = []
+    for k in ("last_close", "change_1_pct", "change_5_pct", "vol_14",
+              "range_position_50", "price_vs_sma9", "price_vs_sma21"):
+        v = market.get(k)
+        if v is None:
+            continue
+        if k == "last_close":
+            mbits.append(f"last close {v}")
+        elif k == "change_1_pct":
+            mbits.append(f"change {v}% over the last bar")
+        elif k == "change_5_pct":
+            mbits.append(f"change {v}% over 5 bars")
+        elif k == "vol_14":
+            mbits.append(f"14-bar volatility {v}%")
+        elif k == "range_position_50":
+            try:
+                mbits.append(f"price at {round(float(v) * 100)}% of the 50-bar range")
+            except (TypeError, ValueError):
+                mbits.append(f"50-bar range position {v}")
+        elif k in ("price_vs_sma9", "price_vs_sma21"):
+            mbits.append(f"price {v}x SMA{k.removeprefix('price_vs_sma')}")
+    for key, label in (
+        ("rsi14", "RSI14"),
+        ("atr14", "ATR14"),
+        ("atr_pct", "ATR14 %"),
+        ("macd_state", "MACD"),
+        ("ma5", "MA5"),
+        ("ma10", "MA10"),
+        ("ma20", "MA20"),
+        ("support", "support"),
+        ("resistance", "resistance"),
+    ):
+        v = market.get(key)
+        if v is None:
+            continue
+        mbits.append(f"{label} {v}")
+    if market.get("data_age_seconds") is not None:
+        age = market["data_age_seconds"]
+        state = "stale" if market.get("is_stale") else "fresh"
+        mbits.append(f"data age {age}s ({state})")
+    for key in ("bid", "ask", "spread", "avg_spread"):
+        v = market.get(key)
+        if v is None:
+            continue
+        mbits.append(f"{key} {v}")
+    sentiment = market.get("sentiment")
+    if isinstance(sentiment, dict) and sentiment.get("label"):
+        mbits.append(f"news sentiment {sentiment['label']}")
+    elif isinstance(sentiment, str) and sentiment:
+        mbits.append(f"news sentiment {sentiment}")
+    if mbits:
+        lines.append("Market: " + "; ".join(mbits) + ".")
+
+    pos_lines = [_fmt_position(p) for p in positions[:4]]
+    pos_lines = [s for s in pos_lines if s]
+    if pos_lines:
+        lines.append("Positions: " + " | ".join(pos_lines) + ".")
+
+    trade_lines = [_fmt_position(t) for t in recent_trades[:4]]
+    trade_lines = [s for s in trade_lines if s]
+    if trade_lines:
+        lines.append("Recent trades: " + " | ".join(trade_lines) + ".")
+
+    flags = []
+    for f in rule_flags[:8]:
+        if isinstance(f, dict):
+            txt = f.get("detail") or f.get("flag")
+            if txt:
+                flags.append(str(txt)[:80])
+        elif f not in (None, ""):
+            flags.append(str(f)[:80])
+    if flags:
+        lines.append("Rule flags: " + "; ".join(flags) + ".")
+    text = "\n".join(lines)
+    if len(text) <= _PROSE_BUDGET_CHARS:
+        return text
+    # 预算护栏：按优先级从低到高丢弃证据行，仍超则硬截断（保 order/account/market 核心证据）
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith(("Rule flags:", "Recent trades:", "Positions:")):
+            lines.pop(index)
+            text = "\n".join(lines)
+            if len(text) <= _PROSE_BUDGET_CHARS:
+                return text
+    return text[:_PROSE_BUDGET_CHARS]
+
+
 async def laya_gate_review(
     snapshot: Dict[str, Any],
     *,
@@ -237,6 +426,8 @@ async def laya_gate_review(
     if not rt.available:
         return None
     state = build_laya_state(snapshot)
+    if settings.laya_state_prose:
+        state = render_laya_state_prose(snapshot)
     answers = await rt.predict_choices(
         state,
         LAYA_GATE_QUESTIONS,

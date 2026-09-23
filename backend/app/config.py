@@ -330,6 +330,10 @@ class Settings(BaseSettings):
     laya_gate_rollout_pct: int = 0
     # 6 问推理超时（冷加载在 warmup 处理，这里只防 predict 卡死）
     laya_gate_predict_timeout_s: float = 30.0
+    # 6 问 state 渲染形态（2026-09-22 真实数据实测）：JSON 数字形态模型判
+    # data_quality=partial/insufficient 达 97%；同一证据渲染为自然语言短句后
+    # sufficient 61% + ECE(entry,2h) 0.131→0.068。默认 prose，可翻回 json 对照。
+    laya_state_prose: bool = True
     # 启动期 warmup 预算（秒）：import laya + 权重加载/下载在线程内执行，
     # 超时只告警不 fail-stop（运行期 predict 超时才 fail-stop）。
     laya_gate_warmup_timeout_s: float = 600.0

@@ -454,6 +454,7 @@ class BotEngine:
             # Pre-fetch recent_wr in isolated session so _check_trade_permission does
             # NOT hold the shared db_session across broker-API awaits in _size_and_place_order.
             recent_wr_pref: float | None = None
+            recent_profits_pref: list[float] | None = None
             try:
                 from sqlalchemy import select as _sel_wr
 
@@ -475,6 +476,7 @@ class BotEngine:
                     _recent = _res_wr.scalars().all()
                 if len(_recent) >= 10:
                     recent_wr_pref = sum(1 for t in _recent if t.profit > 0) / len(_recent)
+                    recent_profits_pref = [float(t.profit) for t in _recent if t.profit is not None]
             except Exception as _wr_err:
                 logger.warning(f"recent_wr prefetch failed [{self.symbol}] — using default threshold: {_wr_err}")
                 recent_wr_pref = None
@@ -485,6 +487,7 @@ class BotEngine:
                 balance,
                 ai_sentiment,
                 recent_wr_prefetched=recent_wr_pref,
+                recent_profits=recent_profits_pref,
                 df=df,
             ):
                 return
@@ -808,6 +811,7 @@ class BotEngine:
         balance: float,
         ai_sentiment: dict | None,
         recent_wr_prefetched: float | None = None,
+        recent_profits: list[float] | None = None,
         df: pd.DataFrame | None = None,
     ) -> bool:
         """开仓许可检查（Phase 4 观测包装）。
@@ -831,6 +835,7 @@ class BotEngine:
                 balance=balance,
                 df=df,
                 recent_wr=recent_wr_prefetched,
+                recent_profits=recent_profits,
             )
         except Exception as e:  # noqa: BLE001 - 影子故障零影响
             logger.warning(f"[laya-engine-obs] observation start failed (ignored): {e}")

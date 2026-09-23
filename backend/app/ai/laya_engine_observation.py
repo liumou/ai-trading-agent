@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Sequence
 
 from loguru import logger
@@ -53,15 +54,33 @@ _LAYA_VERDICTS = ("APPROVED", "CAUTION", "REJECTED", "ESCALATE", "UNAVAILABLE")
 
 # ─── 纯函数：市场摘要（确定性预计算，供 laya 6 问 state）────────────────────
 
-def build_market_summary(df: Any) -> Dict[str, float | str]:
+def _interval_seconds(timeframe: str) -> Optional[int]:
+    """MT5 timeframe 字符串 → 单根 bar 秒数（"M15"→900、"H1"→3600；兼容 "15m"）；无法解析返回 None。"""
+    value = str(timeframe or "").strip().lower()
+    multipliers = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+    if len(value) >= 2 and value[0] in multipliers and value[1:].isdigit():
+        amount = int(value[1:])
+        suffix = value[0]
+    elif len(value) >= 2 and value[-1] in multipliers and value[:-1].isdigit():
+        amount = int(value[:-1])
+        suffix = value[-1]
+    else:
+        return None
+    return amount * multipliers[suffix] if amount > 0 else None
+
+
+def build_market_summary(df: Any, timeframe: str = "") -> Dict[str, float | str]:
     """从 engine 已取的 OHLCV df 计算紧凑市场摘要（纯 pandas，无 I/O）。
 
     只做廉价确定性计算（价格/动量/波动/位置），不触发任何网络或 DB 往返。
     df 缺列或样本不足时返回空 dict——调用方按「证据不足」处理，不阻断任何路径。
+    timeframe（如 "M15"/"H1"）仅用于 staleness 阈值判断；未知/缺列则跳过对应字段。
     """
     if df is None or not hasattr(df, "columns") or "close" not in df.columns:
         return {}
     try:
+        import pandas as _pd
+
         closes = df["close"].dropna()
         if len(closes) < 2:
             return {}
@@ -104,6 +123,67 @@ def build_market_summary(df: Any) -> Dict[str, float | str]:
             sma21 = float(values.tail(21).mean())
             if sma21 > 0:
                 summary["price_vs_sma21"] = round(last / sma21, 4)
+        # 轻量趋势/波动指标（纯 pandas；缺列/样本不足则跳过对应键）
+        high = df["high"] if "high" in df.columns else None
+        low = df["low"] if "low" in df.columns else None
+        close_s = df["close"].astype(float)
+        if len(values) >= 5:
+            summary["ma5"] = round(float(values.tail(5).mean()), 6)
+        if len(values) >= 10:
+            summary["ma10"] = round(float(values.tail(10).mean()), 6)
+        if len(values) >= 20:
+            summary["ma20"] = round(float(values.tail(20).mean()), 6)
+        if len(values) >= 50 and high is not None and low is not None:
+            h50 = float(high.tail(50).max())
+            l50 = float(low.tail(50).min())
+            if h50 > l50:
+                summary["support"] = round(l50, 6)
+                summary["resistance"] = round(h50, 6)
+        if len(values) >= 15 and high is not None and low is not None:
+            tr = _pd.concat([
+                high - low,
+                (high - close_s.shift()).abs(),
+                (low - close_s.shift()).abs(),
+            ], axis=1).max(axis=1).dropna()
+            atr14 = float(tr.tail(14).mean())
+            summary["atr14"] = round(atr14, 4)
+            summary["atr_pct"] = round(atr14 / last * 100.0, 4)
+            rets14 = values.pct_change().dropna().tail(14)
+            if len(rets14) >= 14:
+                up = float(rets14.clip(lower=0).mean())
+                dn = float((-rets14.clip(upper=0)).mean())
+                rsi14 = 100.0 if dn == 0 else 100.0 - 100.0 / (1.0 + up / dn)
+                summary["rsi14"] = round(rsi14, 2)
+        if len(values) >= 35:
+            ema12 = close_s.ewm(span=12, adjust=False).mean()
+            ema26 = close_s.ewm(span=26, adjust=False).mean()
+            macd = ema12 - ema26
+            macd_signal = macd.ewm(span=9, adjust=False).mean()
+            hist = float((macd - macd_signal).iloc[-1])
+            summary["macd_histogram"] = round(hist, 6)
+            summary["macd_state"] = "positive" if hist >= 0 else "negative"
+        vol_col = None
+        if "tick_volume" in df.columns:
+            vol_col = df["tick_volume"]
+        elif "volume" in df.columns:
+            vol_col = df["volume"]
+        if vol_col is not None:
+            vol_series = vol_col.astype(float).dropna()
+            if len(vol_series) >= 21:
+                last_vol = float(vol_series.iloc[-1])
+                mean_vol = float(vol_series.tail(20).mean())
+                if mean_vol > 0:
+                    summary["volume_ratio_20"] = round(last_vol / mean_vol, 3)
+        # 数据新鲜度（df index 须为 datetime；timeframe 已知才判 stale）
+        interval_s = _interval_seconds(timeframe)
+        if interval_s and _pd.api.types.is_datetime64_any_dtype(df.index):
+            last_ts = df.index[-1]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize("UTC")
+            age = max(0.0, (datetime.now(timezone.utc) - last_ts).total_seconds())
+            summary["latest_bar_time_utc"] = last_ts.isoformat()
+            summary["data_age_seconds"] = round(age, 1)
+            summary["is_stale"] = bool(age > interval_s * 3)
         return summary
     except Exception as e:  # 纯观测：任何计算失败都降级为空摘要
         logger.debug(f"[laya-engine-obs] market summary failed: {e}")
@@ -120,15 +200,28 @@ def _compact_position(p: Any) -> Dict[str, Any]:
         return {
             "symbol": p.get("symbol", ""),
             "type": p.get("type", ""),
-            "volume": p.get("volume"),
+            "volume": p.get("volume") if p.get("volume") is not None else p.get("lot"),
             "profit": p.get("profit"),
+            "entry_price": p.get("entry_price") if p.get("entry_price") is not None else p.get("price_open"),
+            "current_price": p.get("current_price") if p.get("current_price") is not None else p.get("price_current"),
         }
     try:
+        volume = getattr(p, "volume", None)
+        if volume is None:
+            volume = getattr(p, "lot", None)
+        entry = getattr(p, "entry_price", None)
+        if entry is None:
+            entry = getattr(p, "price_open", None)
+        current = getattr(p, "current_price", None)
+        if current is None:
+            current = getattr(p, "price_current", None)
         return {
             "symbol": getattr(p, "symbol", ""),
             "type": getattr(p, "type", ""),
-            "volume": getattr(p, "volume", None),
+            "volume": volume,
             "profit": getattr(p, "profit", None),
+            "entry_price": entry,
+            "current_price": current,
         }
     except Exception:
         return {}
@@ -145,14 +238,17 @@ def build_laya_engine_snapshot(
     positions: Optional[Sequence[Any]],
     daily_pnl: Optional[float],
     recent_wr: Optional[float],
+    recent_profits: Optional[Sequence[float]] = None,
 ) -> Dict[str, Any]:
     """组装 engine 侧 laya 6 问推理 state（与 ManualGate 快照同构）。
 
     复用 laya_gate_review 的 6 问提示词；市场部分用确定性预计算摘要。
     positions 只取前 5 且压缩字段；recent_trades 用 recent_wr 摘要代替全量列表
     （engine 路径观测不触发额外 DB 查询，评审「观测零额外 I/O 成本」约束）。
+    recent_profits：最近平仓盈亏序列（调用方已预取，复用同一只读查询，零额外 I/O），
+    用于补充 consecutive_losses / recent_exit_pnl（对齐 JEV strategy_performance）。
     """
-    market = build_market_summary(df)
+    market = build_market_summary(df, timeframe=timeframe)
     market.update({"symbol": symbol, "timeframe": timeframe})
     account: Dict[str, Any] = {
         "balance": float(balance or 0.0),
@@ -161,7 +257,18 @@ def build_laya_engine_snapshot(
     }
     if recent_wr is not None:
         account["recent_win_rate"] = float(recent_wr)
+    if recent_profits:
+        profits = [float(x) for x in recent_profits if x is not None]
+        if profits:
+            account["recent_exit_pnl"] = [round(x, 4) for x in profits[:10]]
+            losses = 0
+            for x in profits:
+                if x >= 0:
+                    break
+                losses += 1
+            account["consecutive_losses"] = losses
     return {
+        "context_version": 2,
         "order": {
             "signal": int(signal) if signal is not None else None,
             "signal_label": signal_label,
@@ -242,6 +349,7 @@ class EngineLayaObservation:
         balance: float,
         df: Any,
         recent_wr: Optional[float],
+        recent_profits: Optional[Sequence[float]] = None,
     ) -> None:
         self._symbol = symbol
         self._timeframe = timeframe
@@ -250,6 +358,7 @@ class EngineLayaObservation:
         self._balance = balance
         self._df = df
         self._recent_wr = recent_wr
+        self._recent_profits = recent_profits
         self._positions: Optional[Sequence[Any]] = None
         self._daily_pnl: Optional[float] = None
         self._chain_can_trade: Optional[bool] = None
@@ -299,6 +408,7 @@ class EngineLayaObservation:
                 positions=self._positions,
                 daily_pnl=self._daily_pnl,
                 recent_wr=self._recent_wr,
+                recent_profits=self._recent_profits,
             )
             laya_review, latency_ms = await self._run_laya_review(snapshot)
 
@@ -397,6 +507,7 @@ def start_engine_observation(
     balance: float,
     df: Any,
     recent_wr: Optional[float] = None,
+    recent_profits: Optional[Sequence[float]] = None,
 ) -> Optional[EngineLayaObservation]:
     """engine wrapper 入口：未启用观测时返回 None（零开销）。
 
@@ -415,4 +526,5 @@ def start_engine_observation(
         balance=balance,
         df=df,
         recent_wr=recent_wr,
+        recent_profits=recent_profits,
     )
