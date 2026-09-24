@@ -21,5 +21,9 @@
   "kijun": "基准线",
   "senkouA": "先行带A",
   "senkouB": "先行带B",
-  "chikou": "延迟线"
+  "chikou": "延迟线",
+  "indicator": "指标",
+  "showAll": "全部",
+  "macdSignal": "信号",
+  "macdHist": "柱"
 }

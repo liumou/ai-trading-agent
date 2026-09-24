@@ -37,7 +37,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TimeframeSelector } from "@/components/ui/timeframe-selector";
+import { Switch } from "@/components/ui/switch";
 import { showError, showSuccess } from "@/lib/toast";
+import {
+  allIndicatorsOn,
+  INDICATOR_KEYS,
+  type IndicatorKey,
+} from "@/components/chart/TradingChart";
 
 // lightweight-charts 依赖 window，必须 ssr:false 动态加载（评审 H5）
 const TradingChart = dynamic(() => import("@/components/chart/TradingChart"), {
@@ -52,6 +58,16 @@ const TradingChart = dynamic(() => import("@/components/chart/TradingChart"), {
 const PENDING_TYPES = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
 type PendingType = (typeof PENDING_TYPES)[number];
 
+// 指标开关 key → charts.json 文案 key
+const INDICATOR_LABEL_KEY: Record<IndicatorKey, string> = {
+  sma55: "sma55",
+  ema20: "ema20",
+  ema50: "ema50",
+  rsi: "rsiTitle",
+  macd: "macdTitle",
+  ichimoku: "ichimokuTitle",
+};
+
 const REVIEW_POLL_MS = 2000;
 const REVIEW_POLL_MAX = 20; // 2s × 20 = 40s > LLM 25s 预算
 const POSITIONS_POLL_MS = 10000; // 持仓全量快照周期（品种停跑后 WS 不再推送持仓）
@@ -60,6 +76,7 @@ const STALE_TICK_MS = 30000; // 超过此时长未收到新报价 → 标记"延
 
 export default function TradingPage() {
   const t = useTranslations("trading");
+  const tc = useTranslations("charts");
   const positions = useBotStore((s) => s.positions);
   const setPositions = useBotStore((s) => s.setPositions);
   const setTick = useBotStore((s) => s.setTick);
@@ -97,6 +114,9 @@ export default function TradingPage() {
   const [timeframe, setTimeframe] = useState<string>("M15");
   // 当日最高/最低（读 D1 最新 K，随品种/周期变化重取，独立于 tick）
   const [dayRange, setDayRange] = useState<DayRange | null>(null);
+  // 图表指标显隐开关（默认全开；Phase 2 加 UI 控制）
+  const [indicatorVisibility, setIndicatorVisibility] =
+    useState<Record<IndicatorKey, boolean>>(allIndicatorsOn);
 
   const symbols = useBotStore((s) => s.symbols);
   const activeSymbol = useBotStore((s) => s.activeSymbol);
@@ -486,12 +506,66 @@ export default function TradingPage() {
                 <span className="text-xs text-muted-foreground">{t("noDayRange")}</span>
               )}
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">{t("timeframe")}</span>
-              <TimeframeSelector value={timeframe} onChange={setTimeframe} size="sm" />
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* 指标显隐开关（默认全开） */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs text-muted-foreground">{tc("indicator")}</span>
+                {INDICATOR_KEYS.map((k) => (
+                    <label
+                      key={k}
+                      className="flex items-center gap-1 text-xs text-muted-foreground select-none cursor-pointer"
+                    >
+                      <Switch
+                        size="sm"
+                        checked={indicatorVisibility[k]}
+                        onCheckedChange={(on) =>
+                          setIndicatorVisibility((prev) => ({ ...prev, [k]: on }))
+                        }
+                        aria-label={tc(INDICATOR_LABEL_KEY[k])}
+                      />
+                      <span className="whitespace-nowrap">{tc(INDICATOR_LABEL_KEY[k])}</span>
+                    </label>
+                  ))}
+                {/* 全部总开关：开→全开，关→全关 */}
+                <label className="flex items-center gap-1 text-xs text-muted-foreground select-none cursor-pointer ml-1 border-l border-border pl-2">
+                  <Switch
+                    size="sm"
+                    checked={INDICATOR_KEYS.every((k) => indicatorVisibility[k])}
+                    onCheckedChange={(on) => {
+                      const next = allIndicatorsOn(); // 先拿全键，再按 on 全开/全关
+                      for (const k of INDICATOR_KEYS) next[k] = on;
+                      setIndicatorVisibility(next);
+                    }}
+                    aria-label={tc("showAll")}
+                  />
+                  <span className="whitespace-nowrap">{tc("showAll")}</span>
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">{t("timeframe")}</span>
+                <TimeframeSelector value={timeframe} onChange={setTimeframe} size="sm" />
+              </div>
             </div>
           </div>
-          <TradingChart symbol={symbol} timeframe={timeframe} tick={liveTick} height={460} />
+          <TradingChart
+            symbol={symbol}
+            timeframe={timeframe}
+            tick={liveTick}
+            height={460}
+            indicatorVisibility={indicatorVisibility}
+            onIndicatorVisibilityChange={(key, on) =>
+              setIndicatorVisibility((prev) => ({ ...prev, [key]: on }))
+            }
+            labels={{
+              sma55: tc("sma55"),
+              ema20: tc("ema20"),
+              ema50: tc("ema50"),
+              rsi: tc("rsiTitle"),
+              macd: tc("macdTitle"),
+              macdSignal: tc("macdSignal"),
+              macdHist: tc("macdHist"),
+            }}
+          />
         </div>
       )}
 
