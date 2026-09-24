@@ -27,14 +27,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   createPriceAlert,
   deletePriceAlert,
   listPriceAlerts,
@@ -110,6 +102,7 @@ export default function PriceAlertsPage() {
   const [form, setForm] = useState<AlertForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<number | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("");
 
   const load = useCallback(async () => {
     try {
@@ -210,8 +203,28 @@ export default function PriceAlertsPage() {
 
   const availableSymbols = symbols.length > 0 ? symbols : [];
 
+  // 状态分类计数 —— 与 notifications 页筛选条一致的中间内容层
+  const counts = alerts.reduce(
+    (acc, a) => {
+      if (a.is_active) acc.active += 1;
+      else if (!a.is_active && a.sent_count >= a.max_notifications) acc.saturated += 1;
+      else acc.inactive += 1;
+      return acc;
+    },
+    { active: 0, inactive: 0, saturated: 0 },
+  );
+
+  const visibleAlerts = statusFilter
+    ? alerts.filter((a) => {
+        if (statusFilter === "active") return a.is_active;
+        if (statusFilter === "saturated") return !a.is_active && a.sent_count >= a.max_notifications;
+        if (statusFilter === "inactive") return !a.is_active && a.sent_count < a.max_notifications;
+        return true;
+      })
+    : alerts;
+
   return (
-    <div className="space-y-6">
+    <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
       <PageHeader title={t("title")} subtitle={t("subtitle")}>
         <Button onClick={openCreate}>
           <Plus className="size-4" />
@@ -233,90 +246,131 @@ export default function PriceAlertsPage() {
           <span className="ml-2">{t("loading")}</span>
         </div>
       ) : alerts.length === 0 ? (
-        <EmptyState icon={BellRing} heading={t("emptyHeading")} description={t("emptyDescription")} />
+        <EmptyState
+          icon={BellRing}
+          heading={t("emptyHeading")}
+          description={t("emptyDescription")}
+          action={{ label: t("addAlert"), onClick: openCreate }}
+        />
       ) : (
-        <div className="rounded-xl border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t("colSymbol")}</TableHead>
-                <TableHead>{t("colCondition")}</TableHead>
-                <TableHead>{t("colTrigger")}</TableHead>
-                <TableHead>{t("colDuration")}</TableHead>
-                <TableHead>{t("colSent")}</TableHead>
-                <TableHead>{t("colStatus")}</TableHead>
-                <TableHead className="text-right">{t("colActions")}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {alerts.map((a) => {
-                const saturated = !a.is_active && a.sent_count >= a.max_notifications;
-                return (
-                  <TableRow key={a.id}>
-                    <TableCell className="font-medium">{a.symbol}</TableCell>
-                    <TableCell>
-                      <Badge variant={a.condition === "above" ? "default" : "secondary"}>
-                        {a.condition === "above" ? t("conditionAbove") : t("conditionBelow")}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-mono">{a.trigger_price.toFixed(2)}</TableCell>
-                    <TableCell>
-                      {a.duration_seconds} {t("seconds")}
-                    </TableCell>
-                    <TableCell className="font-mono">
-                      {t("sentOf", { sent: a.sent_count, max: a.max_notifications })}
-                    </TableCell>
-                    <TableCell>
-                      {a.is_active ? (
-                        <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
-                          {t("statusActive")}
-                        </Badge>
-                      ) : saturated ? (
-                        <Badge className="bg-amber-500/10 text-amber-600 border-amber-500/20">
-                          {t("statusSaturated")}
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">{t("statusInactive")}</Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <Switch
-                          checked={a.is_active}
-                          onCheckedChange={() => handleToggle(a)}
-                          aria-label={a.is_active ? t("toggleOff") : t("toggleOn")}
-                        />
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleTest(a)}
-                          disabled={testingId === a.id}
-                        >
-                          {testingId === a.id ? (
-                            <Loader2 className="size-3 animate-spin" />
+        <>
+          {/* 状态摘要 + 筛选条 —— 对齐 notifications 页的 flex flex-wrap gap-3 中间层 */}
+          <div className="flex flex-wrap gap-3">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+            >
+              <option value="">{t("statusAll")}</option>
+              <option value="active">{t("statusActive")}</option>
+              <option value="saturated">{t("statusSaturated")}</option>
+              <option value="inactive">{t("statusInactive")}</option>
+            </select>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground ml-auto self-center">
+              <span className="inline-flex items-center gap-1">
+                <span className="size-1.5 rounded-full bg-emerald-500" />
+                {t("statusActive")} {counts.active}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="size-1.5 rounded-full bg-amber-500" />
+                {t("statusSaturated")} {counts.saturated}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="size-1.5 rounded-full bg-muted-foreground/40" />
+                {t("statusInactive")} {counts.inactive}
+              </span>
+            </div>
+          </div>
+
+          {/* 表格容器 —— 对齐 symbols/accounts：rounded-xl border border-border bg-card overflow-hidden */}
+          <div className="rounded-xl border border-border bg-card overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground bg-muted/30">
+                    <th className="px-4 py-3 font-medium">{t("colSymbol")}</th>
+                    <th className="px-4 py-3 font-medium">{t("colCondition")}</th>
+                    <th className="px-4 py-3 font-medium">{t("colTrigger")}</th>
+                    <th className="px-4 py-3 font-medium">{t("colDuration")}</th>
+                    <th className="px-4 py-3 font-medium">{t("colSent")}</th>
+                    <th className="px-4 py-3 font-medium">{t("colStatus")}</th>
+                    <th className="px-4 py-3 font-medium text-right">{t("colActions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleAlerts.map((a) => {
+                    const saturated = !a.is_active && a.sent_count >= a.max_notifications;
+                    return (
+                      <tr
+                        key={a.id}
+                        className="border-b border-border/50 last:border-b-0 hover:bg-muted/20 transition-colors"
+                      >
+                        <td className="px-4 py-3 font-mono font-semibold">{a.symbol}</td>
+                        <td className="px-4 py-3">
+                          <Badge variant={a.condition === "above" ? "default" : "secondary"}>
+                            {a.condition === "above" ? t("conditionAbove") : t("conditionBelow")}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums">{a.trigger_price.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {a.duration_seconds} {t("seconds")}
+                        </td>
+                        <td className="px-4 py-3 tabular-nums">
+                          {t("sentOf", { sent: a.sent_count, max: a.max_notifications })}
+                        </td>
+                        <td className="px-4 py-3">
+                          {a.is_active ? (
+                            <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
+                              {t("statusActive")}
+                            </Badge>
+                          ) : saturated ? (
+                            <Badge className="bg-amber-500/10 text-amber-600 border-amber-500/20">
+                              {t("statusSaturated")}
+                            </Badge>
                           ) : (
-                            <Send className="size-3" />
+                            <Badge variant="secondary">{t("statusInactive")}</Badge>
                           )}
-                        </Button>
-                        <Button variant="outline" size="sm" onClick={() => openEdit(a)}>
-                          {t("edit")}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive"
-                          onClick={() => handleDelete(a)}
-                        >
-                          {t("delete")}
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-2">
+                            <Switch
+                              checked={a.is_active}
+                              onCheckedChange={() => handleToggle(a)}
+                              aria-label={a.is_active ? t("toggleOff") : t("toggleOn")}
+                            />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleTest(a)}
+                              disabled={testingId === a.id}
+                            >
+                              {testingId === a.id ? (
+                                <Loader2 className="size-3 animate-spin" />
+                              ) : (
+                                <Send className="size-3" />
+                              )}
+                            </Button>
+                            <Button variant="ghost" size="sm" onClick={() => openEdit(a)}>
+                              {t("edit")}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => handleDelete(a)}
+                            >
+                              {t("delete")}
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

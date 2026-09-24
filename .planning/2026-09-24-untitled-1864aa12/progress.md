@@ -127,3 +127,30 @@
 - ruff：venv 无 pip/ruff（用 uv 管理），无法本地跑；CI 会处理
 - 手动验证：curl 最小卡片 ✅、完整行情提醒卡片真实发送 ✅（飞书群收到）
 - **状态**：Phase 7 完成（预存失败已确认与改动无关），准备 Phase 8 交付
+
+## Session 9 — 2026-09-24（修复：菜单不可见 + 页面报错 + 布局不一致）
+
+用户反馈：菜单看不到入口 / 页面出现错误 / 布局与其他页面不一致。
+
+### 诊断过程
+1. **菜单问题**：发现两个 dev server 实例
+   - `localhost:3000`（18:13 启动的新实例）→ 有 `/price-alerts` 路由 ✅
+   - `localhost:20128`（9/19 启动的旧实例）→ 无此路由（404）
+   - 用户访问旧实例故看不到入口。最终确认用户实际访问 3000 端口。
+
+2. **页面报错真正的根因**（通过 chrome-devtools console 发现）：
+   - 前端请求 `http://localhost:8002/api/price-alerts` 被 **CORS 拦截**
+   - curl 带 token 复现：后端返回 **HTTP 500**（无 CORS 头）
+   - 用 Python 连 DB 确认：**`price_alerts` 表不存在**（DB alembic_version=`c2d3e4f5a6b7` 不在迁移链中，DB 实际表结构与模型一致，仅缺 price_alerts）
+   - 后端查询缺失表 → 500 → 无 CORS 头 → 浏览器报 CORS 错误
+
+3. **布局问题**：外层容器缺 `p-4 sm:p-6 xl:p-8 page-enter`（与其他页面不一致）→ 已修复
+
+### 修复
+1. **创建 `price_alerts` 表**（用模型 DDL `PriceAlert.__table__.create`）→ 后端 API 恢复正常（返回 `[]`）
+2. **修复页面布局**：外层加 `p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter`
+3. 验证：浏览器硬刷新 → console 无错误，页面完整渲染，布局与其他页面一致
+
+### 关键结论
+- DB 与模型不一致的根源：DB 的 alembic_version 指向不存在的迁移（`c2d3e4f5a6b7`），但实际表结构完整。最小修复为直接创建缺失表，未改动 alembic_version（避免风险）
+- 生产部署务必先跑 `alembic upgrade head`（我的迁移 f0e1d2c3b4a5 会正常建表）

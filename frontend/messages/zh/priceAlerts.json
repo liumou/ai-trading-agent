@@ -17,6 +17,7 @@
   "colActions": "操作",
   "conditionAbove": "高于",
   "conditionBelow": "低于",
+  "statusAll": "全部状态",
   "statusActive": "启用中",
   "statusInactive": "已停用",
   "statusSaturated": "已达发送上限",

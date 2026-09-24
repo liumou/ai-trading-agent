@@ -17,6 +17,7 @@
   "colActions": "Actions",
   "conditionAbove": "Above",
   "conditionBelow": "Below",
+  "statusAll": "All statuses",
   "statusActive": "Active",
   "statusInactive": "Inactive",
   "statusSaturated": "Reached send limit",
