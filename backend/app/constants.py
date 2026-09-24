@@ -154,3 +154,22 @@ CONFIDENCE_RECENT_TRADES_WINDOW = 20
 # 写进 AIOptimizationLog；版本不匹配的历史建议不得被应用到实盘，
 # 防止"旧口径算出的最优参数在新口径下生效"。
 BACKTEST_FORMULA_VERSION = "v2"
+
+# ─── Chart Indicators ───────────────────────────────────────────────────────
+
+# 手动交易页图表的指标周期（集中常量，前端图表 /ohlcv 请求按此计算）。
+# 决策 8：本期固定参数，/ohlcv 接受可选 indicator_params 覆盖（向后兼容）。
+INDICATOR_SMA_LENGTH = 55  # 移动均线（55 周期）
+INDICATOR_EMA_FAST = 20
+INDICATOR_EMA_SLOW = 50
+INDICATOR_RSI_LENGTH = 14
+INDICATOR_MACD_FAST = 12
+INDICATOR_MACD_SLOW = 26
+INDICATOR_MACD_SIGNAL = 9
+INDICATOR_ICHIMOKU_TENKAN = 9
+INDICATOR_ICHIMOKU_KIJUN = 26
+INDICATOR_ICHIMOKU_SENKOU_B = 52
+INDICATOR_ICHIMOKU_DISPLACEMENT = 26
+# 图表展示的指标数值统一按固定 2 位小数舍入（RSI/MACD 是无量纲值，
+# 按价格 price_decimals 舍入是语义错误）。
+INDICATOR_DECIMALS = 2

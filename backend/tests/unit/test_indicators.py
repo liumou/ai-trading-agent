@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.strategy.indicators import adx, atr, bollinger_bands, ema, rsi, stochastic
+from app.strategy.indicators import adx, atr, bollinger_bands, ema, ichimoku, macd, rsi, rsi_wilder, sma, stochastic
 
 
 class TestEMA:
@@ -165,3 +165,151 @@ class TestStochastic:
         result = stochastic(high, low, close, 14, 3)
         assert "k" in result
         assert "d" in result
+
+
+class TestSMA:
+    def test_sma_matches_rolling(self):
+        np.random.seed(7)
+        series = pd.Series(np.random.randn(80).cumsum() + 100)
+        result = sma(series, 55)
+        expected = series.rolling(55).mean()
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_sma_warmup_nan(self):
+        series = pd.Series(np.linspace(1, 80, 80))
+        result = sma(series, 55)
+        # 前 54 个值应为 NaN（预热不足）
+        assert result.iloc[:54].isna().all()
+        assert not result.iloc[54:].isna().any()
+
+    def test_sma_constant(self):
+        series = pd.Series([10.0] * 60)
+        result = sma(series, 55)
+        pd.testing.assert_series_equal(result.dropna(), pd.Series([10.0] * 6, index=range(54, 60)))
+
+
+class TestRSIWilder:
+    def test_rsi_wilder_all_gains_near_100(self):
+        series = pd.Series(np.linspace(100, 200, 30))
+        result = rsi_wilder(series, 14)
+        assert result.iloc[-1] > 90
+
+    def test_rsi_wilder_range(self):
+        np.random.seed(42)
+        series = pd.Series(np.random.randn(100).cumsum() + 100)
+        result = rsi_wilder(series, 14)
+        valid = result.dropna()
+        assert (valid >= 0).all()
+        assert (valid <= 100).all()
+
+    def test_rsi_wilder_differs_from_standard_rsi(self):
+        # Wilder 平滑（alpha=1/14）与 ewm(span=14) 结果不同，但方向一致
+        np.random.seed(42)
+        series = pd.Series(np.random.randn(100).cumsum() + 100)
+        w = rsi_wilder(series, 14)
+        s = rsi(series, 14)
+        # 两者都是合法 RSI（0-100），且最后值接近但不必相等
+        assert abs(w.iloc[-1] - s.iloc[-1]) > 1e-6
+
+
+class TestMACD:
+    def test_macd_constant_series_zero(self):
+        # 常数序列：MACD/hist 恒为 0
+        series = pd.Series([100.0] * 60)
+        result = macd(series, 12, 26, 9)
+        pd.testing.assert_series_equal(
+            result["macd"].dropna(), pd.Series([0.0] * len(result["macd"].dropna()), index=result["macd"].dropna().index), check_dtype=False
+        )
+        pd.testing.assert_series_equal(
+            result["histogram"].dropna(),
+            pd.Series([0.0] * len(result["histogram"].dropna()), index=result["histogram"].dropna().index),
+            check_dtype=False,
+        )
+
+    def test_macd_uptrend_positive(self):
+        # 单调上升：macd 应 > 0（快线在上）
+        series = pd.Series(np.linspace(100, 200, 60))
+        result = macd(series, 12, 26, 9)
+        assert result["macd"].iloc[-1] > 0
+
+    def test_macd_histogram_relation(self):
+        series = pd.Series(np.linspace(100, 200, 60))
+        result = macd(series, 12, 26, 9)
+        expected_hist = result["macd"] - result["signal"]
+        pd.testing.assert_series_equal(result["histogram"], expected_hist)
+
+    def test_macd_signal_is_ema_of_macd(self):
+        # signal 应等于 macd 线的 EMA(9)
+        series = pd.Series(np.linspace(100, 200, 60))
+        result = macd(series, 12, 26, 9)
+        expected_signal = result["macd"].ewm(span=9, adjust=False).mean()
+        pd.testing.assert_series_equal(result["signal"], expected_signal)
+
+
+class TestIchimoku:
+    def _sample(self, n=80):
+        np.random.seed(1)
+        high = pd.Series(np.linspace(105, 200, n) + np.random.rand(n) * 5)
+        low = pd.Series(np.linspace(95, 180, n) - np.random.rand(n) * 5)
+        close = pd.Series(np.linspace(100, 190, n))
+        # 保证 high >= close >= low
+        high = high.clip(lower=close)
+        low = low.clip(upper=close)
+        return high, low, close
+
+    def test_ichimoku_returns_all_keys(self):
+        high, low, close = self._sample(80)
+        result = ichimoku(high, low, close)
+        for key in ("tenkan", "kijun", "senkou_a", "senkou_b", "chikou"):
+            assert key in result
+            assert len(result[key]) == len(close)
+
+    def test_ichimoku_tenkan_formula(self):
+        high, low, close = self._sample(80)
+        result = ichimoku(high, low, close, tenkan=9)
+        expected = (high.rolling(9).max() + low.rolling(9).min()) / 2
+        pd.testing.assert_series_equal(result["tenkan"], expected)
+
+    def test_ichimoku_kijun_formula(self):
+        high, low, close = self._sample(80)
+        result = ichimoku(high, low, close, kijun=26)
+        expected = (high.rolling(26).max() + low.rolling(26).min()) / 2
+        pd.testing.assert_series_equal(result["kijun"], expected)
+
+    def test_ichimoku_senkou_a_shift_forward(self):
+        # senkou_a 是 (tenkan+kijun)/2 前移 26 根：senkou_a[t] == base[t-26]
+        high, low, close = self._sample(80)
+        result = ichimoku(high, low, close, displacement=26)
+        base = (result["tenkan"] + result["kijun"]) / 2
+        expected = base.shift(26)
+        pd.testing.assert_series_equal(result["senkou_a"], expected, check_freq=False)
+
+    def test_ichimoku_senkou_b_shift_forward(self):
+        # senkou_b 是 (HH52+LL52)/2 前移 26 根
+        high, low, close = self._sample(80)
+        result = ichimoku(high, low, close, senkou_b=52, displacement=26)
+        base = (high.rolling(52).max() + low.rolling(52).min()) / 2
+        expected = base.shift(26)
+        pd.testing.assert_series_equal(result["senkou_b"], expected, check_freq=False)
+
+    def test_ichimoku_chikou_shift_backward(self):
+        # chikou 是 close 后移 26 根：chikou[t] == close[t+26]
+        high, low, close = self._sample(80)
+        result = ichimoku(high, low, close, displacement=26)
+        expected = close.shift(-26)
+        pd.testing.assert_series_equal(result["chikou"], expected, check_freq=False)
+
+    def test_ichimoku_senkou_b_warmup_nan(self):
+        # senkou_b 预热 = 52 根滚动 + 26 位移 = 前 77 根 NaN（80 根数据时第 0..77 为 NaN）
+        high, low, close = self._sample(80)
+        result = ichimoku(high, low, close, senkou_b=52, displacement=26)
+        # 滚动 52 在第 51 行开始有效，再 shift(26) 后有效值从 51+26=77 行开始
+        assert result["senkou_b"].iloc[:77].isna().all()
+        assert not result["senkou_b"].iloc[77:].isna().any()
+
+    def test_ichimoku_short_series(self):
+        # 不足 52 根：senkou_b 全 NaN
+        high, low, close = self._sample(30)
+        result = ichimoku(high, low, close)
+        assert result["senkou_b"].isna().all()
+        assert not result["tenkan"].isna().all()

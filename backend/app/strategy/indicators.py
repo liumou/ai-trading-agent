@@ -10,6 +10,11 @@ def ema(series: pd.Series, length: int) -> pd.Series:
     return series.ewm(span=length, adjust=False).mean()
 
 
+def sma(series: pd.Series, length: int) -> pd.Series:
+    """简单移动平均（Simple Moving Average），rolling 窗口均值。"""
+    return series.rolling(length).mean()
+
+
 def rsi(series: pd.Series, length: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
@@ -18,6 +23,77 @@ def rsi(series: pd.Series, length: int = 14) -> pd.Series:
     avg_loss = loss.ewm(span=length, adjust=False).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
+
+
+def rsi_wilder(series: pd.Series, length: int = 14) -> pd.Series:
+    """Wilder 平滑 RSI，alpha=1/length，与 TradingView RMA 对齐。
+
+    与现有 ``rsi``（ewm(span=length)）不同：``rsi`` 被策略/风控消费，改动有
+    回归风险，故图表展示新增本函数。同行情下两值可差 1-3。
+    """
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1 / length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / length, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> dict:
+    """MACD（指数平滑，EMA-based，与 TradingView/talib 一致）。
+
+    返回 dict：macd = EMA(fast) - EMA(slow)；signal = EMA(signal) of macd；
+    histogram = macd - signal。注意 signal 用 ewm(span=signal)，勿改 RMA。
+    """
+    ema_fast = ema(series, fast)
+    ema_slow = ema(series, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return {"macd": macd_line, "signal": signal_line, "histogram": histogram}
+
+
+def ichimoku(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    tenkan: int = 9,
+    kijun: int = 26,
+    senkou_b: int = 52,
+    displacement: int = 26,
+) -> dict:
+    """Ichimoku 云图（标准定义，TradingView 对齐）。
+
+    返回 dict：
+    - tenkan = (HH(9) + LL(9)) / 2
+    - kijun  = (HH(26) + LL(26)) / 2
+    - senkou_a = (tenkan + kijun) / 2，投影未来 displacement 根（shift +displacement）
+    - senkou_b = (HH(52) + LL(52)) / 2，投影未来 displacement 根
+    - chikou  = close 回退 displacement 根（shift -displacement）
+
+    位移方向是关键：索引时间升序时，``shift(+n)`` 把值推到未来（senkou 云），
+    ``shift(-n)`` 把未来 close 拉回当前（chikou）。写反会错位 52 根。
+    """
+    hh_tenkan = high.rolling(tenkan).max()
+    ll_tenkan = low.rolling(tenkan).min()
+    tenkan_line = (hh_tenkan + ll_tenkan) / 2
+
+    hh_kijun = high.rolling(kijun).max()
+    ll_kijun = low.rolling(kijun).min()
+    kijun_line = (hh_kijun + ll_kijun) / 2
+
+    senkou_a = ((tenkan_line + kijun_line) / 2).shift(displacement)
+    senkou_b = ((high.rolling(senkou_b).max() + low.rolling(senkou_b).min()) / 2).shift(displacement)
+    chikou = close.shift(-displacement)
+
+    return {
+        "tenkan": tenkan_line,
+        "kijun": kijun_line,
+        "senkou_a": senkou_a,
+        "senkou_b": senkou_b,
+        "chikou": chikou,
+    }
 
 
 def atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:

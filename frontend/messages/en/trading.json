@@ -68,5 +68,11 @@
   "spread": "Spread",
   "waitingTick": "Waiting for quote…",
   "stalePrice": "Delayed",
-  "colCurrent": "Current"
+  "colCurrent": "Current",
+  "chartTitle": "Market Chart",
+  "timeframe": "Timeframe",
+  "todayHigh": "Today High",
+  "todayLow": "Today Low",
+  "prevTradingDay": "Prev. trading day",
+  "noDayRange": "No daily range yet"
 }

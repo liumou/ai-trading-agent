@@ -68,5 +68,11 @@
   "spread": "点差",
   "waitingTick": "等待报价…",
   "stalePrice": "延迟",
-  "colCurrent": "现价"
+  "colCurrent": "现价",
+  "chartTitle": "行情图表",
+  "timeframe": "周期",
+  "todayHigh": "今日最高",
+  "todayLow": "今日最低",
+  "prevTradingDay": "上一交易日",
+  "noDayRange": "暂无当日行情"
 }

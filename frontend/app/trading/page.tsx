@@ -1,12 +1,14 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { RefreshCw } from "lucide-react";
-import api, {
+import {
   cancelPendingOrder,
   closePositionGated,
   confirmManualOrder,
+  getDayRange,
   getManualReview,
   getPendingOrders,
   getPositions,
@@ -15,6 +17,7 @@ import api, {
   modifyPendingOrder,
   modifyPositionSltp,
   submitManualOrder,
+  type DayRange,
   type ManualOrderRequest,
   type ManualReview,
   type PendingOrder,
@@ -33,7 +36,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { TimeframeSelector } from "@/components/ui/timeframe-selector";
 import { showError, showSuccess } from "@/lib/toast";
+
+// lightweight-charts 依赖 window，必须 ssr:false 动态加载（评审 H5）
+const TradingChart = dynamic(() => import("@/components/chart/TradingChart"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+      Loading chart…
+    </div>
+  ),
+});
 
 const PENDING_TYPES = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as const;
 type PendingType = (typeof PENDING_TYPES)[number];
@@ -79,6 +93,10 @@ export default function TradingPage() {
   const [busyTicket, setBusyTicket] = useState<number | null>(null);
   const [modifyTicket, setModifyTicket] = useState<number | null>(null);
   const [modifyPrice, setModifyPrice] = useState("");
+  // 图表周期（默认承接该品种默认周期，不硬编码 M15——评审 H4）
+  const [timeframe, setTimeframe] = useState<string>("M15");
+  // 当日最高/最低（读 D1 最新 K，随品种/周期变化重取，独立于 tick）
+  const [dayRange, setDayRange] = useState<DayRange | null>(null);
 
   const symbols = useBotStore((s) => s.symbols);
   const activeSymbol = useBotStore((s) => s.activeSymbol);
@@ -101,7 +119,10 @@ export default function TradingPage() {
       ? activeSymbol
       : symbols[0].symbol;
     setSymbol(initial);
-    setLot(String(symbols.find((s) => s.symbol === initial)?.default_lot ?? 0.1));
+    const info = symbols.find((s) => s.symbol === initial);
+    setLot(String(info?.default_lot ?? 0.1));
+    // 图表周期默认承接该品种默认周期
+    setTimeframe(info?.timeframe || "M15");
   }, [symbol, symbols, activeSymbol]);
 
   const fetchPendingOrders = useCallback(async () => {
@@ -149,7 +170,7 @@ export default function TradingPage() {
     setPositions([...merged.values()]);
   }, [setPositions]);
 
-  /** 切换品种：清掉上一品种的价格/SL/TP，手数回到该品种默认值，并立即刷新持仓与报价。 */
+  /** 切换品种：清掉上一品种的价格/SL/TP，手数回到该品种默认值，图表周期回到该品种默认，并立即刷新持仓与报价。 */
   const handleSymbolChange = (next: string) => {
     if (!next || next === symbol) return;
     setSymbol(next);
@@ -157,6 +178,7 @@ export default function TradingPage() {
     setReview(null);
     const info = symbols.find((s) => s.symbol === next);
     if (info) setLot(String(info.default_lot));
+    if (info?.timeframe) setTimeframe(info.timeframe);
     lastQuoteAt.current = 0;
     setQuoteNonce((n) => n + 1);
     void refreshPositions();
@@ -203,6 +225,23 @@ export default function TradingPage() {
   useEffect(() => {
     refreshPositions();
   }, [refreshPositions, symbol]);
+
+  // 当日最高/最低：随品种变化拉取（读 D1 最新 K）。独立于 tick（tick 1Hz，
+  // 避免每秒触发），失败时隐藏不阻塞页面（评审 H3/架构建议）。
+  useEffect(() => {
+    if (!symbol) return;
+    let cancelled = false;
+    const fetchDayRange = async () => {
+      try {
+        const res = await getDayRange(symbol);
+        if (!cancelled) setDayRange(res.data ?? null);
+      } catch {
+        if (!cancelled) setDayRange(null);
+      }
+    };
+    fetchDayRange();
+    return () => { cancelled = true; };
+  }, [symbol]);
 
   // 持仓轮询：页面可见时每 10s 全量刷新（品种停跑后 WS 不再推持仓，只能靠 REST）；
   // 同一条心跳顺便驱动"报价是否延迟"的重算。
@@ -421,6 +460,38 @@ export default function TradingPage() {
       {rolloutMode && rolloutMode !== "live" && rolloutMode !== "micro" && (
         <div className="rounded-xl border border-yellow-500/40 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-700 dark:text-yellow-400">
           {t("shadowModeBanner", { mode: rolloutMode })}
+        </div>
+      )}
+
+      {/* ─── 行情图表（全宽独立行；含周期切换 + 当日高低）─── */}
+      {symbol && (
+        <div className="rounded-xl border border-border bg-card p-4 sm:p-5 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-sm font-semibold">{t("chartTitle")}</span>
+              {/* 当日最高/最低（is_current=false 时标注"上一交易日"，null 隐藏） */}
+              {dayRange?.day_range ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-mono text-green-600 dark:text-green-400">
+                    {t("todayHigh")} {dayRange.day_range.high.toFixed(priceDecimals)}
+                  </span>
+                  <span className="font-mono text-red-600 dark:text-red-400">
+                    {t("todayLow")} {dayRange.day_range.low.toFixed(priceDecimals)}
+                  </span>
+                  {!dayRange.is_current && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted">{t("prevTradingDay")}</span>
+                  )}
+                </div>
+              ) : (
+                <span className="text-xs text-muted-foreground">{t("noDayRange")}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">{t("timeframe")}</span>
+              <TimeframeSelector value={timeframe} onChange={setTimeframe} size="sm" />
+            </div>
+          </div>
+          <TradingChart symbol={symbol} timeframe={timeframe} tick={liveTick} height={460} />
         </div>
       )}
 

@@ -10,5 +10,16 @@
   "tp": "TP",
   "sl": "SL",
   "entry": "Entry",
-  "positionOpen": "open"
+  "positionOpen": "open",
+  "sma55": "SMA 55",
+  "ema20": "EMA 20",
+  "ema50": "EMA 50",
+  "rsiTitle": "RSI(14)",
+  "macdTitle": "MACD(12,26,9)",
+  "ichimokuTitle": "Ichimoku",
+  "tenkan": "Tenkan",
+  "kijun": "Kijun",
+  "senkouA": "Senkou A",
+  "senkouB": "Senkou B",
+  "chikou": "Chikou"
 }

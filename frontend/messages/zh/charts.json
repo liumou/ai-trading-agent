@@ -10,5 +10,16 @@
   "tp": "止盈",
   "sl": "止损",
   "entry": "开仓价",
-  "positionOpen": "持仓中"
+  "positionOpen": "持仓中",
+  "sma55": "SMA 55",
+  "ema20": "EMA 20",
+  "ema50": "EMA 50",
+  "rsiTitle": "RSI(14)",
+  "macdTitle": "MACD(12,26,9)",
+  "ichimokuTitle": "Ichimoku",
+  "tenkan": "转换线",
+  "kijun": "基准线",
+  "senkouA": "先行带A",
+  "senkouB": "先行带B",
+  "chikou": "延迟线"
 }

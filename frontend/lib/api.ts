@@ -306,8 +306,51 @@ export const getAnalytics = (symbol?: string, days?: number) =>
   api.get("/api/analytics/performance", { params: { symbol, days } });
 
 // Market Data
-export const getOHLCV = (symbol: string = "GOLD", timeframe: string = "M15", count: number = 200) =>
-  api.get("/api/market-data/ohlcv", { params: { symbol, timeframe, count } });
+// ─── 图表指标数据结构（与后端 /ohlcv 的 indicators 数组对齐）───
+export interface ChartCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export interface ChartIndicatorRow {
+  sma55: number | null;
+  ema20: number | null;
+  ema50: number | null;
+  rsi14: number | null;
+  macd: number | null;
+  macd_signal: number | null;
+  macd_histogram: number | null;
+  ichimoku_tenkan: number | null;
+  ichimoku_kijun: number | null;
+  ichimoku_senkou_a: number | null;
+  ichimoku_senkou_b: number | null;
+  ichimoku_chikou: number | null;
+}
+
+export interface DayRange {
+  symbol: string;
+  date: string | null;
+  day_range: {
+    open: number;
+    high: number;
+    low: number;
+  } | null;
+  is_current: boolean;
+}
+
+export const getOHLCV = (
+  symbol: string = "GOLD",
+  timeframe: string = "M15",
+  count: number = 200,
+  includeIndicators = true,
+) =>
+  api.get("/api/market-data/ohlcv", {
+    params: { symbol, timeframe, count, indicators: includeIndicators },
+  });
+export const getDayRange = (symbol: string = "GOLD") => api.get("/api/market-data/day-range", { params: { symbol } });
 export const getSymbols = () => api.get("/api/market-data/symbols");
 
 // Rollout
