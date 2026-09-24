@@ -279,6 +279,9 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
     telegram_proxy_url: str = ""  # e.g. "http://127.0.0.1:7897"; empty = direct connection
 
+    # 飞书群自定义机器人 webhook（完整 URL，含 token，属机密：只存 env，禁止进代码/DB/前端）
+    feishu_webhook_url: str = ""  # 空 = 禁用飞书通知
+
     # FRED API (macro data)
     fred_api_key: str = ""
 

@@ -48,6 +48,7 @@ from app.api.routes import (
 )
 from app.api.routes import metrics as metrics_routes
 from app.api.routes import (
+    price_alerts as price_alerts_routes,
     symbols as symbols_routes,
 )
 from app.api.websocket import router as ws_router
@@ -74,6 +75,7 @@ from app.db.session import engine as db_engine
 from app.health import check_health
 from app.mt5.connector import MT5BridgeConnector
 from app.notifications.telegram import TelegramNotifier
+from app.notifications.feishu import FeishuNotifier
 from app.ai.circuit_breaker import llm_circuit_breaker
 
 
@@ -327,6 +329,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Telegram notifications disabled (no token/chat_id)")
 
+    # Initialize Feishu notifier（价格阈值提醒用）— 存 app.state 供
+    # PriceAlertService 巡检引擎与 /api/price-alerts 路由使用。
+    feishu_notifier = FeishuNotifier()
+    app.state.feishu_notifier = feishu_notifier
+    if feishu_notifier.enabled:
+        logger.info("Feishu notifications enabled (price alerts)")
+    else:
+        logger.info("Feishu notifications disabled (no webhook url)")
+
     # 启动券商校验 —— 券商是"什么能交易"的事实来源。"warn"（默认）仅告警，
     # 使 VPS/bridge 故障绝不会停摆交易；"strict" 把券商明确报告缺失或不可
     # 交易的引擎置 PAUSED（它们保留在 manager.engines 中，持仓对账与手动平仓
@@ -405,6 +416,14 @@ async def lifespan(app: FastAPI):
     # which propagates the back-reference to every engine including future ones.
     scheduler = BotScheduler(manager)
     scheduler.set_health_monitor(health_monitor)
+
+    # 构建行情提醒巡检引擎并注入 scheduler（价格阈值 → 飞书卡片）
+    from app.services.price_alert_service import PriceAlertService
+
+    price_alert_service = PriceAlertService(feishu_notifier, redis_client)
+    scheduler.set_price_alert_service(price_alert_service)
+    app.state.price_alert_service = price_alert_service
+
     scheduler.start()
     scheduler.scheduler.add_job(
         pool_monitor.tick,
@@ -634,6 +653,7 @@ app.include_router(ai_usage.router)
 app.include_router(memory_routes.router)
 app.include_router(quant.router)
 app.include_router(symbols_routes.router)
+app.include_router(price_alerts_routes.router)
 app.include_router(ws_router)
 app.include_router(ws_runners_router)
 

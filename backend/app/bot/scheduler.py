@@ -3,6 +3,7 @@ Scheduler — APScheduler jobs for bot operations (multi-symbol).
 """
 
 import asyncio
+import json
 from collections import defaultdict
 from datetime import UTC, datetime
 
@@ -56,10 +57,15 @@ class BotScheduler:
         self.scheduler = AsyncIOScheduler()
         self._candle_job_ids: dict[str, str] = {}  # timeframe → job_id
         self._health_monitor = None  # set via set_health_monitor()
+        self._price_alert_service = None  # set via set_price_alert_service()
         self._background_tasks: set[asyncio.Task] = set()
 
     def set_health_monitor(self, monitor):
         self._health_monitor = monitor
+
+    def set_price_alert_service(self, service):
+        """注入行情提醒巡检引擎（main.py lifespan 构建后调用）。"""
+        self._price_alert_service = service
 
     @property
     def _engines(self) -> dict[str, BotEngine]:
@@ -100,6 +106,16 @@ class BotScheduler:
             "interval",
             seconds=30,
             id="sync_positions",
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # 行情提醒巡检：每 2 秒判定一次价格阈值规则（独立 job，不拖累 bot_tick 主循环）
+        self.scheduler.add_job(
+            self._price_alert_job,
+            "interval",
+            seconds=2,
+            id="price_alert_check",
             max_instances=1,
             coalesce=True,
         )
@@ -354,6 +370,14 @@ class BotScheduler:
             if tick:
                 tick["symbol"] = symbol
                 await engine._push_event("price_update", tick)
+                # 写入 Redis price cache 供行情提醒巡检引擎复用（避免重复调 bridge）
+                if engine.redis:
+                    try:
+                        await engine.redis.setex(
+                            f"price:cache:{symbol}", 10, json.dumps(tick, default=str)
+                        )
+                    except Exception as cache_e:
+                        logger.debug(f"Price cache write failed [{symbol}]: {cache_e}")
         except Exception as e:
             logger.error(f"Tick job error [{symbol}]: {e}")
 
@@ -574,6 +598,15 @@ class BotScheduler:
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             self._log_gather_errors("sync_job", results, symbols)
+
+    async def _price_alert_job(self):
+        """触发行情提醒巡检（价格阈值 → 飞书卡片）。巡检失败仅记录日志，不影响其他任务。"""
+        if not self._price_alert_service:
+            return
+        try:
+            await self._price_alert_service.check_all()
+        except Exception as e:
+            logger.error(f"Price alert job error: {e}")
 
     async def _weekly_optimize_job(self):
         logger.info("Weekly optimization triggered")

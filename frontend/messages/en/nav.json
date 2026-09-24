@@ -26,5 +26,6 @@
   "dbHealth": "DB Health",
   "notifications": "Notifications",
   "settings": "Settings",
-  "manualTrading": "Manual Trading"
+  "manualTrading": "Manual Trading",
+  "priceAlerts": "Price Alerts"
 }

@@ -642,4 +642,41 @@ export const cancelChatRun = (runId: string) =>
 export const getChatRunConfig = () =>
   api.get<{ budget?: AgentChatBudget } | AgentChatBudget>("/api/agent-chat/config");
 
+// --- 行情提醒（价格阈值 → 飞书卡片）---
+export interface PriceAlert {
+  id: number;
+  symbol: string;
+  condition: "above" | "below";
+  trigger_price: number;
+  duration_seconds: number;
+  max_notifications: number;
+  sent_count: number;
+  note: string | null;
+  is_active: boolean;
+  last_sent_at: string | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface PriceAlertInput {
+  symbol: string;
+  condition: "above" | "below";
+  trigger_price: number;
+  duration_seconds: number;
+  max_notifications: number;
+  note?: string | null;
+}
+
+export const listPriceAlerts = () => api.get<PriceAlert[]>("/api/price-alerts");
+export const createPriceAlert = (data: PriceAlertInput) =>
+  api.post<PriceAlert>("/api/price-alerts", data);
+export const updatePriceAlert = (id: number, data: Partial<PriceAlertInput>) =>
+  api.put<PriceAlert>(`/api/price-alerts/${id}`, data);
+export const deletePriceAlert = (id: number) =>
+  api.delete<{ status: string; id: number }>(`/api/price-alerts/${id}`);
+export const togglePriceAlert = (id: number) =>
+  api.post<PriceAlert>(`/api/price-alerts/${id}/toggle`);
+export const testPriceAlert = (symbol = "GOLD") =>
+  api.post<{ status: string; symbol: string }>("/api/price-alerts/test", { symbol });
+
 export default api;

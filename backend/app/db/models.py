@@ -574,3 +574,31 @@ class AgentChatEvent(Base):
     payload: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+
+# ─── 行情提醒（价格阈值 → 飞书卡片）─────────────────────────────────────────
+
+
+class PriceAlert(Base):
+    """价格阈值提醒规则：品种价格突破阈值并持续超过设定秒数后发送飞书通知。
+
+    用户配置"品种 + 方向（above/below）+ 触发价 + 持续时长 + 最大发送次数"；
+    巡检引擎（price_alert_service）周期性判定，达到条件后通过 FeishuNotifier
+    发送卡片。达到 max_notifications 上限后自动停用（is_active=False），需
+    用户手动重新开启（开启时重置 sent_count）。
+    """
+
+    __tablename__ = "price_alerts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)  # 规范品种名
+    condition: Mapped[str] = mapped_column(String(8), default="above")  # above=价格高于阈值, below=价格低于阈值
+    trigger_price: Mapped[float] = mapped_column(Float)  # 触发阈值（价格单位）
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=60)  # 需连续满足的秒数
+    max_notifications: Mapped[int] = mapped_column(Integer, default=1)  # 达到该次数后停用
+    sent_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 已发送次数
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+

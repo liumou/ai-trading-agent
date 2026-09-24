@@ -43,13 +43,14 @@ Frontend (Next.js 16) → Backend (FastAPI) → MT5 Bridge (Windows VPS)
   - `services/order_preflight.py` — **共享下单硬闸门（唯一真相源）**：resolve_symbol → 并发行情 → per-symbol rolling spread → `guardrails.validate_order` → volume 归一 → rollout → llm_allow_live。AI/MCP 通道与手动通道共同调用；strict_symbol=True（手动）时 symbol 不可解析/无 volume 配置 fail-closed 拒单
   - `services/manual_order_gate.py` — **手动交易风控防火墙**：per-account 锁 → 硬闸门 → 情绪规则（马丁=block 直接拒 / 复仇·连亏·频率=warn 交 LLM）→ OrderAudit(PENDING_REVIEW) → 异步 LLM 审查（`asyncio.wait_for` 25s 只约束 LLM 调用；verdict 白名单）→ APPROVED 执行 / CAUTION 二次确认（review_id 绑定参数 + 120s TTL）/ REJECTED 硬拦截不可强制；LLM 失败 fail-closed。改挂单=全流水线重审；改持仓 SL/TP 用 entry 锚点漂移预算（Redis `manual:sl_anchor:{ticket}`）
   - `services/position_close.py` — 手动平仓统一闸门（switching fail-closed + rollout 拦截 + ticket 归属 + 记账防双计；dashboard DELETE /api/positions 与 /api/trading 平仓共用）
+  - `services/price_alert_service.py` — **行情提醒巡检引擎**：价格阈值 → 飞书卡片。独立 interval job（每 2s）从 Redis price cache 读 tick（`price:cache:{symbol}`，scheduler `_fetch_tick` 写），严格 `>`/`<` 比较，Redis `price_alert:first_trigger:{id}` 维护连续满足时长，原子计数防并发双发，达 `max_notifications` 自动停用（toggle 重开重置计数）。规则表 `price_alerts`，API `/api/price-alerts`，卡片模块 `notifications/feishu.py`（env `FEISHU_WEBHOOK_URL`）
   - `strategy/` — 11 strategies (EMA, RSI, Breakout, Mean Reversion, ML, DCA, Grid, MomentumRank, PairSpread, RiskParity, Ensemble) + MTF filter + regime detection
   - `risk/` — risk manager, circuit breaker (H3: circuit key 按账号隔离), correlation filter
   - `ml/` — LightGBM trainer, features (40+), predictor, drift detection, sentiment features
   - `backtest/` — engine, optimizer, walk_forward, monte_carlo, overfitting (composite score)
   - `data/` — collector, macro data, macro events
   - `news/` — news fetcher + sources
-  - `notifications/` — Telegram alerts
+  - `notifications/` — Telegram alerts + Feishu card alerts（`feishu.py`，价格阈值提醒）
   - `memory/` — session memory service + consolidator
   - `ai/` — Claude AI client (SDK first, Anthropic API fallback), context builder, prompts, strategy optimizer
   - `api/routes/` — 120+ REST endpoints across 28 route files（含 manual_trading.py 手动交易）

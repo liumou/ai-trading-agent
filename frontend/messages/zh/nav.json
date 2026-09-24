@@ -26,5 +26,6 @@
   "dbHealth": "数据库健康",
   "notifications": "通知中心",
   "settings": "设置",
-  "manualTrading": "手动交易"
+  "manualTrading": "手动交易",
+  "priceAlerts": "行情提醒"
 }
