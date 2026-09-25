@@ -121,6 +121,33 @@ async def _cleanup_trigger_state(request: Request, alert_id: int) -> None:
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 
+@router.get("/status")
+async def get_price_alert_status(request: Request, db: AsyncSession = Depends(get_db)):
+    """返回提醒链路的运行状态。
+
+    未配置 FEISHU_WEBHOOK_URL 时巡检引擎静默短路，用户只会看到"提醒没反应"，
+    无从排查。前端据此显示横幅，把配置缺失变成一眼可见的状态。
+    只报布尔状态，不暴露 webhook URL（属机密）。
+
+    注意：必须注册在 ``/{alert_id}`` 之前，否则 ``status`` 会被路径参数抢走匹配。
+    """
+    notifier = getattr(request.app.state, "feishu_notifier", None)
+    enabled = bool(notifier and notifier.enabled)
+    active_count = 0
+    if enabled:
+        result = await db.execute(select(PriceAlert).where(PriceAlert.is_active.is_(True)))
+        active_count = len(list(result.scalars().all()))
+
+    return {
+        "feishu_enabled": enabled,
+        "config_key": "FEISHU_WEBHOOK_URL",
+        "active_alerts": active_count,
+        "message": None
+        if enabled
+        else "飞书未配置：提醒规则已保存但不会发送任何消息。请在服务端设置 FEISHU_WEBHOOK_URL 后重启服务。",
+    }
+
+
 @router.get("")
 async def list_price_alerts(db: AsyncSession = Depends(get_db)):
     """列出全部提醒规则（含运行态 sent_count / is_active）。"""

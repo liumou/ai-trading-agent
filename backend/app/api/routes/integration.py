@@ -136,6 +136,28 @@ async def _test_telegram() -> dict:
         return {"name": "Telegram", "status": "error", "latency_ms": 0, "detail": str(e)}
 
 
+async def _test_feishu(request: Request) -> dict:
+    """Check Feishu webhook configuration status.
+
+    读运行中的 notifier（集成页保存即 reload，故这里反映最新配置）。
+    webhook 型无法做无副作用连通性探测，只报是否已配置；实测连通性
+    走 /api/price-alerts/test 的测试卡片。
+    不暴露 webhook URL（属机密）。
+    """
+    notifier = getattr(request.app.state, "feishu_notifier", None)
+    configured = bool(notifier and notifier.enabled)
+    return {
+        "name": "Feishu",
+        "status": "configured" if configured else "not_configured",
+        "latency_ms": 0,
+        "detail": (
+            "Webhook 已配置 — 可在价格提醒页点「测试发送」实测连通性"
+            if configured
+            else "FEISHU_WEBHOOK_URL 未配置 — 行情提醒不会发送任何消息"
+        ),
+    }
+
+
 @router.get("/status", dependencies=[Depends(require_auth)])
 async def get_integration_status(request: Request):
     """Test all integrations and return status."""
@@ -145,6 +167,7 @@ async def get_integration_status(request: Request):
         _test_anthropic(),
         _test_mt5(),
         _test_telegram(),
+        _test_feishu(request),
         _test_economic_calendar(),
         _test_tradingview(),
     )
@@ -195,12 +218,16 @@ async def test_service(service: str, request: Request):
         "anthropic": _test_anthropic,
         "mt5": _test_mt5,
         "telegram": _test_telegram,
+        "feishu": _test_feishu,
         "economic_calendar": _test_economic_calendar,
         "tradingview": _test_tradingview,
     }
     tester = testers.get(service)
     if not tester:
         return {"name": service, "status": "error", "detail": f"Unknown service: {service}"}
+    if service == "feishu":
+        # feishu 需要 request 读取运行中的 notifier 状态
+        return await tester(request)
     return await tester()
 
 
@@ -214,11 +241,14 @@ _CONFIG_VAULT_KEYS: dict[str, dict[str, str]] = {
     "anthropic": {"OAuth Token": "CLAUDE_CODE_OAUTH_TOKEN"},
     "mt5": {"Bridge URL": "MT5_BRIDGE_URL", "API Key": "MT5_BRIDGE_API_KEY"},
     "telegram": {"Bot Token": "TELEGRAM_BOT_TOKEN", "Chat ID": "TELEGRAM_CHAT_ID"},
+    "feishu": {"Webhook URL": "FEISHU_WEBHOOK_URL"},
 }
 
 
 @router.put("/config", dependencies=[Depends(require_auth)])
-async def save_integration_config(req: SaveConfigRequest, db: AsyncSession = Depends(get_db)):
+async def save_integration_config(
+    req: SaveConfigRequest, request: Request, db: AsyncSession = Depends(get_db)
+):
     """Save integration config to Secrets Vault (encrypted)."""
     vault_keys = _CONFIG_VAULT_KEYS.get(req.integration_id, {})
     saved = []
@@ -229,6 +259,15 @@ async def save_integration_config(req: SaveConfigRequest, db: AsyncSession = Dep
         if vault_key:
             await _set_vault_value(db, vault_key, value.strip(), category="integration")
             saved.append(field_name)
+
+    # 飞书 webhook 保存后即时刷新运行中的通知器（免重启；PriceAlertService 持有
+    # 同一实例引用，下轮巡检即用新值）。与 Telegram 的"保存后需重启才生效"不同。
+    if req.integration_id == "feishu" and "Webhook URL" in saved:
+        notifier = getattr(request.app.state, "feishu_notifier", None)
+        if notifier is not None:
+            new_url = req.config.get("Webhook URL", "")
+            notifier.reload_from(new_url)
+
     return {"saved": saved, "integration_id": req.integration_id}
 
 
@@ -251,6 +290,7 @@ async def get_integration_config(db: AsyncSession = Depends(get_db)):
     mt5_key = await _get_config_value(db, "MT5_BRIDGE_API_KEY", getattr(settings, "mt5_bridge_api_key", ""))
     telegram_token = await _get_config_value(db, "TELEGRAM_BOT_TOKEN", getattr(settings, "telegram_bot_token", ""))
     telegram_chat = await _get_config_value(db, "TELEGRAM_CHAT_ID", getattr(settings, "telegram_chat_id", ""))
+    feishu_url = await _get_config_value(db, "FEISHU_WEBHOOK_URL", getattr(settings, "feishu_webhook_url", ""))
 
     # 根据当前 LLM provider 决定该集成项的展示名称与描述（不泄露 api_key）
     provider_label = (
@@ -342,6 +382,18 @@ async def get_integration_config(db: AsyncSession = Depends(get_db)):
                 },
                 "tools": [
                     {"name": "send_notification", "description": "Send trade alert to Telegram channel"},
+                ],
+            },
+            {
+                "id": "feishu",
+                "name": "Feishu",
+                "description": "Send price threshold alerts to Feishu as interactive cards",
+                "status": "configured" if feishu_url else "not_configured",
+                "config": {
+                    "Webhook URL": _mask(feishu_url) if feishu_url else "",
+                },
+                "tools": [
+                    {"name": "send_price_alert_card", "description": "Send price threshold alert as Feishu card"},
                 ],
             },
             {

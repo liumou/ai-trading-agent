@@ -48,8 +48,16 @@ function D2Logo() {
   );
 }
 
+function FeishuLogo() {
+  return (
+    <svg className="size-7" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+      <path fill="#3370FF" d="M681.6 345.6H563.2a25.6 25.6 0 0 0-25.6 25.6v51.2h102.4c19.2 0 38.4 6.4 51.2 19.2 12.8 12.8 19.2 32 19.2 51.2 0 38.4-32 70.4-70.4 70.4H537.6V640H681.6c19.2 0 32 12.8 32 32s-12.8 32-32 32H512v76.8a51.2 51.2 0 0 1-51.2 51.2c-12.8 0-25.6-6.4-32-12.8L256 665.6H102.4c-38.4 0-70.4-32-70.4-70.4V460.8c0-38.4 32-70.4 70.4-70.4h108.8l140.8-134.4c6.4-6.4 12.8-12.8 19.2-12.8 12.8 0 25.6 6.4 25.6 25.6V345.6z" transform="translate(64 64) scale(0.85)"/>
+    </svg>
+  );
+}
+
 const LOGOS: Record<string, () => React.ReactElement> = {
-  anthropic: ClaudeLogo, mt5: MT5Logo, telegram: TelegramLogo,
+  anthropic: ClaudeLogo, mt5: MT5Logo, telegram: TelegramLogo, feishu: FeishuLogo,
   economic_calendar: D2Logo, tradingview: D2Logo,
 };
 
@@ -93,10 +101,14 @@ export default function IntegrationPage() {
     try {
       const res = await api.get("/api/integration/status");
       const results: Record<string, TestResult> = {};
-      const keyMap: Record<string, string> = { "Claude AI (Max)": "anthropic", "Anthropic API": "anthropic", "MT5 Bridge": "mt5", "Telegram": "telegram", "Economic Calendar": "economic_calendar", "TradingView": "tradingview" };
+      const keyMap: Record<string, string> = { "Claude AI (Max)": "anthropic", "Anthropic API": "anthropic", "MT5 Bridge": "mt5", "Telegram": "telegram", "Feishu": "feishu", "Economic Calendar": "economic_calendar", "TradingView": "tradingview" };
       for (const s of res.data.services) results[keyMap[s.name] || s.name] = s;
       setTestResults(results);
-      const allConnected = Object.values(results).every((r) => r.status === "connected");
+      // "connected" 或 "configured" 均视为通过（webhook 型服务只报 configured，
+      // 无法做无副作用连通性探测）；仅 error / not_configured 视为失败。
+      const allConnected = Object.values(results).every(
+        (r) => r.status === "connected" || r.status === "configured",
+      );
       if (allConnected) showSuccess(t("allServicesConnected"));
       else showError(t("someServicesFailed"));
     } catch { showError(t("connectionTestFailed")); } finally { setTesting(null); }

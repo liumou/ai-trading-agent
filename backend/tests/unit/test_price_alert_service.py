@@ -17,13 +17,23 @@ from app.services.price_alert_service import (
 
 
 class FakeFeishu:
-    """Mock FeishuNotifier：记录发送调用，不真实发请求。"""
+    """Mock FeishuNotifier：记录发送调用，不真实发请求。
 
-    def __init__(self):
-        self.enabled = True
+    `fail_next` 为 True 时下一次发送返回 False，用于验证发送失败的回滚路径
+    （原实现恒返回 True，导致该路径零覆盖——发送失败曾静默耗尽通知名额）。
+    """
+
+    def __init__(self, enabled: bool = True, fail_next: bool = False):
+        self.enabled = enabled
+        self.fail_next = fail_next
         self.sent: list[tuple[int, float]] = []  # (alert_id, price)
+        self.attempts = 0
 
     async def send_price_alert_card(self, alert, current_price: float) -> bool:
+        self.attempts += 1
+        if self.fail_next:
+            self.fail_next = False
+            return False
         self.sent.append((alert.id, current_price))
         return True
 
@@ -172,6 +182,121 @@ class TestSaturation:
         alert = await _create_alert(service, max_notifications=1, sent_count=1)
         await service._dispatch_send(alert, 3351.0)
         assert len(service.feishu_notifier.sent) == 0
+
+    async def test_send_failure_rolls_back_quota(self, service, redis_client):
+        """发送失败必须归还名额，规则保持活跃，下一轮可重试。
+
+        回归测试：原实现先落库 sent_count+1 再发送，失败不回滚。默认
+        max_notifications=1 时一次网络抖动即永久耗尽名额，且规则仍显示活跃。
+        """
+        alert = await _create_alert(service, max_notifications=1)
+        service.feishu_notifier.fail_next = True
+        await service._dispatch_send(alert, 3351.0)
+
+        async with service._test_factory() as session:
+            refreshed = await session.get(PriceAlert, alert.id)
+            assert refreshed.sent_count == 0, "发送失败不得消耗通知名额"
+            assert refreshed.is_active is True, "发送失败不得停用规则"
+        assert len(service.feishu_notifier.sent) == 0
+
+    async def test_send_failure_then_retry_succeeds(self, service, redis_client):
+        """首次发送失败后，名额已归还，下一轮能正常发送并生效。"""
+        alert = await _create_alert(service, max_notifications=1)
+        service.feishu_notifier.fail_next = True
+        await service._dispatch_send(alert, 3351.0)
+        assert len(service.feishu_notifier.sent) == 0
+
+        await service._dispatch_send(alert, 3352.0)
+        assert len(service.feishu_notifier.sent) == 1
+
+        async with service._test_factory() as session:
+            refreshed = await session.get(PriceAlert, alert.id)
+            assert refreshed.sent_count == 1
+            assert refreshed.is_active is False, "成功后达到上限应停用"
+
+    async def test_over_limit_does_not_deactivate_as_side_effect(
+        self, service, redis_client
+    ):
+        """名额已用尽但未停用的规则，_dispatch_send 不再额外发送。"""
+        alert = await _create_alert(service, max_notifications=1, sent_count=1)
+        await service._dispatch_send(alert, 3351.0)
+        assert len(service.feishu_notifier.sent) == 0
+
+        async with service._test_factory() as session:
+            refreshed = await session.get(PriceAlert, alert.id)
+            assert refreshed.sent_count == 1, "名额用尽不得继续加计"
+
+
+# ─── 基础设施故障隔离 ────────────────────────────────────────────────────────
+
+
+class TestInfraFailureIsolation:
+    async def test_claim_error_does_not_deactivate(self, service, redis_client):
+        """占位写库失败（基础设施故障）不得停用规则，也不得占用名额。
+
+        回归测试：原实现把 DB 异常与"名额用尽"合并成同一个 False 返回值，
+        再据此调用 _deactivate_if_saturated —— 等于把基础设施故障伪装成
+        "已达上限"这一业务结论。
+        """
+        alert = await _create_alert(service, max_notifications=1)
+
+        # 让占位阶段抛错（模拟 DB 连接故障）。工厂本身是同步的，
+        # 其返回值才作为异步上下文管理器，故这里直接同步抛错。
+        original_factory = service._session_factory
+        calls = 0
+
+        def flaky_factory():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("db connection lost")
+            return original_factory()
+
+        service._session_factory = flaky_factory
+        try:
+            await service._dispatch_send(alert, 3351.0)
+        finally:
+            service._session_factory = original_factory
+
+        async with original_factory() as session:
+            refreshed = await session.get(PriceAlert, alert.id)
+            assert refreshed.is_active is True, "基础设施故障不得停用规则"
+            assert refreshed.sent_count == 0, "占位失败不得留下残留计数"
+        assert service.feishu_notifier.attempts == 0, "占位失败不应尝试发送"
+
+    async def test_disabled_notifier_warns_without_crashing(self, redis_client, db_engine):
+        """飞书未配置时 check_all 静默短路（原有行为），但不得抛异常。"""
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        notifier = FakeFeishu(enabled=False)
+        factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        svc = PriceAlertService(notifier, redis_client, session_factory=factory)
+
+        await svc.check_all()  # 不抛异常
+        assert svc.feishu_notifier.attempts == 0
+
+    async def test_disabled_warning_only_once(self, redis_client, db_engine):
+        """未配置的告警只打一次，避免每 2 秒巡检刷屏。
+
+        loguru 默认不接标准 logging，caplog 捕不到，故直接挂临时 sink。
+        """
+        import loguru
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        records: list[str] = []
+        sink_id = loguru.logger.add(lambda msg: records.append(str(msg)), level="WARNING")
+        try:
+            notifier = FakeFeishu(enabled=False)
+            factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+            svc = PriceAlertService(notifier, redis_client, session_factory=factory)
+
+            await svc.check_all()
+            await svc.check_all()
+        finally:
+            loguru.logger.remove(sink_id)
+
+        warnings = [r for r in records if "FEISHU_WEBHOOK_URL" in r]
+        assert len(warnings) == 1
 
 
 # ─── 工具函数 ────────────────────────────────────────────────────────────────

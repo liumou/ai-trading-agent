@@ -1,7 +1,8 @@
 """
 飞书群自定义机器人通知 — 发送精美卡片消息（价格阈值提醒等）。
 
-- Webhook 配置走 env `FEISHU_WEBHOOK_URL`（属机密：只存 env，禁止进代码/DB/前端）。
+- Webhook 配置优先走 Secrets Vault（`FEISHU_WEBHOOK_URL`，AES 加密），未配置时回退 env。
+  集成页可编辑保存；`reload_from()` 让运行期实例立即生效（不需重启）。
 - 卡片用 `msg_type="interactive"` 内联格式（custom bot 直接支持，无需预建卡片模板）。
 - 发送失败只记录日志，绝不抛出异常影响调用方（对齐 TelegramNotifier._send 模式）。
 """
@@ -33,9 +34,25 @@ def _price_decimals(symbol: str) -> int:
 class FeishuNotifier:
     """飞书群自定义机器人通知器。"""
 
-    def __init__(self):
-        self.webhook_url = (settings.feishu_webhook_url or "").strip()
+    def __init__(self, webhook_url: str | None = None):
+        """初始化通知器。
+
+        ``webhook_url`` 传入时优先使用（集成页 Vault 配置），否则回退 env
+        ``FEISHU_WEBHOOK_URL``。运行期可调 ``reload_from`` 让新配置即时生效。
+        """
+        self.webhook_url = (webhook_url or settings.feishu_webhook_url or "").strip()
         self.enabled = bool(self.webhook_url)
+
+    def reload_from(self, webhook_url: str | None) -> None:
+        """运行时用新 webhook 刷新实例状态（保存配置后调用，免重启）。
+
+        调用方负责读取 Vault 中的最新值；此处只同步状态。空值视为清空禁用。
+        """
+        new_url = (webhook_url or "").strip()
+        if new_url != self.webhook_url or bool(new_url) != self.enabled:
+            self.webhook_url = new_url
+            self.enabled = bool(new_url)
+            logger.info(f"Feishu notifier reloaded (enabled={self.enabled})")
 
     async def _post(self, payload: dict) -> bool:
         """POST 到飞书 webhook。成功返回 True，失败记录日志返回 False（绝不抛出）。"""

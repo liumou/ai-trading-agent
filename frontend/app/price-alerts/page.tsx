@@ -29,6 +29,7 @@ import {
 import {
   createPriceAlert,
   deletePriceAlert,
+  getPriceAlertStatus,
   listPriceAlerts,
   listSymbolConfigs,
   testPriceAlert,
@@ -36,6 +37,7 @@ import {
   updatePriceAlert,
   type PriceAlert,
   type PriceAlertInput,
+  type PriceAlertStatus,
   type SymbolConfig,
 } from "@/lib/api";
 
@@ -103,15 +105,18 @@ export default function PriceAlertsPage() {
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [status, setStatus] = useState<PriceAlertStatus | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [alertsRes, symbolsRes] = await Promise.all([
+      const [alertsRes, symbolsRes, statusRes] = await Promise.all([
         listPriceAlerts().catch(() => ({ data: [] as PriceAlert[] })),
         listSymbolConfigs().catch(() => ({ data: [] as SymbolConfig[] })),
+        getPriceAlertStatus().catch(() => null),
       ]);
       setAlerts(alertsRes.data);
       setSymbols(symbolsRes.data);
+      setStatus(statusRes?.data ?? null);
       setError(null);
     } catch {
       setError(t("errorLoad"));
@@ -232,11 +237,18 @@ export default function PriceAlertsPage() {
         </Button>
       </PageHeader>
 
-      <PageInstructions items={[t("instruction1"), t("instruction2"), t("instruction3")]} />
+      <PageInstructions items={[t("instruction1"), t("instruction2"), t("instruction3"), t("instruction4")]} />
 
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-2 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {status && !status.feishu_enabled && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3">
+          <div className="text-sm font-medium text-amber-600">{t("statusBanner.disabled")}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{t("statusBanner.disabledDetail")}</div>
         </div>
       )}
 

@@ -127,6 +127,76 @@ class TestToggle:
         assert resp.json()["is_active"] is True
 
 
+# ─── 运行状态 ─────────────────────────────────────────────────────────────────
+
+
+class FakeNotifier:
+    """只暴露 /status 端点用到的 enabled 属性。"""
+
+    def __init__(self, enabled: bool):
+        self.enabled = enabled
+
+
+def _app_with_notifier(db_session, redis_client, enabled: bool) -> FastAPI:
+    """构建带指定 feishu 状态的 app。"""
+    app = _build_app(db_session, redis_client)
+    app.state.feishu_notifier = FakeNotifier(enabled=enabled)
+    return app
+
+
+@pytest_asyncio.fixture
+async def app_with_notifier(db_session, redis_client):
+    """挂载带已配置 feishu_notifier 的 app，用于 /status 的正向路径。"""
+    app = _app_with_notifier(db_session, redis_client, enabled=True)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+
+class TestStatus:
+    async def test_status_when_feishu_enabled(self, app_with_notifier):
+        """飞书已配置：报 enabled、统计活跃规则，且不泄露 webhook URL。"""
+        created = (await app_with_notifier.post("/api/price-alerts", json=_sample())).json()
+        assert created["is_active"] is True
+
+        resp = await app_with_notifier.get("/api/price-alerts/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["feishu_enabled"] is True
+        assert body["active_alerts"] == 1
+        assert body["message"] is None
+        # 机密不得出现在响应中
+        assert "webhook_url" not in str(body)
+
+    async def test_status_when_feishu_disabled(self, db_session, redis_client):
+        """飞书未配置：明确告知未配置，并提示配置项名称。"""
+        app = _app_with_notifier(db_session, redis_client, enabled=False)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get("/api/price-alerts/status")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["feishu_enabled"] is False
+        assert body["config_key"] == "FEISHU_WEBHOOK_URL"
+        assert body["active_alerts"] == 0
+        assert body["message"] and "FEISHU_WEBHOOK_URL" in body["message"]
+
+    async def test_status_no_notifier_configured(self, client):
+        """启动异常（notifier 未注入）时降级为未配置，不得 500。"""
+        resp = await client.get("/api/price-alerts/status")
+        assert resp.status_code == 200
+        assert resp.json()["feishu_enabled"] is False
+
+    async def test_status_not_shadowed_by_id_route(self, app_with_notifier):
+        """路由顺序：/status 必须先于 /{alert_id} 注册，否则会被路径参数抢走。
+
+        回归测试：若顺序被破坏，GET /status 会匹配到 /{alert_id} 并报 422。
+        """
+        resp = await app_with_notifier.get("/api/price-alerts/status")
+        assert resp.status_code == 200, "status 端点被 /{alert_id} 遮蔽"
+
+
 # ─── 参数校验 ─────────────────────────────────────────────────────────────────
 
 

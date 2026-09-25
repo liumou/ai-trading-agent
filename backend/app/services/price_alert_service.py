@@ -14,6 +14,7 @@
 
 import json
 from datetime import datetime, timezone
+from typing import Literal
 
 from loguru import logger
 from sqlalchemy import select, update
@@ -42,13 +43,24 @@ class PriceAlertService:
         self._session_factory = session_factory or _default_async_session
         # 发送中的提醒 id 集合，防重入（同一提醒并发触发时只发一次）
         self._sending: set[int] = set()
+        # 飞书未配置时只告警一次，避免每 2 秒巡检刷屏
+        self._warned_disabled: bool = False
 
     # ─── 巡检主入口 ──────────────────────────────────────────────────────────
 
     async def check_all(self) -> None:
         """加载全部活跃提醒，逐条判定。单条失败不影响其他规则。"""
         if not self.feishu_notifier.enabled:
+            # 配置缺失是常见故障：不告警时用户只会看到"提醒没反应"，无从排查。
+            # 只打一次，避免每 2 秒巡检刷屏。
+            if not self._warned_disabled:
+                logger.warning(
+                    "Price alerts NOT firing: FEISHU_WEBHOOK_URL is not set — "
+                    "rules are stored but no notification can be sent"
+                )
+                self._warned_disabled = True
             return
+        self._warned_disabled = False
         try:
             async with self._session_factory() as session:
                 result = await session.execute(
@@ -119,30 +131,52 @@ class PriceAlertService:
         """触发发送：原子计数占位 → 发送飞书卡片 → 达上限停用。
 
         用 `_sending` 集合防重入（同一提醒未完成发送前不重复调度）。
+
+        关键不变量：**只有真正发送成功才消耗名额**。发送失败必须回滚，否则
+        默认 max_notifications=1 时一次网络抖动就会把规则永久耗尽，且规则
+        仍显示为"活跃"，用户无从察觉。基础设施故障（claim 的 DB 异常）同样
+        不得停用规则——不得把故障伪装成"已达上限"这一业务结论。
         """
         alert_id = alert.id
         if alert_id in self._sending:
             return
         self._sending.add(alert_id)
         try:
-            # 原子计数占位：sent_count < max_notifications 才 +1，防并发双发
-            claimed = await self._claim_notification(alert_id, alert.max_notifications)
-            if not claimed:
-                # 已达上限（并发下可能被其他 tick 占用）：确保停用
+            claim = await self._claim_notification(alert_id, alert.max_notifications)
+            if claim == "error":
+                # 占位写库失败（连接问题等）：本轮放弃，但不回滚也不停用
+                return
+            if claim == "saturated":
+                # 名额确已用尽（可能是并发 tick 先占完）：确保停用
                 await self._deactivate_if_saturated(alert_id, alert.max_notifications)
                 return
 
-            # 发送飞书卡片（异步 task，不阻塞巡检循环）
+            logger.info(
+                f"Price alert triggered [alert {alert_id}] {alert.symbol} "
+                f"{alert.condition} {alert.trigger_price} @ bid={current_price}"
+            )
             ok = await self.feishu_notifier.send_price_alert_card(alert, current_price)
             if ok:
                 await self._mark_sent(alert_id)
-            # 发送后检查是否达上限 → 停用
-            await self._deactivate_if_saturated(alert_id, alert.max_notifications)
+                await self._deactivate_if_saturated(alert_id, alert.max_notifications)
+            else:
+                # 发送失败：归还名额，让下一轮巡检有机会重试
+                logger.warning(
+                    f"Price alert send failed [alert {alert_id}] {alert.symbol} — "
+                    f"releasing quota (sent_count will not increase)"
+                )
+                await self._rollback_notification(alert_id)
         finally:
             self._sending.discard(alert_id)
 
-    async def _claim_notification(self, alert_id: int, max_notifications: int) -> bool:
-        """原子占位一次发送名额。返回是否占用成功。"""
+    async def _claim_notification(
+        self, alert_id: int, max_notifications: int
+    ) -> Literal["claimed", "saturated", "error"]:
+        """原子占位一次发送名额。
+
+        返回三态，调用方据此区分"名额用尽"（业务结论，可停用）与"写库失败"
+        （基础设施故障，只能放弃本轮）。二者不可混为一谈。
+        """
         try:
             async with self._session_factory() as session:
                 result = await session.execute(
@@ -151,10 +185,23 @@ class PriceAlertService:
                     .values(sent_count=PriceAlert.sent_count + 1)
                 )
                 await session.commit()
-                return result.rowcount > 0
+                return "claimed" if result.rowcount > 0 else "saturated"
         except Exception as e:
             logger.error(f"Price alert claim failed [alert {alert_id}]: {e}")
-            return False
+            return "error"
+
+    async def _rollback_notification(self, alert_id: int) -> None:
+        """发送失败时归还已占用的名额（下限 0，防止计数为负）。"""
+        try:
+            async with self._session_factory() as session:
+                await session.execute(
+                    update(PriceAlert)
+                    .where(PriceAlert.id == alert_id, PriceAlert.sent_count > 0)
+                    .values(sent_count=PriceAlert.sent_count - 1)
+                )
+                await session.commit()
+        except Exception as e:
+            logger.error(f"Price alert rollback failed [alert {alert_id}]: {e}")
 
     async def _mark_sent(self, alert_id: int) -> None:
         """记录最近发送时间。"""

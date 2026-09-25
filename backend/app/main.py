@@ -331,7 +331,25 @@ async def lifespan(app: FastAPI):
 
     # Initialize Feishu notifier（价格阈值提醒用）— 存 app.state 供
     # PriceAlertService 巡检引擎与 /api/price-alerts 路由使用。
-    feishu_notifier = FeishuNotifier()
+    # 配置优先级：Vault（前端可配，重启不丢）→ env。Vault 不可用时回退 env。
+    feishu_webhook_url = settings.feishu_webhook_url
+    try:
+        from sqlalchemy import select
+
+        from app.db.models import Secret
+        from app.vault import vault
+
+        if vault and vault._derived_key:
+            result = await db_session.execute(
+                select(Secret).where(Secret.key == "FEISHU_WEBHOOK_URL", Secret.is_deleted == False)  # noqa: E712
+            )
+            secret = result.scalar_one_or_none()
+            if secret:
+                feishu_webhook_url = vault.decrypt(secret.encrypted_value, secret.nonce)
+    except Exception as e:
+        logger.warning(f"Failed to load Feishu webhook from Vault, fallback to env: {e}")
+
+    feishu_notifier = FeishuNotifier(webhook_url=feishu_webhook_url)
     app.state.feishu_notifier = feishu_notifier
     if feishu_notifier.enabled:
         logger.info("Feishu notifications enabled (price alerts)")

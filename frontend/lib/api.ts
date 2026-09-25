@@ -679,4 +679,14 @@ export const togglePriceAlert = (id: number) =>
 export const testPriceAlert = (symbol = "GOLD") =>
   api.post<{ status: string; symbol: string }>("/api/price-alerts/test", { symbol });
 
+/** 提醒链路运行状态：飞书是否配置、活跃规则数。飞书未配置时巡检静默空转。 */
+export interface PriceAlertStatus {
+  feishu_enabled: boolean;
+  config_key: string;
+  active_alerts: number;
+  message: string | null;
+}
+
+export const getPriceAlertStatus = () => api.get<PriceAlertStatus>("/api/price-alerts/status");
+
 export default api;
