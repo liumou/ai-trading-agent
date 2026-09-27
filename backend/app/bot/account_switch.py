@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import json
 import time
 from datetime import datetime
 
@@ -186,6 +187,23 @@ class AccountSwitchService:
                     },
                     success=True,
                 )
+
+                # 7. 广播账号变更：前端各页据此刷新品种/状态并清掉旧账号的
+                #    行情缓存（price_update 只会推新账号引擎的品种）。
+                try:
+                    await self._redis.publish(
+                        "account_update",
+                        json.dumps(
+                            {
+                                "from": previous_login,
+                                "to": new_login,
+                                "server": target.server,
+                                "ts": datetime.utcnow().isoformat(),
+                            }
+                        ),
+                    )
+                except Exception as e:  # noqa: BLE001 — 广播失败不影响切换结果
+                    logger.warning(f"account_update publish failed: {e}")
             finally:
                 # 门禁必须清理：成功/失败/任何异常出口都复位，避免切换窗口内下单被拒
                 await self._set_switching_flag(False)

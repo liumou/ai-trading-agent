@@ -6,6 +6,7 @@
     "item2": "The bot trades automatically based on the selected strategy. Monitor open positions, equity, and live events below."
   },
   "spd": "spread",
+  "waitingTicks": "Waiting for quotes…",
   "gridView": "4-Grid",
   "singleView": "Single",
   "balance": "Balance",

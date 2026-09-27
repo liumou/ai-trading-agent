@@ -99,8 +99,8 @@ export default function SymbolsPage() {
   const removeLocal = (symbol: string) =>
     setConfigs((prev) => prev.filter((c) => c.symbol !== symbol));
 
-  const ensureCatalogLoaded = async () => {
-    if (catalog || catalogLoading) return;
+  const ensureCatalogLoaded = async (force = false) => {
+    if (!force && (catalog || catalogLoading)) return;
     setCatalogLoading(true);
     setCatalogError(null);
     try {
@@ -120,8 +120,11 @@ export default function SymbolsPage() {
 
   const openCreate = () => {
     setEditing(null);
+    // 每次打开都重取：券商目录按当前 MT5 账号返回，切号后旧目录里的品种
+    // 在新账号服务器上不存在，沿用缓存会让新品种搜不到。
+    setCatalog(null);
     setDialogOpen(true);
-    void ensureCatalogLoaded();
+    void ensureCatalogLoaded(true);
   };
 
   const openEdit = (cfg: SymbolConfig) => {

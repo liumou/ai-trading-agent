@@ -280,7 +280,7 @@ export default function DashboardPage() {
   return (
     <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6 page-enter">
       <PageHeader title={t("title")} subtitle={t("subtitle")}>
-        {activeTick && (
+        {activeTick ? (
           <div className="border border-border rounded-full px-3 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 sm:gap-3 bg-card">
             <span className="text-xs text-muted-foreground font-medium">{activeSymbol}</span>
             <span className="text-xs sm:text-sm font-mono font-bold text-foreground">
@@ -294,6 +294,13 @@ export default function DashboardPage() {
               {t("spd")}: {activeTick.spread.toFixed(1)}
             </span>
           </div>
+        ) : (
+          symbols.length > 0 && (
+            <div className="border border-dashed border-border rounded-full px-3 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 bg-card/60">
+              <span className="text-xs text-muted-foreground font-medium">{activeSymbol}</span>
+              <span className="text-xs text-muted-foreground animate-pulse">{t("waitingTicks")}</span>
+            </div>
+          )
         )}
         {status?.paper_trade && (
           <Badge variant="outline" className="border-amber-500 text-amber-600 dark:text-amber-400 text-xs font-semibold">

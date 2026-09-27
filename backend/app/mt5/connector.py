@@ -112,8 +112,15 @@ class MT5BridgeConnector:
         )
 
     async def get_symbol_spec(self, symbol: str) -> dict:
-        """Fetch broker-side symbol spec (digits, volume limits, contract size)."""
-        return await self._request("get", f"/symbol-spec/{_enc(to_broker_alias(symbol))}")
+        """Fetch broker-side symbol spec (digits, volume limits, contract size).
+
+        ``symbol`` 必须是**券商侧名称**（broker_alias / 券商目录里的名字）。
+        本方法不做 to_broker_alias 映射 —— 全部调用方（品种准入校验 /
+        validate 端点 / 切号后规格回填）拿到的已是券商名；再映射一次会用
+        旧行的别名覆盖操作员刚输入的新别名（如把 USDJPY 的别名从 USDJPYmicro
+        改回 USDJPY 时，旧映射会把请求又顶回 USDJPYmicro）。
+        """
+        return await self._request("get", f"/symbol-spec/{_enc(symbol)}")
 
     async def list_symbols(self) -> dict:
         """Fetch all broker-visible symbols with specs (used by catalog dropdown)."""

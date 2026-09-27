@@ -15,6 +15,16 @@ from unittest.mock import AsyncMock, MagicMock
 from app.bot.account_switch import AccountSwitchError, AccountSwitchService, SWITCHING_FLAG_KEY
 
 
+@pytest.fixture(autouse=True)
+def _no_real_profile_load(monkeypatch):
+    """switch() 第 4 步经真实 async_session 调 load_profiles_into_memory ——
+    本机可连远端 DB 时会把真实品种参数写进进程级 SYMBOL_PROFILES，污染
+    同进程后续测试（如 test_gold_reads_profile 断言静态值）。单测一律拦截。"""
+    import app.services.symbol_config_service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "load_profiles_into_memory", AsyncMock(return_value=0))
+
+
 def _make_service(**overrides):
     """构造最小可用的 service，全部依赖 mock。"""
     manager = MagicMock()

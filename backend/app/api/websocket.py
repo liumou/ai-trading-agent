@@ -16,6 +16,7 @@ CHANNELS = [
     "bot_event",
     "sentiment_update",
     "status_update",
+    "account_update",
 ]
 
 

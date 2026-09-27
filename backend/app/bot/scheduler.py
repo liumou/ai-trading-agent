@@ -936,7 +936,12 @@ class BotScheduler:
             logger.warning(f"Vault health check failed: {e}")
 
     async def _set_symbol_ml_status(self, symbol: str, status: str, mark_trained: bool = False) -> None:
-        """Write ml_status back to symbol_configs so the UI badge reflects reality."""
+        """Write ml_status back to symbol_configs so the UI badge reflects reality.
+
+        品种配置按账号隔离 —— 用当前引擎的账号限定更新，避免同名品种行
+        跨账号被误写。symbol 来自引擎（当前账号视角），管理器不可用时退化为
+        仅按 symbol 更新（测试装配场景）。
+        """
         try:
             from sqlalchemy import update
 
@@ -946,8 +951,14 @@ class BotScheduler:
             values = {"ml_status": status, "updated_at": datetime.utcnow()}
             if mark_trained:
                 values["ml_last_trained_at"] = datetime.utcnow()
+            account_login = None
+            if self.manager is not None:
+                account_login = self.manager.current_account_login or None
             async with async_session() as session:
-                await session.execute(update(SymbolConfig).where(SymbolConfig.symbol == symbol).values(**values))
+                stmt = update(SymbolConfig).where(SymbolConfig.symbol == symbol)
+                if account_login:
+                    stmt = stmt.where(SymbolConfig.account_login == account_login)
+                await session.execute(stmt.values(**values))
                 await session.commit()
         except Exception as e:
             logger.warning(f"ml_status writeback [{symbol}] failed: {e}")

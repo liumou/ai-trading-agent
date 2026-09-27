@@ -10,9 +10,12 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import SymbolConfig
+from app.db.models import MT5Account, SymbolConfig
 
 RELOAD_CHANNEL = "symbol_config_changed"
+
+# 与 trades/bot_events 的 account_login 约定一致：'0' = 未知/无活跃账号。
+UNKNOWN_ACCOUNT_LOGIN = "0"
 
 
 def config_to_profile(cfg: SymbolConfig) -> dict:
@@ -46,17 +49,51 @@ def config_to_profile(cfg: SymbolConfig) -> dict:
     }
 
 
-async def list_configs(db: AsyncSession, include_disabled: bool = True) -> list[SymbolConfig]:
-    stmt = select(SymbolConfig).where(SymbolConfig.is_deleted.is_(False))
+async def get_current_account_login(db: AsyncSession) -> str:
+    """返回当前活跃 MT5 账号的 login（字符串）；无活跃账号时返回 '0'。
+
+    品种配置按账号隔离的统一解析入口 —— list/get/create 与内存 profiles
+    加载都必须经过这里，保证 API 视角与引擎视角看到同一份账号数据。
+    """
+    result = await db.execute(
+        select(MT5Account.login).where(
+            MT5Account.is_active.is_(True),
+            MT5Account.is_deleted.is_(False),
+        )
+    )
+    login = result.scalar_one_or_none()
+    return str(login) if login is not None else UNKNOWN_ACCOUNT_LOGIN
+
+
+async def list_configs(
+    db: AsyncSession,
+    include_disabled: bool = True,
+    account_login: str | None = None,
+) -> list[SymbolConfig]:
+    """列出品种配置。account_login 为 None 时解析当前活跃账号。"""
+    if account_login is None:
+        account_login = await get_current_account_login(db)
+    stmt = select(SymbolConfig).where(
+        SymbolConfig.account_login == account_login,
+        SymbolConfig.is_deleted.is_(False),
+    )
     if not include_disabled:
         stmt = stmt.where(SymbolConfig.is_enabled.is_(True))
     result = await db.execute(stmt.order_by(SymbolConfig.symbol))
     return list(result.scalars().all())
 
 
-async def get_config(db: AsyncSession, symbol: str) -> SymbolConfig | None:
+async def get_config(
+    db: AsyncSession,
+    symbol: str,
+    account_login: str | None = None,
+) -> SymbolConfig | None:
+    """按品种名取配置。account_login 为 None 时解析当前活跃账号。"""
+    if account_login is None:
+        account_login = await get_current_account_login(db)
     result = await db.execute(
         select(SymbolConfig).where(
+            SymbolConfig.account_login == account_login,
             SymbolConfig.symbol == symbol,
             SymbolConfig.is_deleted.is_(False),
         )
@@ -64,9 +101,12 @@ async def get_config(db: AsyncSession, symbol: str) -> SymbolConfig | None:
     return result.scalar_one_or_none()
 
 
-async def load_profiles_from_db(db: AsyncSession) -> dict[str, dict]:
-    """Load all non-deleted configs as profile dict keyed by symbol and broker_alias."""
-    configs = await list_configs(db, include_disabled=True)
+async def load_profiles_from_db(
+    db: AsyncSession,
+    account_login: str | None = None,
+) -> dict[str, dict]:
+    """Load non-deleted configs (当前活跃账号) as profile dict keyed by symbol and broker_alias."""
+    configs = await list_configs(db, include_disabled=True, account_login=account_login)
     profiles: dict[str, dict] = {}
     for cfg in configs:
         profile = config_to_profile(cfg)
@@ -79,7 +119,7 @@ async def load_profiles_from_db(db: AsyncSession) -> dict[str, dict]:
 
 
 async def load_profiles_into_memory() -> int:
-    """把 DB symbol profiles 加载到进程内存（SYMBOL_PROFILES）并用日志宣告结果。
+    """把 DB symbol profiles（当前活跃账号的）加载到进程内存（SYMBOL_PROFILES）。
 
     返回生效的 profile 条目数；DB 不可用时返回 0 并保持静态默认值。
 
@@ -87,27 +127,33 @@ async def load_profiles_into_memory() -> int:
     MCP server stdio 子进程和 agent runner。别名解析 to_broker_alias() 依赖
     这份内存映射：进程没加载过，别名就全部退化成"原样返回"，行情请求会以
     规范名打到桥上，得到 "No tick/OHLCV data"（而 DB 里其实有数据）。
+
+    账号隔离：只加载当前活跃账号的配置。切换账号后 account_switch 会重新
+    调用本函数，旧账号的别名/品种不会泄漏到新账号视角。DB 可达但当前账号
+    没有任何配置是正常状态（新账号待配置），不是错误 —— 此时 SYMBOL_PROFILES
+    退回静态默认且标记已同步，reload_engines 不再启用静态兜底引擎。
     """
     from app.config import apply_db_symbol_profiles
     from app.db.session import async_session
 
     try:
         async with async_session() as session:
-            db_profiles = await load_profiles_from_db(session)
+            account_login = await get_current_account_login(session)
+            db_profiles = await load_profiles_from_db(session, account_login=account_login)
 
-        if not db_profiles:
-            # DB 可达但表里没有启用品种 —— 这是配置问题，不是基础设施抖动，
-            # 必须与下面的 except 区分开，否则"DB 没配置"和"DB 挂了"在日志里
-            # 长得一样，排查时会误判为瞬时故障。
-            logger.error(
-                "Symbol profiles: DB reachable but no enabled entries "
-                "(keeping static defaults; check symbol_configs table)"
-            )
-            return 0
-
+        # 空 dict 也要 apply：清掉上一个账号可能残留的别名映射，并置位同步标记。
         apply_db_symbol_profiles(db_profiles)
         enabled = [s for s, p in db_profiles.items() if p.get("is_enabled") and "canonical" not in p]
-        logger.info(f"Symbol profiles loaded from DB: {len(db_profiles)} entries, enabled: {enabled}")
+        if not db_profiles:
+            logger.info(
+                f"Symbol profiles: no configs for active account {account_login} "
+                "(static defaults kept; add symbols via /symbols)"
+            )
+        else:
+            logger.info(
+                f"Symbol profiles loaded from DB [account {account_login}]: "
+                f"{len(db_profiles)} entries, enabled: {enabled}"
+            )
         return len(db_profiles)
     except Exception as e:
         logger.warning(f"Symbol profile DB load failed (using static defaults): {e}")

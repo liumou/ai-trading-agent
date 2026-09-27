@@ -242,6 +242,18 @@ async def lifespan(app: FastAPI):
         )""",
         "CREATE INDEX IF NOT EXISTS ix_ai_usage_logs_timestamp ON ai_usage_logs (timestamp)",
         "CREATE INDEX IF NOT EXISTS ix_ai_usage_logs_agent_id ON ai_usage_logs (agent_id)",
+        # ── symbol_configs 账号隔离（与迁移 c1d2e3f4a5b6 一致，幂等兜底）──
+        "ALTER TABLE symbol_configs ADD COLUMN IF NOT EXISTS account_login VARCHAR(32) NOT NULL DEFAULT '0'",
+        """UPDATE symbol_configs SET account_login = COALESCE((
+               SELECT ma.login::varchar FROM mt5_accounts ma
+               WHERE ma.is_active = true AND ma.is_deleted = false
+               ORDER BY ma.id LIMIT 1), '0')
+           WHERE account_login = '0'""",
+        "ALTER TABLE symbol_configs DROP CONSTRAINT IF EXISTS uq_symbol_configs_symbol",
+        "DROP INDEX IF EXISTS uq_symbol_configs_symbol",
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_symbol_configs_account_symbol
+           ON symbol_configs (account_login, symbol)""",
+        "CREATE INDEX IF NOT EXISTS ix_symbol_configs_account_login ON symbol_configs (account_login)",
     ]
     for stmt in schema_stmts:
         try:
@@ -299,9 +311,16 @@ async def lifespan(app: FastAPI):
     sentiment_analyzer = NewsSentimentAnalyzer(ai_client, db_session, redis_client)
     manager.set_sentiment_analyzer(sentiment_analyzer)
 
-    # Initialize historical data collector (uses first engine's market_data)
-    first_engine = next(iter(manager.engines.values()))
-    hist_collector = HistoricalDataCollector(first_engine.market_data, db_session)
+    # Initialize historical data collector (uses first engine's market_data).
+    # 引擎集可能为空（当前账号品种全禁用/新账号未配置）—— 用裸连接器占位，
+    # 首个品种启用后的 reload 会经由 manager 接线真实引擎。
+    from app.mt5.market_data import MarketDataService
+
+    first_engine = next(iter(manager.engines.values()), None)
+    hist_collector = HistoricalDataCollector(
+        first_engine.market_data if first_engine else MarketDataService(connector),
+        db_session,
+    )
 
     # Initialize macro data service — register with BotManager so newly-added
     # engines (via /api/symbols hot-reload) receive the same wiring.
@@ -321,8 +340,8 @@ async def lifespan(app: FastAPI):
     if notifier.enabled:
         logger.info("Telegram notifications enabled")
         # Alert the operator when the LLM circuit breaker trips (endpoint down).
-        import asyncio
-
+        # 注意：这里不能函数内 `import asyncio` —— 会把 asyncio 变成 lifespan 的
+        # 局部名，Telegram 未启用时后续 asyncio.Event() 直接 UnboundLocalError。
         llm_circuit_breaker.set_alert_callback(
             lambda msg: asyncio.create_task(notifier._send(msg))
         )
@@ -365,7 +384,9 @@ async def lifespan(app: FastAPI):
     # Set up routes with manager reference
     bot.set_manager(manager)
     webhooks.init_webhooks(manager)
-    backtest.set_market_data(first_engine.market_data)
+    backtest.set_market_data(
+        first_engine.market_data if first_engine else MarketDataService(connector)
+    )
     backtest.set_collector(hist_collector)
     data.set_collector(hist_collector)
     ml.set_ml_deps(hist_collector)
