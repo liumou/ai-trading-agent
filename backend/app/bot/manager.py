@@ -69,7 +69,6 @@ class BotManager:
         # when the DB was never successfully synced (unavailable / test wiring).
         # DB 已同步但品种全禁用/当前账号无配置 = 操作员的真实意图，不拉起静态引擎。
         db_enabled = [s for s, p in SYMBOL_PROFILES.items() if p.get("is_enabled") is True and "canonical" not in p]
-
         initial = db_enabled or (set() if app_config.SYMBOL_PROFILES_DB_SYNCED else settings.symbol_list)
         for symbol in initial:
             if symbol not in SYMBOL_PROFILES:

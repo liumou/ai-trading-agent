@@ -243,7 +243,7 @@ async def lifespan(app: FastAPI):
         )""",
         "CREATE INDEX IF NOT EXISTS ix_ai_usage_logs_timestamp ON ai_usage_logs (timestamp)",
         "CREATE INDEX IF NOT EXISTS ix_ai_usage_logs_agent_id ON ai_usage_logs (agent_id)",
-        # ── symbol_configs 账号隔离（与迁移 c1d2e3f4a5b6 共享 DDL，幂等兜底）──
+# ── symbol_configs 账号隔离（与迁移 c1d2e3f4a5b6 共享 DDL，幂等兜底）──
         # 单一真相源见 app/db/schema_ddl.py —— 此处不再逐条重复，避免漂移。
         *SYMBOL_CONFIG_ACCOUNT_LOGIN_DDL,
     ]
