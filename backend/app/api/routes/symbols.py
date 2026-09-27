@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import log_audit
@@ -603,9 +604,14 @@ async def broker_catalog(request: Request, db: AsyncSession = Depends(get_db)) -
     if connector is None:
         raise HTTPException(status_code=503, detail="MT5 connector unavailable")
 
+    # 只收窄 DB 层异常（SQLAlchemyError）：非 DB 错误（编程缺陷等）不应被吞。
+    # DB 抖动时退化为 '0' key 保持目录可用，但标记 db_degraded —— 退化路径
+    # 直接 _fetch 不写缓存，避免把退化目录写进缓存污染后续请求（评审问题 6）。
+    db_degraded = False
     try:
         account_login = await svc.get_current_account_login(db)
-    except Exception as e:  # noqa: BLE001 — DB 抖动时不阻塞目录请求，退化到 '0' key
+    except SQLAlchemyError as e:
+        db_degraded = True
         logger.warning(f"broker-catalog: resolve active account failed ({e}); using '0'")
         account_login = "0"
 
@@ -644,7 +650,7 @@ async def broker_catalog(request: Request, db: AsyncSession = Depends(get_db)) -
         }
 
     redis_client = getattr(request.app.state, "redis", None)
-    if redis_client is not None:
+    if redis_client is not None and not db_degraded:
         from app.cache import cached
 
         return await cached(redis_client, f"xm:catalog:v2:{account_login}", 3600, _fetch)

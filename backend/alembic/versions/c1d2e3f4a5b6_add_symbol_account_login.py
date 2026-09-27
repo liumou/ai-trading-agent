@@ -17,6 +17,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
+from app.db.schema_ddl import SYMBOL_CONFIG_ACCOUNT_LOGIN_DDL
+
 revision: str = "c1d2e3f4a5b6"
 down_revision: Union[str, None] = "f0e1d2c3b4a5"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -24,35 +26,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "ALTER TABLE symbol_configs ADD COLUMN IF NOT EXISTS account_login VARCHAR(32) NOT NULL DEFAULT '0'"
-    )
-    # 回填到当前活跃账号（login 为 BigInteger，显式转 varchar 以防隐式转换差异）。
-    # COALESCE 兜底：无活跃账号时保持 '0'，避免 NOT NULL 违例。
-    op.execute(
-        """
-        UPDATE symbol_configs
-        SET account_login = COALESCE((
-            SELECT ma.login::varchar
-            FROM mt5_accounts ma
-            WHERE ma.is_active = true AND ma.is_deleted = false
-            ORDER BY ma.id
-            LIMIT 1
-        ), '0')
-        WHERE account_login = '0'
-        """
-    )
-    # 全局唯一 → 账号内唯一。旧唯一既可能是 CONSTRAINT（create_all 路径）也
-    # 可能是裸唯一 INDEX（手写迁移路径），两种情况都覆盖。
-    op.execute("ALTER TABLE symbol_configs DROP CONSTRAINT IF EXISTS uq_symbol_configs_symbol")
-    op.execute("DROP INDEX IF EXISTS uq_symbol_configs_symbol")
-    op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_symbol_configs_account_symbol "
-        "ON symbol_configs (account_login, symbol)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_symbol_configs_account_login ON symbol_configs (account_login)"
-    )
+    # 与 main.py lifespan schema_stmts 共享同一份 DDL（见 app/db/schema_ddl.py），
+    # 消除双写漂移。此处只走 upgrade 正向；downgrade 逆向逻辑见下方。
+    for stmt in SYMBOL_CONFIG_ACCOUNT_LOGIN_DDL:
+        op.execute(stmt)
 
 
 def downgrade() -> None:

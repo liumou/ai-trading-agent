@@ -301,6 +301,34 @@ class TestCatalogCacheKey:
         keys = await redis_client.keys("xm:catalog:v2:*")
         assert keys and all(k.decode().endswith(":111") for k in keys)
 
+    @pytest.mark.asyncio
+    async def test_db_degraded_bypasses_cache(self, two_accounts, redis_client, monkeypatch):
+        """DB 挂时（SQLAlchemyError）退化到 '0' 但仍返回目录，且**不写缓存**。
+
+        评审问题 6：收窄异常只捕 DB 层错误；退化目录直接 _fetch 绕过缓存，
+        避免把退化结果写进缓存污染后续请求。
+        """
+        from sqlalchemy.exc import SQLAlchemyError
+
+        connector = AsyncMock()
+        connector.list_symbols.return_value = {
+            "success": True,
+            "data": {"items": []},
+        }
+        # mock get_current_account_login 抛 DB 层异常（broker_catalog 经 svc. 调用）
+        async def _boom(*args, **kwargs):
+            raise SQLAlchemyError("db down")
+
+        monkeypatch.setattr(svc, "get_current_account_login", _boom)
+        app = _build_app(two_accounts, connector=connector, redis_client=redis_client)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/symbols/broker-catalog")
+        assert resp.status_code == 200, resp.text
+        # 退化路径不写缓存 —— 无任何 xm:catalog:v2:* key
+        keys = await redis_client.keys("xm:catalog:v2:*")
+        assert keys == []
+
 
 # ─── reload_engines：静态兜底仅在 DB 未同步时启用 ────────────────────────────
 
