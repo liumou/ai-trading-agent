@@ -101,6 +101,7 @@ type BotStore = {
   setWsConnected: (connected: boolean) => void;
   setLastSyncAt: (time: string) => void;
   markEventsRead: () => void;
+  resetAccountScopedData: () => void;
 };
 
 export const useBotStore = create<BotStore>((set, get) => ({
@@ -158,4 +159,18 @@ export const useBotStore = create<BotStore>((set, get) => ({
   setWsConnected: (connected) => set({ wsConnected: connected }),
   setLastSyncAt: (time) => set({ lastSyncAt: time }),
   markEventsRead: () => set({ unreadEventCount: 0 }),
+  // MT5 切号后调用：旧账号的行情/状态/持仓全部作废（price_update 只会推
+  // 新账号引擎的品种），symbols/activeSymbol 由紧随其后的 getSymbols 重取。
+  resetAccountScopedData: () =>
+    set({
+      status: null,
+      symbolStatuses: {},
+      positions: [],
+      account: null,
+      ticks: {},
+      tick: null,
+      sentiments: {},
+      sentiment: null,
+      symbols: [],
+    }),
 }));

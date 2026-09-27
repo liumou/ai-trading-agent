@@ -66,10 +66,15 @@ async def test_get_tick_uses_broker_alias(gold_profile, connector):
     assert "/tick/GOLD_" in connector._captured
 
 
-async def test_get_symbol_spec_uses_broker_alias(gold_profile, connector):
-    """get_symbol_spec("GOLD") 必须请求 /symbol-spec/GOLD_。"""
-    await connector.get_symbol_spec("GOLD")
-    assert "/symbol-spec/GOLD_" in connector._captured
+async def test_get_symbol_spec_passes_broker_name_through(gold_profile, connector):
+    """get_symbol_spec 入参是券商名，**不做** profile 别名映射。
+
+    调用方（品种准入/validate/切号回填）拿到的已是券商名；若再映射一次，
+    修改别名的 PUT 会用旧行的别名顶掉操作员刚输入的新别名
+    （如 USDJPY：USDJPYmicro → USDJPY 会被映射回 USDJPYmicro）。
+    """
+    await connector.get_symbol_spec("USDJPY")
+    assert "/symbol-spec/USDJPY" in connector._captured
 
 
 async def test_ohlcv_range_uses_broker_alias(gold_profile, connector, monkeypatch):

@@ -8,7 +8,7 @@ import { CommandPalette } from "@/components/ui/command-palette";
 import { RouteProgress } from "@/components/ui/route-progress";
 import api, { getSymbols } from "@/lib/api";
 import { useBotStore } from "@/store/botStore";
-import { startWebSocket } from "@/lib/websocket";
+import { startWebSocket, useWebSocket } from "@/lib/websocket";
 
 const AUTH_BYPASS_PAGES = ["/login"];
 
@@ -64,6 +64,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (!authChecked || isAuthPage) return;
     startWebSocket();
   }, [authChecked, isAuthPage]);
+
+  // MT5 切号广播：旧账号的行情/状态/持仓作废，品种列表按新账号重取。
+  // 后端 account_switch 成功后发布 account_update（Redis pubsub → WS）。
+  const subscribe = useWebSocket().subscribe;
+  const resetAccountScopedData = useBotStore((s) => s.resetAccountScopedData);
+  useEffect(() => {
+    if (!authChecked || isAuthPage) return;
+    subscribe("account_update", () => {
+      resetAccountScopedData();
+      getSymbols()
+        .then((res) => {
+          if (res.data?.symbols) setSymbols(res.data.symbols);
+        })
+        .catch(() => {});
+    });
+  }, [authChecked, isAuthPage, subscribe, resetAccountScopedData, setSymbols]);
 
   if (isAuthPage) {
     return <>{children}</>;

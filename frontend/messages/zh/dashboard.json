@@ -6,6 +6,7 @@
     "item2": "机器人根据所选策略自动交易。请在下方监控持仓、净值与实时事件。"
   },
   "spd": "点差",
+  "waitingTicks": "等待行情…",
   "gridView": "四宫格",
   "singleView": "单图",
   "balance": "余额",

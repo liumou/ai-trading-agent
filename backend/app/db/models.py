@@ -439,12 +439,23 @@ class AgentMemory(Base):
 
 
 class SymbolConfig(Base):
-    """User-managed symbol trading config — replaces static SYMBOL_PROFILES when present."""
+    """User-managed symbol trading config — replaces static SYMBOL_PROFILES when present.
+
+    按 MT5 账号隔离：account_login 对应 mt5_accounts.login（与 trades /
+    bot_events 的约定一致，'0' = 未知/无活跃账号）。同一 canonical symbol
+    可在不同账号下各有一行（券商别名/规格可不同）。
+    """
 
     __tablename__ = "symbol_configs"
+    __table_args__ = (
+        UniqueConstraint("account_login", "symbol", name="uq_symbol_configs_account_symbol"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    symbol: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    account_login: Mapped[str] = mapped_column(
+        String(32), default="0", server_default="0", index=True
+    )
     display_name: Mapped[str] = mapped_column(String(64))
     broker_alias: Mapped[str | None] = mapped_column(String(32), nullable=True)
     asset_class: Mapped[str] = mapped_column(String(16), default="forex", server_default="forex")

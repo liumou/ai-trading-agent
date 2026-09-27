@@ -128,11 +128,19 @@ def get_active_symbols() -> list[str]:
 _STATIC_SYMBOL_PROFILES: dict[str, dict] = {k: v.copy() for k, v in SYMBOL_PROFILES.items()}
 
 
+# DB profiles 是否已成功同步过（当前账号）。reload_engines 据此决定是否启用
+# 静态 settings.symbols 兜底：DB 已同步但品种全禁用/为空 = 操作员的真实意图
+# （不交易），不应再拉起与当前券商不匹配的静态品种。
+SYMBOL_PROFILES_DB_SYNCED = False
+
+
 def apply_db_symbol_profiles(db_profiles: dict[str, dict]) -> None:
     """用"静态默认 + DB 覆盖"的结果整体替换 SYMBOL_PROFILES。"""
+    global SYMBOL_PROFILES_DB_SYNCED
     SYMBOL_PROFILES.clear()
     SYMBOL_PROFILES.update(_STATIC_SYMBOL_PROFILES)
     SYMBOL_PROFILES.update(db_profiles)
+    SYMBOL_PROFILES_DB_SYNCED = True
 
 
 # Session profiles — SL/TP multiplier overrides by trading session

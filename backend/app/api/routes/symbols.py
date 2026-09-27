@@ -301,9 +301,14 @@ async def _bootstrap_new_symbol(app_state, symbol: str, timeframe: str, days: in
             return
 
         async with async_session() as session:
+            account_login = await svc.get_current_account_login(session)
             result = await session.execute(
                 SymbolConfig.__table__.update()
-                .where(SymbolConfig.symbol == symbol, SymbolConfig.ml_status == "pending")
+                .where(
+                    SymbolConfig.account_login == account_login,
+                    SymbolConfig.symbol == symbol,
+                    SymbolConfig.ml_status == "pending",
+                )
                 .values(ml_status="training", updated_at=datetime.utcnow(), updated_by="bootstrap")
             )
             await session.commit()
@@ -532,16 +537,18 @@ async def _ensure_no_alias_collision(
     symbol: str,
     broker_alias: str | None,
 ) -> None:
-    """品种与券商别名之间的跨行唯一性。
+    """品种与券商别名之间的跨行唯一性（当前活跃账号内）。
 
     load_profiles_from_db() 同时以 symbol 与 broker_alias 为键写入 profile；
     发生撞车会静默覆盖 SYMBOL_PROFILES 中其他行的条目（后写覆盖先写），
-    因此在准入阶段拦截。
+    因此在准入阶段拦截。账号隔离：只检查当前活跃账号的行。
     """
+    account_login = await svc.get_current_account_login(db)
     if broker_alias:
         if broker_alias != symbol:
             other = await db.execute(
                 select(SymbolConfig).where(
+                    SymbolConfig.account_login == account_login,
                     SymbolConfig.symbol == broker_alias,
                     SymbolConfig.is_deleted.is_(False),
                     SymbolConfig.symbol != symbol,
@@ -557,6 +564,7 @@ async def _ensure_no_alias_collision(
                 )
     other_alias = await db.execute(
         select(SymbolConfig).where(
+            SymbolConfig.account_login == account_login,
             SymbolConfig.broker_alias == symbol,
             SymbolConfig.is_deleted.is_(False),
             SymbolConfig.symbol != symbol,
@@ -583,14 +591,23 @@ async def list_symbols(db: AsyncSession = Depends(get_db)) -> list[SymbolRespons
 
 
 @router.get("/broker-catalog", dependencies=[Depends(require_auth)])
-async def broker_catalog(request: Request) -> dict:
-    """Live XM broker catalog — used by Add Symbol dialog for searchable dropdown + autofill.
+async def broker_catalog(request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    """Live broker catalog — used by Add Symbol dialog for searchable dropdown + autofill.
 
-    Cached 1h in Redis. Bypasses cache when Redis unavailable.
+    Cached 1h in Redis, keyed by the active MT5 account login — different
+    accounts (servers) expose different symbol catalogs, so a stale catalog
+    from the previous account must never be served after a switch.
+    Bypasses cache when Redis unavailable.
     """
     connector = getattr(request.app.state, "connector", None)
     if connector is None:
         raise HTTPException(status_code=503, detail="MT5 connector unavailable")
+
+    try:
+        account_login = await svc.get_current_account_login(db)
+    except Exception as e:  # noqa: BLE001 — DB 抖动时不阻塞目录请求，退化到 '0' key
+        logger.warning(f"broker-catalog: resolve active account failed ({e}); using '0'")
+        account_login = "0"
 
     async def _fetch() -> dict:
         result = await connector.list_symbols()
@@ -630,7 +647,7 @@ async def broker_catalog(request: Request) -> dict:
     if redis_client is not None:
         from app.cache import cached
 
-        return await cached(redis_client, "xm:catalog:v2", 3600, _fetch)
+        return await cached(redis_client, f"xm:catalog:v2:{account_login}", 3600, _fetch)
     return await _fetch()
 
 
@@ -652,8 +669,9 @@ async def create_symbol(
         raise HTTPException(status_code=422, detail="symbol or broker_alias is required")
     spec = await _require_broker_spec(request, broker_name)
 
+    account_login = await svc.get_current_account_login(db)
     canonical = (req.symbol or "").strip() or _derive_canonical(broker_name)
-    if await svc.get_config(db, canonical):
+    if await svc.get_config(db, canonical, account_login=account_login):
         raise HTTPException(status_code=409, detail=f"Symbol '{canonical}' already exists")
     await _ensure_no_alias_collision(db, canonical, (req.broker_alias or "").strip() or None)
 
@@ -723,10 +741,12 @@ async def create_symbol(
         volume_step=spec.get("volume_step"),
     )
 
-    # 若存在同 symbol 的软删除行则复活而非 INSERT（DB 对 `symbol` 有唯一约束，
-    # 之前删除的行还在时，直接 INSERT 会抛 IntegrityError）。
+    # 若当前账号存在同 symbol 的软删除行则复活而非 INSERT（(account_login,
+    # symbol) 唯一约束下，直接 INSERT 会抛 IntegrityError）。账号限定查找：
+    # 其他账号的同名软删行与本账号无关，不得复活（会跨账号串数据）。
     existing_deleted = await db.execute(
         select(SymbolConfig).where(
+            SymbolConfig.account_login == account_login,
             SymbolConfig.symbol == canonical,
             SymbolConfig.is_deleted.is_(True),
         )
@@ -736,6 +756,7 @@ async def create_symbol(
     if cfg is not None:
         for field, value in values.items():
             setattr(cfg, field, value)
+        cfg.account_login = account_login
         cfg.is_deleted = False
         cfg.is_enabled = False
         cfg.ml_status = "pending"
@@ -744,7 +765,7 @@ async def create_symbol(
         cfg.updated_by = "owner"
         action = "symbol_revived"
     else:
-        cfg = SymbolConfig(**values, is_enabled=False, ml_status="pending")
+        cfg = SymbolConfig(**values, account_login=account_login, is_enabled=False, ml_status="pending")
         db.add(cfg)
 
     await _audit(
