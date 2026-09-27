@@ -215,3 +215,25 @@ N0 文档（零风险）                     ✅ 已完成
 - N1：`pytest backend/tests/unit/test_ml_barrier_validation.py backend/tests/unit/test_build_labels.py backend/tests/integration/test_api_symbols.py -q`；`build_labels` 标签分布不变
 - N4：属性测试（`lot > MIN_LOT ⇒ 实际风险 ≤ budget`；`cap` 超安全界必须报错）；gate 一致性测试（gate 收到的 R:R == clamp 后 TP/SL）；迁移 `upgrade→downgrade→upgrade` 幂等
 - N3：非 GOLD 对齐测试（BTCUSD == `pips×lot×1`，USDJPY == `×100000`）；auto-apply 安全测试（非 GOLD 引擎不得用 GOLD 数据验证）
+
+---
+
+## 9. API 契约变更记录（追加）
+
+### 9.1 `connector.get_symbol_spec` 不再做 `to_broker_alias` 映射
+
+**变更 commit**：`fe35cfa`（原 `b8f1bbd`，2026-09-26，`feat(symbols): 品种配置按 MT5 账号隔离`）
+
+**旧行为**：`get_symbol_spec(symbol)` 内部先 `to_broker_alias(symbol)` 再请求 `/symbol-spec/{alias}`——传 canonical 名（如 `GOLD`）会被自动映射为券商别名（如 `GOLD_`）。
+
+**新行为**：`get_symbol_spec(symbol)` **不做任何映射**，直接请求 `/symbol-spec/{symbol}`。入参**必须是券商侧名称**（`broker_alias` / 券商目录里的名字）。
+
+**影响**（破坏性契约变更）：
+- 所有**内部调用方**（`api/routes/symbols.py:1001` 的 `validate` 端点、`services/symbol_validation.py:63`）当前传的都是券商名（`alias` / `broker_symbol`），**不受影响**。
+- 任何**外部调用方**若仍传 canonical 名（如 `GOLD`），会打到 `/symbol-spec/GOLD` 而非 `/symbol-spec/GOLD_`，可能得到空响应 / 404。
+
+**变更理由**（来自方法 docstring）：全部调用方拿到的是券商名；再映射一次会用旧行的别名覆盖操作员刚输入的新别名（如把 USDJPY 的别名从 `USDJPYmicro` 改回 `USDJPY` 时，旧映射会把请求又顶回 `USDJPYmicro`）。
+
+**同类的对称差异（注意）**：`get_ohlcv` / `get_tick`（`connector.py:109-112`）**仍保留** `to_broker_alias` 映射——同一类内 `get_symbol_spec` 与行情方法行为不一致。调用 `get_symbol_spec` 前，确保入参已解析为券商名（经 `symbol_resolver` / `load_profiles_into_memory` 的别名映射）。
+
+**相关测试**：`backend/tests/unit/test_market_data_alias.py::test_get_symbol_spec_passes_broker_name_through`（入参 `USDJPY` 直传，不映射为 `USDJPYmicro`）。

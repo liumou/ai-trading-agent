@@ -110,6 +110,34 @@ class TestScopedQueries:
         )).fetchall()
         assert len(rows) == 2
 
+    @pytest.mark.asyncio
+    async def test_list_filters_disabled_when_requested(self, two_accounts):
+        """include_disabled=False 只返回启用品种（line 81 分支）。"""
+        await _seed_symbol(two_accounts, "GOLD", "111", is_enabled=True)
+        await _seed_symbol(two_accounts, "SILVER", "111", is_enabled=False)
+        enabled = [c.symbol for c in await svc.list_configs(two_accounts, include_disabled=False)]
+        assert enabled == ["GOLD"]
+
+    @pytest.mark.asyncio
+    async def test_list_disabled_filter_scoped_to_account(self, two_accounts):
+        """include_disabled=False 与账号过滤叠加：非活跃账号 222 的启用品种不串入。"""
+        await _seed_symbol(two_accounts, "GOLD", "111", is_enabled=True)
+        await _seed_symbol(two_accounts, "SILVER", "222", is_enabled=True)  # 222 非活跃
+        enabled = [c.symbol for c in await svc.list_configs(two_accounts, include_disabled=False)]
+        assert enabled == ["GOLD"]
+
+    @pytest.mark.asyncio
+    async def test_list_explicit_account_login_bypasses_active_resolution(self, two_accounts):
+        """显式传 account_login 时不解析活跃账号，直接按指定账号过滤。"""
+        await _seed_symbol(two_accounts, "GOLD", "111", is_enabled=True)
+        await _seed_symbol(two_accounts, "XAUUSD", "222", is_enabled=True)
+        # 显式指定非活跃账号 222 —— 不得被"只查活跃账号"的默认行为拦截
+        symbols = [c.symbol for c in await svc.list_configs(two_accounts, account_login="222")]
+        assert symbols == ["XAUUSD"]
+        # 对照：默认（不传）仍解析活跃账号 111
+        default_symbols = [c.symbol for c in await svc.list_configs(two_accounts)]
+        assert default_symbols == ["GOLD"]
+
 
 # ─── API：create 归属与冲突检查 ────────────────────────────────────────────────
 

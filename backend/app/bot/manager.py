@@ -10,6 +10,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.engine import BotEngine
+from app import config as app_config  # 模块引用：运行时读最新绑定，避免 from-import 快照
 from app.config import SYMBOL_PROFILES, apply_db_symbol_profiles, settings
 from app.db.session import async_session
 from app.mt5.connector import MT5BridgeConnector
@@ -68,9 +69,8 @@ class BotManager:
         # when the DB was never successfully synced (unavailable / test wiring).
         # DB 已同步但品种全禁用/当前账号无配置 = 操作员的真实意图，不拉起静态引擎。
         db_enabled = [s for s, p in SYMBOL_PROFILES.items() if p.get("is_enabled") is True and "canonical" not in p]
-        from app.config import SYMBOL_PROFILES_DB_SYNCED
 
-        initial = db_enabled or (set() if SYMBOL_PROFILES_DB_SYNCED else settings.symbol_list)
+        initial = db_enabled or (set() if app_config.SYMBOL_PROFILES_DB_SYNCED else settings.symbol_list)
         for symbol in initial:
             if symbol not in SYMBOL_PROFILES:
                 logger.warning(
@@ -315,11 +315,9 @@ class BotManager:
         """
         from app.bot.engine import BotState
 
-        from app.config import SYMBOL_PROFILES_DB_SYNCED
-
         async with self._engines_lock:
             enabled = {s for s, p in SYMBOL_PROFILES.items() if p.get("is_enabled") is True and "canonical" not in p}
-            if not enabled and not SYMBOL_PROFILES_DB_SYNCED:
+            if not enabled and not app_config.SYMBOL_PROFILES_DB_SYNCED:
                 # 静态兜底只在 DB 从未成功同步时启用（DB 不可用/测试装配）。
                 # DB 已同步但品种全禁用/当前账号无配置 = 操作员的真实意图，
                 # 不再拉起与当前券商不匹配的静态品种（切号后行情断链的诱因之一）。
