@@ -24,7 +24,7 @@ function formatTime(timestamp: string, t: ReturnType<typeof useTranslations>) {
     if (diff < 60000) return t("justNow");
     if (diff < 3600000) return t("minutesAgo", { count: Math.floor(diff / 60000) });
     if (diff < 86400000) return t("hoursAgo", { count: Math.floor(diff / 3600000) });
-    return date.toLocaleDateString(undefined, { timeZone: "Asia/Bangkok" });
+    return date.toLocaleDateString(undefined, { timeZone: "Asia/Shanghai" });
   } catch {
     return "";
   }

@@ -10,6 +10,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { ManualReview } from "@/lib/api";
+import { toDate } from "@/lib/format";
 import { StatusBadge, VerdictBadge } from "./ReviewBadges";
 import { cn } from "@/lib/utils";
 
@@ -91,7 +92,7 @@ export function ReviewHistoryDialog({
               <span className="text-xs">{t("confidence")}: {(review.confidence * 100).toFixed(0)}%</span>
             )}
             {review.created_at && (
-              <span className="text-xs text-muted-foreground">{new Date(review.created_at).toLocaleString()}</span>
+              <span className="text-xs text-muted-foreground">{toDate(review.created_at).toLocaleString()}</span>
             )}
           </DialogDescription>
         </DialogHeader>

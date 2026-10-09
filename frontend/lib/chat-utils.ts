@@ -8,7 +8,7 @@
  * - 前端乐观消息 new Date().toISOString()（带 Z）
  */
 
-export const CHAT_TIME_ZONE = "Asia/Bangkok";
+export const CHAT_TIME_ZONE = "Asia/Shanghai";
 
 /** 把任意 created_at 字符串解析为 Date。naive 串补 Z 视作 UTC，避免 7 小时偏差。 */
 export function parseChatDate(value: string): Date {

@@ -10,7 +10,7 @@ State is tracked in Redis with TTL-based keys for automatic expiry.
 import os
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as redis_lib
 from loguru import logger
@@ -76,12 +76,16 @@ _KEY_PREFIX = "guardrails"
 
 
 def _daily_key(name: str) -> str:
-    date = datetime.now(UTC).strftime("%Y-%m-%d")
+    from app.services.discipline import discipline_day_key
+
+    date = discipline_day_key()
     return f"{_KEY_PREFIX}:{name}:{date}"
 
 
 def _hourly_key(name: str) -> str:
-    hour = datetime.now(UTC).strftime("%Y-%m-%dT%H")
+    from app.services.discipline import discipline_now
+
+    hour = (discipline_now() - timedelta(hours=22)).strftime("%Y-%m-%dT%H")
     return f"{_KEY_PREFIX}:{name}:{hour}"
 
 
@@ -296,22 +300,23 @@ class TradingGuardrails:
                     return GuardrailResult(False, f"SELL TP {tp} >= entry {entry_price} — invalid")
 
         # 4. Daily loss limit
+        daily_loss_limit = _env_limit("guardrails_max_daily_loss", MAX_DAILY_LOSS_PCT)
         if account_balance > 0 and daily_pnl < 0:
             loss_pct = abs(daily_pnl) / account_balance
-            if loss_pct >= MAX_DAILY_LOSS_PCT:
+            if loss_pct >= daily_loss_limit:
                 return GuardrailResult(
                     False,
-                    f"Daily loss {loss_pct:.1%} exceeds limit {MAX_DAILY_LOSS_PCT:.0%}",
+                    f"Daily loss {loss_pct:.1%} exceeds limit {daily_loss_limit:.0%}",
                 )
 
         # 4b. Account-level daily loss（多品种分散亏损也能触发）
         if account_daily_pnl is not None and account_balance > 0 and account_daily_pnl < 0:
             acct_loss_pct = abs(account_daily_pnl) / account_balance
-            if acct_loss_pct >= MAX_DAILY_LOSS_PCT:
+            if acct_loss_pct >= daily_loss_limit:
                 return GuardrailResult(
                     False,
                     f"Account daily loss {acct_loss_pct:.1%} exceeds limit "
-                    f"{MAX_DAILY_LOSS_PCT:.0%} (all symbols)",
+                    f"{daily_loss_limit:.0%} (all symbols)",
                 )
 
         # 5. Consecutive loss halt
@@ -324,22 +329,24 @@ class TradingGuardrails:
             )
 
         # 6. Trades per hour
+        trades_per_hour = _env_limit("guardrails_max_trades_per_hour", MAX_TRADES_PER_HOUR)
         trades_this_hour = await self._get_trades_this_hour()
-        if trades_this_hour >= MAX_TRADES_PER_HOUR:
+        if trades_this_hour >= trades_per_hour:
             return GuardrailResult(
                 False,
-                f"{trades_this_hour} trades this hour (max {MAX_TRADES_PER_HOUR})",
+                f"{trades_this_hour} trades this hour (max {trades_per_hour})",
             )
 
         # 7. Min time between trades
+        min_interval = _env_limit("guardrails_min_interval_seconds", MIN_TIME_BETWEEN_TRADES)
         last_trade_time = await self._get_last_trade_time()
         if last_trade_time:
             elapsed = time.time() - last_trade_time
-            if elapsed < MIN_TIME_BETWEEN_TRADES:
-                remaining = int(MIN_TIME_BETWEEN_TRADES - elapsed)
+            if elapsed < min_interval:
+                remaining = int(min_interval - elapsed)
                 return GuardrailResult(
                     False,
-                    f"Too soon — wait {remaining}s (min {MIN_TIME_BETWEEN_TRADES}s between trades)",
+                    f"Too soon — wait {remaining}s (min {min_interval}s between trades)",
                 )
 
         # 8. Spread check
@@ -373,8 +380,13 @@ class TradingGuardrails:
         """
         await self.record_order_opened()
 
-    async def record_order_opened(self) -> None:
-        """Record an order open for frequency + interval limits (not P&L outcome)."""
+    async def record_order_opened(self, channel: str = "manual") -> None:
+        """Record an order open for frequency + interval limits (not P&L outcome).
+
+        channel: manual/engine/ai —— 纪律日/周开仓计数按通道分池（评审 2 R5），
+        引擎自动单不挤占手动额度。account_login/symbol/direction 由各通道
+        调用点传入纪律计数（见 app.services.discipline_gate）。
+        """
         # Update hourly counter
         hour_key = _hourly_key("trades")
         await self.redis.incr(hour_key)
@@ -392,6 +404,11 @@ class TradingGuardrails:
 
         ``ticket`` 传入时按 ticket 幂等：同一笔平仓（重启重检、启动回填）
         只记一次，避免连亏计数虚增。
+
+        跨日 streak（评审 7）：序列语义 —— 按平仓时间连续 N 笔亏损，
+        跨日/跨周末不中断，中间出现盈利单即归零。用跨日持久化 key
+        ``guardrails:loss_streak``（不再用日粒度 ``trade_results`` ——
+        该 key 2 天 TTL 会让周五的连亏周一被清空）。
         """
         if ticket is not None:
             seen_key = f"{_KEY_PREFIX}:closed_tickets:{datetime.now(UTC).strftime('%Y-%m-%d')}"
@@ -399,9 +416,20 @@ class TradingGuardrails:
                 return
             await self.redis.sadd(seen_key, ticket)
             await self.redis.expire(seen_key, 86400 * 2)
+
+        streak_key = f"{_KEY_PREFIX}:loss_streak"
+        # 跨日序列语义：盈利归零、亏损 +1。fakeredis/生产均单 worker 下单路径
+        # 串行（per-account 锁 + asyncio），GET+SET 原子足够；多 worker 部署
+        # 需 Lua（评审 3 并发竞态项，见 M2 备注）。
+        if is_win:
+            await self.redis.set(streak_key, "0", ex=7 * 86400)
+        else:
+            cur = await self.redis.get(streak_key)
+            await self.redis.set(streak_key, str(int(cur) + 1 if cur else 1), ex=7 * 86400)
+        # 保留日粒度 trade_results 供统计（非熔断判定）
         key = _daily_key("trade_results")
         await self.redis.rpush(key, "1" if is_win else "0")
-        await self.redis.expire(key, 86400 * 2)  # 2 days TTL
+        await self.redis.expire(key, 86400 * 2)
 
     async def record_agent_call(self) -> None:
         """Increment daily agent call counter."""
@@ -436,7 +464,19 @@ class TradingGuardrails:
     # ─── Internal Helpers ────────────────────────────────────────────────────
 
     async def _get_consecutive_losses(self) -> int:
-        """Count consecutive losses from the end of today's results."""
+        """Count consecutive losses (跨日序列语义，评审 7)。
+
+        读 ``guardrails:loss_streak``（record_trade_closed 原子维护：盈利归零、
+        亏损 +1、跨日跨周末不中断）。回退日 key 尾部（旧数据兼容）。
+        """
+        streak_key = f"{_KEY_PREFIX}:loss_streak"
+        val = await self.redis.get(streak_key)
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return 0
+        # 回退：日粒度尾部（无 loss_streak key 的旧环境）
         key = _daily_key("trade_results")
         results = await self.redis.lrange(key, 0, -1)
         if not results:

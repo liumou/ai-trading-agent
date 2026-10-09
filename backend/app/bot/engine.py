@@ -92,6 +92,7 @@ from app.mt5.order_executor import OrderExecutor
 from app.news.fetcher import NewsFetcher
 from app.risk.circuit_breaker import CircuitBreaker
 from app.risk.manager import RiskManager
+from app.services.discipline import parse_bridge_time_to_naive_utc
 from app.strategy import get_strategy
 from app.strategy.base import BaseStrategy
 
@@ -1050,44 +1051,66 @@ class BotEngine:
         tag = "📝 PAPER" if self.paper_trade else ""
 
         # 统一硬闸门：引擎通道也走同一 preflight（点差/并发/账户级日亏/
-        # equity 回撤/频率/间隔/SL-TP），与 AI/手动通道同一真相源 ——
+        # equity 回撤/频率/间隔/SL-TP/纪律门禁），与 AI/手动通道同一真相源 ——
         # 此前引擎自营完全绕过 validate_order，点差/每小时/总持仓等闸门
         # 对引擎单不生效（评审 R5）。
+        # engine_discipline_enabled=False 时引擎豁免全部纪律检查（运维逃生开关，
+        # 记审计事件；评审 8）。
         from app.services.order_preflight import preflight_order as _engine_pf
 
-        try:
-            _pf_result = await _engine_pf(
-                self.connector,
-                self.redis,
-                None,
-                symbol=self.symbol,
-                order_type=order_type,
-                lot=lot,
-                sl=sl_tp.sl,
-                tp=sl_tp.tp,
-                strict_symbol=False,
+        if settings.engine_discipline_enabled:
+            try:
+                _pf_result = await _engine_pf(
+                    self.connector,
+                    self.redis,
+                    None,
+                    symbol=self.symbol,
+                    order_type=order_type,
+                    lot=lot,
+                    sl=sl_tp.sl,
+                    tp=sl_tp.tp,
+strict_symbol=False,
                 direction=order_type,
                 entry_price=entry_price,
                 account_login=self.account_login,
                 check_live_auth=False,  # 引擎自营通道由用户显式启动，不套 LLM 授权开关
+                channel="engine",
             )
-        except Exception as e:
-            _pf_result = None
-            logger.warning(f"Engine preflight failed [{self.symbol}]: {e!r}")
-
-        if _pf_result is not None and not _pf_result.ok:
-            await self._log_event(BotEventType.TRADE_BLOCKED, f"{order_type} blocked: {_pf_result.reason}")
-            await self._push_event(
-                "bot_event", {"type": "trade_blocked", "signal": signal_label, "reason": _pf_result.reason}
-            )
-            return
-        if _pf_result is not None:
-            lot = _pf_result.ctx.lot  # 卷格/微量 cap 后的一致性手数
-            if not self.paper_trade and _pf_result.ctx.rollout_mode in ("shadow", "paper"):
+            except Exception as e:
+                # 评审 3 A1：此前 preflight 异常被吞掉后继续下单（fail-open），
+                # Redis 故障/纪律 gate 异常时引擎完全绕过纪律 —— 改为 fail-closed。
+                _pf_result = None
+                logger.error(
+                    f"Engine preflight crashed [{self.symbol}], blocking order (fail-closed): {e!r}"
+                )
                 await self._log_event(
-                    BotEventType.TRADE_BLOCKED, f"{order_type} blocked: rollout={_pf_result.ctx.rollout_mode}"
+                    BotEventType.TRADE_BLOCKED,
+                    f"{order_type} blocked: discipline gate unavailable (fail-closed): {e!r}",
+                )
+                await self._push_event(
+                    "bot_event",
+                    {"type": "trade_blocked", "signal": signal_label, "reason": "discipline_gate_unavailable"},
                 )
                 return
+
+            if _pf_result is not None and not _pf_result.ok:
+                await self._log_event(BotEventType.TRADE_BLOCKED, f"{order_type} blocked: {_pf_result.reason}")
+                await self._push_event(
+                    "bot_event", {"type": "trade_blocked", "signal": signal_label, "reason": _pf_result.reason}
+                )
+                return
+            if _pf_result is not None:
+                lot = _pf_result.ctx.lot  # 卷格/微量 cap 后的一致性手数
+                if not self.paper_trade and _pf_result.ctx.rollout_mode in ("shadow", "paper"):
+                    await self._log_event(
+                        BotEventType.TRADE_BLOCKED, f"{order_type} blocked: rollout={_pf_result.ctx.rollout_mode}"
+                    )
+                    return
+        else:
+            await self._log_event(
+                BotEventType.TRADE_BLOCKED,
+                f"{order_type} skipped discipline gate (engine_discipline_enabled=false)",
+            )
 
         start_time = time.monotonic()
         if self.paper_trade:
@@ -1182,6 +1205,20 @@ class BotEngine:
             await TradingGuardrails(self.redis).record_order_opened()
         except Exception as gr_err:
             logger.warning(f"Guardrail order-opened record failed [{self.symbol}]: {gr_err!r}")
+        # 纪律日/周开仓计数 + flip 方向记账（引擎通道，评审 2 R5 按通道分池）
+        try:
+            from app.services.discipline_gate import record_order_opened_discipline
+
+            await record_order_opened_discipline(
+                self.redis,
+                account_login=self.account_login or "0",
+                symbol=self.symbol,
+                channel="engine",
+                direction=order_type,
+                lot=lot or 0.0,
+            )
+        except Exception as gr_err:
+            logger.warning(f"Engine discipline record failed [{self.symbol}]: {gr_err!r}")
 
         await self._log_event(
             BotEventType.TRADE_OPENED,
@@ -1435,7 +1472,7 @@ class BotEngine:
             # 日亏，闸门偏松
             profit = history_net.get(ticket, 0.0)
             close_time = (
-                datetime.fromisoformat(deal["time"]).replace(tzinfo=None)
+                parse_bridge_time_to_naive_utc(deal["time"])
                 if deal and deal.get("time")
                 else datetime.now(UTC).replace(tzinfo=None)
             )
@@ -1963,15 +2000,23 @@ class BotEngine:
             self.fixed_lot = fixed_lot if fixed_lot is None else float(fixed_lot)
             logger.info(f"Lot sizing: {'fixed ' + str(self.fixed_lot) if self.fixed_lot else 'auto (AI)'}")
 
-    async def _log_event(self, event_type: BotEventType, message: str):
+    async def _log_event(self, event_type: BotEventType, message: str, account_login: str | None = None):
         """Persist a bot event using an isolated session so concurrent
         candle/sync/reconcile jobs don't corrupt the engine's shared session
-        (asyncpg refuses concurrent operations on the same connection)."""
+        (asyncpg refuses concurrent operations on the same connection).
+
+        account_login：补账号维度（评审 1/3：此前恒为空，按账户统计
+        TRADE_BLOCKED 事件落空）。
+        """
         from app.db.session import async_session as _async_session
 
         try:
             async with _async_session() as session:
-                event = BotEvent(event_type=event_type, message=message)
+                event = BotEvent(
+                    event_type=event_type,
+                    message=message,
+                    account_login=account_login or self.account_login,
+                )
                 session.add(event)
                 await session.commit()
         except Exception as e:
@@ -2048,7 +2093,7 @@ class BotEngine:
                         expected_price=data.get("expected_price"),
                         sl=data.get("sl"),
                         tp=data.get("tp"),
-                        open_time=datetime.fromisoformat(data["open_time"]) if data.get("open_time") else _naive_utc(),
+                        open_time=parse_bridge_time_to_naive_utc(data.get("open_time")) or _naive_utc(),
                         strategy_name=data.get("strategy_name"),
                     )
                     async with async_session() as session:
@@ -2126,7 +2171,7 @@ class BotEngine:
                         continue
                     try:
                         open_time = (
-                            datetime.fromisoformat(p["open_time"])
+                            parse_bridge_time_to_naive_utc(p.get("open_time"))
                             if isinstance(p.get("open_time"), str)
                             else _naive_utc()
                         )
@@ -2184,7 +2229,7 @@ class BotEngine:
                     if deal:
                         trade.close_price = deal["price"]
                         trade.close_time = (
-                            datetime.fromisoformat(deal["time"]).replace(tzinfo=None)
+                            parse_bridge_time_to_naive_utc(deal.get("time"))
                             if deal.get("time")
                             else _naive_utc()
                         )

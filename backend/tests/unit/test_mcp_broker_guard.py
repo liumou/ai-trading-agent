@@ -54,14 +54,27 @@ def _install(monkeypatch, profile: dict, rollout_mode: str = "live", switching: 
     monkeypatch.setattr(broker_mod, "_connector", connector)
     monkeypatch.setattr(broker_mod, "_guardrails", guardrails)
     monkeypatch.setattr(broker_mod, "_notifier", None)
+    # 纪律门禁（M2 新挂接 preflight）：老测试聚焦 switching/rollout 逻辑，
+    # 显式禁用纪律门禁，避免 switching 分支的 Redis mock（get→b"1"）被误判
+    # gate_enabled=True 而触发 WEEKEND_CLOSE/次数检查。
+    monkeypatch.setattr(settings, "discipline_gate_enabled", False)
+    monkeypatch.setattr(settings, "discipline_weekly_loss_limit", 0)
+    monkeypatch.setattr(settings, "discipline_monthly_loss_limit", 0)
     if switching:
         # 模拟切换进行中：Redis 有 `switching:in_progress` key（I5 门禁）
         redis_mock = AsyncMock()
-        redis_mock.get.return_value = b"1"
+
+        def _redis_get_side(key, *a, **k):
+            # 纪律配置 key 返回 None → 回退 settings（conftest 已 pin 禁用），
+            # 其余 key（switching:in_progress 等）返回 b"1"。
+            if isinstance(key, str) and key.startswith("discipline:cfg:"):
+                return None
+            return b"1"
+
+        redis_mock.get.side_effect = _redis_get_side
         monkeypatch.setattr(broker_mod, "_redis", redis_mock)
     else:
         monkeypatch.setattr(broker_mod, "_redis", None)  # daily pnl 回退到 account.profit
-
     # 测试默认 live 模式需要 LLM_ALLOW_LIVE=true 才能通过 broker 层授权检查
     prev_allow = settings.llm_allow_live
     settings.llm_allow_live = True

@@ -13,6 +13,7 @@ from app.cache import cached
 from app.config import get_canonical_symbol
 from app.db.models import Trade
 from app.db.session import get_db
+from app.services.discipline import parse_bridge_time_to_naive_utc
 
 
 def _deal_matches_symbol(deal: dict, symbol: str | None) -> bool:
@@ -144,7 +145,7 @@ async def get_trades(
                     if ticket in db_tickets:
                         continue
                     try:
-                        deal_time = datetime.fromisoformat(deal["time"].replace("Z", ""))
+                        deal_time = parse_bridge_time_to_naive_utc(deal["time"]) or datetime.utcnow()
                     except Exception:
                         deal_time = datetime.utcnow()
                     if deal_time < cutoff:
@@ -222,7 +223,7 @@ async def _fetch_daily_pnl(symbol, db, _manager):
             if result.get("success"):
                 for deal in result.get("data", []):
                     try:
-                        deal_time = datetime.fromisoformat(deal["time"].replace("Z", ""))
+                        deal_time = parse_bridge_time_to_naive_utc(deal["time"]) or datetime.utcnow()
                     except Exception:
                         continue
                     if deal_time >= today and deal.get("profit") is not None:
@@ -302,7 +303,7 @@ async def get_performance(
                     if ticket in db_tickets:
                         continue
                     try:
-                        deal_time = datetime.fromisoformat(deal["time"].replace("Z", ""))
+                        deal_time = parse_bridge_time_to_naive_utc(deal["time"]) or datetime.utcnow()
                     except Exception:
                         continue
                     if deal_time < cutoff:

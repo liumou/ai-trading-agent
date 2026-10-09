@@ -17,6 +17,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import SentimentBadge from "@/components/ai/SentimentBadge";
 import { getTradeHistory, getPerformance, getSymbols, archiveTrades } from "@/lib/api";
 import { showSuccess, showError } from "@/lib/toast";
+import { toDate } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { SymbolTabs } from "@/components/ui/symbol-tabs";
@@ -195,7 +196,7 @@ export default function HistoryPage() {
                               {trades.map((t) => (
                                 <TableRow key={t.id} className="hover:bg-muted/30 transition-colors">
                                   <TableCell className="text-muted-foreground text-xs">
-                                    {new Date(t.open_time).toLocaleDateString(dateLocale, { timeZone: "Asia/Bangkok" })}
+                                    {toDate(t.open_time).toLocaleDateString(dateLocale, { timeZone: "Asia/Shanghai" })}
                                   </TableCell>
                                   <TableCell className="text-xs font-medium">{t.symbol}</TableCell>
                                   <TableCell className={`text-xs font-semibold ${t.type === "BUY" ? "text-success dark:text-green-400" : "text-destructive"}`}>
@@ -272,10 +273,10 @@ export default function HistoryPage() {
                   <AreaChart
                     data={trades
                       .filter((t) => t.profit !== null && t.close_time)
-                      .sort((a, b) => new Date(a.close_time!).getTime() - new Date(b.close_time!).getTime())
+                      .sort((a, b) => toDate(a.close_time!).getTime() - toDate(b.close_time!).getTime())
                       .reduce<{ date: string; pnl: number }[]>((acc, t) => {
                         const prev = acc.length > 0 ? acc[acc.length - 1].pnl : 0;
-                        acc.push({ date: new Date(t.close_time!).toLocaleDateString(dateLocale, { timeZone: "Asia/Bangkok" }), pnl: prev + (t.profit ?? 0) });
+                        acc.push({ date: toDate(t.close_time!).toLocaleDateString(dateLocale, { timeZone: "Asia/Shanghai" }), pnl: prev + (t.profit ?? 0) });
                         return acc;
                       }, [])}
                   >

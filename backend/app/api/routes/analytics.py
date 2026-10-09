@@ -14,6 +14,7 @@ from app.cache import cached
 from app.config import get_canonical_symbol
 from app.db.models import Trade
 from app.db.session import get_db
+from app.services.discipline import parse_bridge_time_to_naive_utc
 
 router = APIRouter(
     prefix="/api/analytics",
@@ -95,7 +96,7 @@ async def _compute_performance(symbol, days, db, _manager, SimpleNamespace):
                     if ticket in db_tickets:
                         continue
                     try:
-                        deal_time = datetime.fromisoformat(deal["time"].replace("Z", ""))
+                        deal_time = parse_bridge_time_to_naive_utc(deal["time"]) or datetime.utcnow()
                     except Exception:
                         continue
                     if deal_time < cutoff:

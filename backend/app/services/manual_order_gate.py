@@ -39,6 +39,7 @@ from app.constants import (
     MANUAL_SL_WIDEN_DAILY_LIMIT,
 )
 from app.db.models import BotEvent, BotEventType, OrderAudit
+from app.services.discipline import parse_bridge_time_to_naive_utc
 from app.services.order_preflight import PreflightContext, _sanitize_comment, preflight_order
 
 CONFIRM_TTL_S = 120
@@ -170,6 +171,7 @@ class ManualOrderGate:
                 direction=direction,
                 entry_price=price if order_kind == "pending" else None,
                 account_login=account_login,
+                channel="manual",
             )
             if not pf.ok:
                 return await self._reject_inline(audit_id, pf.reason, kind=pf.kind)
@@ -447,6 +449,7 @@ class ManualOrderGate:
                 strict_symbol=True,
                 entry_price=audit.order_price if audit.order_kind == "pending" else None,
                 account_login=audit_account,
+                channel="manual",
             )
             if not pf.ok:
                 return await self._reject_inline(review_id, f"State changed since review: {pf.reason}", kind=pf.kind)
@@ -468,6 +471,7 @@ class ManualOrderGate:
                 strict_symbol=True,
                 entry_price=audit.order_price if audit.order_kind == "pending" else None,
                 account_login=str(audit.account_login or "0"),
+                channel="manual",
             )
             if not pf.ok:
                 await self._reject_inline(audit_id, f"State changed since review: {pf.reason}", kind=pf.kind)
@@ -542,6 +546,20 @@ class ManualOrderGate:
             await ctx.guardrails.record_order_opened()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"ManualGate record_order_opened failed: {e!r}")
+        # 纪律日/周开仓计数 + flip 方向记账（手动通道；account_login/symbol 正确传入）
+        try:
+            from app.services.discipline_gate import record_order_opened_discipline
+
+            await record_order_opened_discipline(
+                self.redis,
+                account_login=str(audit.account_login or "0"),
+                symbol=audit.symbol,
+                channel="manual",
+                direction=audit.order_type,
+                lot=audit.requested_lot or 0.0,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"ManualGate discipline record failed: {e!r}")
         if modify_ticket:
             await self._log_event(BotEventType.SETTINGS_CHANGED,
                                   f"[Manual] pending order #{modify_ticket} modified → price={fill_price or ctx.sl}")
@@ -801,7 +819,7 @@ class ManualOrderGate:
             last_profit = float(last.get("profit") or 0)
             last_lot = float(last.get("lot") or 0)
             try:
-                last_time = datetime.fromisoformat(str(last.get("time")).replace("Z", "+00:00")).replace(tzinfo=None)
+                last_time = parse_bridge_time_to_naive_utc(str(last.get("time")))
             except ValueError:
                 last_time = None
             minutes_since = (now - last_time).total_seconds() / 60 if last_time else None
@@ -911,12 +929,18 @@ class ManualOrderGate:
         await self._log_event(BotEventType.AI_AGENT_ERROR,
                               f"[Manual] review infrastructure failure for review #{audit_id}: {detail}")
 
-    async def _log_event(self, event_type: BotEventType, message: str):
+    async def _log_event(self, event_type: BotEventType, message: str, account_login: str | None = None):
         from app.db.session import async_session
 
         try:
             async with async_session() as session:
-                session.add(BotEvent(event_type=event_type, message=message))
+                session.add(
+                    BotEvent(
+                        event_type=event_type,
+                        message=message,
+                        account_login=account_login or getattr(self, "account_login", None),
+                    )
+                )
                 await session.commit()
         except Exception as e:  # noqa: BLE001
             logger.error(f"ManualGate event log failed: {e!r}")

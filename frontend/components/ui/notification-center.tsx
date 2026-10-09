@@ -5,6 +5,7 @@ import { Bell, AlertCircle, TrendingUp, Zap, Info } from "lucide-react";
 import { useTranslations, useLocale } from "next-intl";
 import { useBotStore } from "@/store/botStore";
 import type { BotEvent } from "@/store/botStore";
+import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { translateServerText } from "@/lib/serverText";
 
@@ -39,7 +40,7 @@ const eventColors: Record<string, string> = {
 };
 
 function getTimeAgo(dateStr: string, t: ReturnType<typeof useTranslations>): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
+  const diff = Date.now() - toDate(dateStr).getTime();
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return t("justNow");
   const minutes = Math.floor(seconds / 60);

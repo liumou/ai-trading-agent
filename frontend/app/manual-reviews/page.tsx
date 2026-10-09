@@ -15,6 +15,7 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { getManualReviews, type ManualReview } from "@/lib/api";
 import { showError } from "@/lib/toast";
+import { toDate } from "@/lib/format";
 import { ReviewHistoryDialog } from "@/components/trading/ReviewHistoryDialog";
 import { StatusBadge, VerdictBadge } from "@/components/trading/ReviewBadges";
 
@@ -168,7 +169,7 @@ export default function ManualReviewsPage() {
                         return (
                           <TableRow key={r.id} className="hover:bg-muted/30 transition-colors">
                             <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
-                              {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+                              {r.created_at ? toDate(r.created_at).toLocaleString() : "—"}
                             </TableCell>
                             <TableCell className="text-xs font-mono">{r.id}</TableCell>
                             <TableCell className="text-xs font-medium">{r.symbol}</TableCell>

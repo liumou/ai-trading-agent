@@ -75,6 +75,19 @@ class CircuitBreaker:
         ttl = self._seconds_until_reset(self.symbol)
         await self.redis.set(self.pnl_key, str(new_pnl), ex=ttl)
 
+        # 周/月 PnL 记账（additive，纪律门禁 1a；周期号按 22:00 UTC 外汇日，
+        # 见 app/services/discipline.py）。跨日 TTL 兜底清理。
+        from app.services.discipline import discipline_month_key, discipline_week_key
+
+        week_key = f"circuit:weekly:{discipline_week_key()}:{self.symbol}"
+        month_key = f"circuit:monthly:{discipline_month_key()}:{self.symbol}"
+        w_cur = float(await self.redis.get(week_key) or 0)
+        m_cur = float(await self.redis.get(month_key) or 0)
+        pipe = self.redis.pipeline()
+        pipe.set(week_key, str(w_cur + profit), ex=16 * 24 * 3600)
+        pipe.set(month_key, str(m_cur + profit), ex=50 * 24 * 3600)
+        await pipe.execute()
+
         count = await self.redis.get(self.trade_count_key)
         new_count = int(count) + 1 if count else 1
         await self.redis.set(self.trade_count_key, str(new_count), ex=ttl)
@@ -90,6 +103,58 @@ class CircuitBreaker:
     async def get_trade_count(self) -> int:
         val = await self.redis.get(self.trade_count_key)
         return int(val) if val else 0
+
+    @staticmethod
+    async def get_period_pnl(redis, period: str, account_login: str | None = None, symbol: str | None = None) -> float:
+        """读取周/月 PnL（账户级聚合；period: 'week' | 'month'）。
+
+        纪律门禁 1a：key 按 symbol 分桶（record_trade_result 写入），判定时
+        对当前周期全部 symbol 求和 —— 堵分散亏损旁路（评审 7）。
+        """
+        from app.services.discipline import discipline_month_key, discipline_week_key
+
+        period_key = discipline_week_key() if period == "week" else discipline_month_key()
+        pattern = f"circuit:{period}ly:{period_key}:*"
+        if symbol:
+            pattern = f"circuit:{period}ly:{period_key}:{symbol}"
+        keys = await redis.keys(pattern)
+        if not keys:
+            return 0.0
+        vals = await redis.mget(keys)
+        total = 0.0
+        for v in vals:
+            if v:
+                try:
+                    total += float(v)
+                except (TypeError, ValueError):
+                    continue
+        return total
+
+    @staticmethod
+    async def set_period_halt(redis, account_login: str, period: str) -> None:
+        """触发周/月 rest-of-period 停手标记（until 绝对时刻，纪律门禁读取）。"""
+        from app.services.discipline import discipline_until_month, discipline_until_week
+
+        until = discipline_until_month() if period == "month" else discipline_until_week()
+        key = f"discipline:halt:{period}:{account_login}"
+        await redis.set(key, until.isoformat(), ex=50 * 24 * 3600)
+
+    @staticmethod
+    async def check_period_halt(redis, account_login: str, period: str) -> bool:
+        """检查周/月熔断是否已触发（rest-of-period）。"""
+        from app.services.discipline import discipline_now
+
+        key = f"discipline:halt:{period}:{account_login}"
+        raw = await redis.get(key)
+        if not raw:
+            return False
+        try:
+            until = datetime.fromisoformat(raw.decode() if isinstance(raw, bytes) else raw)
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=UTC)
+            return discipline_now().replace(tzinfo=UTC) < until
+        except (ValueError, TypeError):
+            return False
 
     async def is_triggered(self, balance: float) -> bool:
         daily_pnl = await self.get_daily_pnl()

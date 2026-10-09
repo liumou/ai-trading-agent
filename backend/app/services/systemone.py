@@ -183,6 +183,12 @@ class LocalRuleEngine:
         spike = self._rule_spike_chase(inp, usable.get("M15"), direction)
         if spike:
             flags.append(spike)
+        # 3c 方向纪律：同品种反向持仓 / 当日反手 → CAUTION（人在环确认）。
+        # 硬拒（第 2 次反手）已在 discipline_gate 完成；此处是审查层软检查，
+        # 让 CAUTION 确认流携带"方向切换"上下文（评审 2 R4 / 评审 7）。
+        direction_flip = self._rule_direction_flip(inp, direction)
+        if direction_flip:
+            flags.append(direction_flip)
 
         alignment, align_evi, strong_against = self._signal_alignment(usable, direction)
         # conflict 升级：双 TF 同向逆向且各 ADX≥reject，或 conflict 叠加
@@ -470,6 +476,32 @@ class LocalRuleEngine:
                     inp.lot / (med * settings.manual_review_size_med_mult),
                 ))
         return flags
+
+    def _rule_direction_flip(self, inp, direction) -> _Flag | None:
+        """3c 方向纪律（评审 2 R4 / 评审 7）：同品种存在反向持仓，或当日已
+        反手（flip key 计数 ≥2）→ CAUTION 级，强制人工二次确认。
+
+        语义：硬拒（当日第 2 次反手）在 discipline_gate 已做；此处是审查层
+        软检查，把"方向切换"上下文带进 CAUTION 确认流 —— 确认时前端需
+        勾选 ≥2 项确认信号（3a）。crypto 反向持仓同样拦（跨品种对冲不受限）。
+        """
+        try:
+            same_symbol = [
+                p for p in (inp.positions or [])
+                if get_canonical_symbol(str(p.get("symbol") or "")) == inp.symbol
+            ]
+            for p in same_symbol:
+                p_type = str(p.get("type") or "").upper()
+                pos_dir = 1 if p_type.startswith("BUY") else -1 if p_type.startswith("SELL") else 0
+                if pos_dir != 0 and pos_dir != direction:
+                    return _Flag(
+                        "direction_flip", "warn",
+                        f"开仓方向与同品种持仓相反（{p_type} {p.get('lot')}）——"
+                        f"反向加仓/反手需人工确认（≥2 项确认信号）", 0.6,
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     def _rule_loss_chase(self, inp) -> _Flag | None:
         """账户级日亏 1%~3%（3% 由硬闸门拒）+ 情绪类 warn 信号的组合。"""

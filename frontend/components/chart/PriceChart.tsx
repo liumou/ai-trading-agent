@@ -5,6 +5,7 @@ import { useTheme } from "next-themes";
 import { useTranslations } from "next-intl";
 import { createChart, IChartApi, ISeriesApi, IPriceLine, CandlestickData, ColorType, CandlestickSeries, LineSeries, SeriesMarker, Time, createSeriesMarkers, ISeriesMarkersPluginApi } from "lightweight-charts";
 import { getOHLCV, getTradeHistory, getPositions } from "@/lib/api";
+import { toDate } from "@/lib/format";
 
 type Props = {
   symbol: string;
@@ -171,7 +172,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
             if (tradeRes?.data?.trades) {
               for (const t of tradeRes.data.trades) {
                 if (t.symbol !== symbol) continue;
-                const openTs = Math.floor(new Date(t.open_time).getTime() / 1000);
+                const openTs = Math.floor(toDate(t.open_time).getTime() / 1000);
                 if (openTs >= firstTime && openTs <= lastTime) {
                   markers.push({
                     time: openTs as Time,
@@ -182,7 +183,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
                   });
                 }
                 if (t.close_time) {
-                  const closeTs = Math.floor(new Date(t.close_time).getTime() / 1000);
+                  const closeTs = Math.floor(toDate(t.close_time).getTime() / 1000);
                   if (closeTs >= firstTime && closeTs <= lastTime) {
                     const pnl = t.profit != null ? (t.profit >= 0 ? `+$${t.profit.toFixed(0)}` : `-$${Math.abs(t.profit).toFixed(0)}`) : "";
                     markers.push({
@@ -207,7 +208,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
             if (posRes?.data?.positions) {
               for (const p of posRes.data.positions) {
                 if (p.symbol !== symbol) continue;
-                const openTs = p.open_time ? Math.floor(new Date(p.open_time).getTime() / 1000) : 0;
+                const openTs = p.open_time ? Math.floor(toDate(p.open_time).getTime() / 1000) : 0;
                 if (openTs >= firstTime && openTs <= lastTime) {
                   markers.push({
                     time: openTs as Time,

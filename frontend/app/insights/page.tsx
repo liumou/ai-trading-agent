@@ -18,6 +18,7 @@ import {
   runOptimization, applyOptimization, getBotStatus,
 } from "@/lib/api";
 import { showSuccess, showError } from "@/lib/toast";
+import { toDate } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import {
@@ -84,7 +85,7 @@ export default function InsightsPage() {
   };
 
   const chartData = [...history].reverse().map((h) => ({
-    time: new Date(h.created_at).toLocaleDateString(dateLocale, { timeZone: "Asia/Bangkok", month: "short", day: "numeric", hour: "2-digit" }),
+    time: toDate(h.created_at).toLocaleDateString(dateLocale, { timeZone: "Asia/Shanghai", month: "short", day: "numeric", hour: "2-digit" }),
     score: h.sentiment_score,
   }));
 
@@ -147,7 +148,7 @@ export default function InsightsPage() {
                 )}
 
                 <p className="text-[11px] text-muted-foreground/60 text-center font-medium">
-                  {t("updated", { time: new Date(sentiment.analyzed_at).toLocaleString(dateLocale, { timeZone: "Asia/Bangkok" }) })}
+                  {t("updated", { time: toDate(sentiment.analyzed_at).toLocaleString(dateLocale, { timeZone: "Asia/Shanghai" }) })}
                 </p>
               </>
             ) : (

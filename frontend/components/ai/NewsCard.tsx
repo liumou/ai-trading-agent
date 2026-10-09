@@ -2,6 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -23,7 +24,7 @@ function extractDomain(source: string): string {
 
 function getTimeAgo(isoTime: string, justNow: string): string {
   const ts = isoTime.endsWith("Z") || isoTime.includes("+") ? isoTime : isoTime + "Z";
-  const diff = Date.now() - new Date(ts).getTime();
+  const diff = Date.now() - toDate(ts).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return justNow;
   if (mins < 60) return `${mins}m`;

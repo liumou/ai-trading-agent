@@ -132,6 +132,7 @@ async def preflight_order(
     entry_price: float | None = None,
     account_login: str | None = None,
     check_live_auth: bool = True,
+    channel: str = "manual",
 ) -> PreflightOutcome:
     """Run the full hard-gate sequence; return context for execution or rejection.
 
@@ -252,6 +253,34 @@ async def preflight_order(
     )
     if not result.allowed:
         return _reject(result.reason, "guardrail")
+
+    # 6c. 交易纪律门禁（评审 1-8 引入）：频率上限/方向冷静期/冷却/休息日/
+    #     周月熔断 rest-of-period/保证金上限。三通道共享；引擎通道经
+    #     engine_discipline_enabled 豁免；Redis 故障 fail-closed
+    #     （kind='discipline_redis_down'）。channel 由调用方声明。
+    from app.services.discipline_gate import check_discipline_gate
+
+    dg = await check_discipline_gate(
+        redis,
+        account_login=account_login or "0",
+        symbol=symbol,
+        channel=channel,
+        account=account,
+        lot=lot,
+        positions=normalized_positions,
+    )
+    if not dg.ok:
+        # 手痒信号（4b）：非冷却/非熔断类的拦截（次数/反手/保证金/休息日）
+        # 累计冲动计数，按阶梯触发 24h→72h→本周禁冷却。冷却自身与熔断类
+        # 不重复计数（已在冷却中无需再触发）。
+        if dg.code not in ("IMPULSE_COOLDOWN", "WEEK_HALT", "MONTH_HALT", "DAILY_HALT", "discipline_redis_down"):
+            try:
+                from app.services.discipline_gate import trigger_impulse_cooldown
+
+                await trigger_impulse_cooldown(redis, account_login=account_login or "0")
+            except Exception:  # noqa: BLE001
+                pass
+        return _reject(f"Discipline gate: {dg.reason}", dg.code)
 
     # 6b. equity 日内回撤闸门（余额 + 浮动盈亏）。只看已实现会让持仓
     #     浮亏 8% 完全隐形；参考值=当日峰值 equity，跨日自动失效。

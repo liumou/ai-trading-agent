@@ -215,3 +215,9 @@ def _pin_guardrail_defaults(monkeypatch):
     monkeypatch.setattr(settings, "guardrails_max_concurrent_per_symbol", 3)
     monkeypatch.setattr(settings, "guardrails_max_concurrent_total", 5)
     monkeypatch.setattr(settings, "guardrails_consecutive_loss_halt", 5)
+    # 纪律门禁（M2）：不在此 pin —— 纪律门禁专项测试用 enable_discipline 显式
+    # 启用；其他单元测试的 Redis mock（switching 等）会读到 gate_enabled 回退
+    # settings 默认 True，可能误触发 WEEKEND_CLOSE —— 统一在这里钉为 False，
+    # 纪律专项用例通过 Redis cfg key 覆盖为 True。
+    monkeypatch.setattr(settings, "discipline_gate_enabled", False)
+    monkeypatch.setattr(settings, "engine_discipline_enabled", False)

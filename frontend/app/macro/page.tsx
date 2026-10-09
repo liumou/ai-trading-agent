@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
 import { getMacroLatest, getMacroCorrelations, getMacroEvents, collectMacro } from "@/lib/api";
 import { showSuccess, showError } from "@/lib/toast";
+import { toDate } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 
 export default function MacroPage() {
@@ -167,7 +168,7 @@ export default function MacroPage() {
               <div className="space-y-3">
                 {events.map((event, i) => {
                   const daysUntil = Math.ceil(
-                    (new Date(event.date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+                    (toDate(event.date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
                   );
                   return (
                     <div key={i} className="border border-border rounded-2xl p-3 space-y-1">

@@ -327,11 +327,37 @@ class Settings(BaseSettings):
     guardrails_max_concurrent_per_symbol: int = Field(3, ge=1, le=50)
     guardrails_max_concurrent_total: int = Field(5, ge=1, le=100)
     guardrails_consecutive_loss_halt: int = Field(5, ge=1, le=50)
+    # 去硬编码（评审 1/2：每小时/间隔/日亏原为模块常量，不可配置）
+    guardrails_max_trades_per_hour: int = Field(5, ge=1, le=100)
+    guardrails_min_interval_seconds: int = Field(120, ge=1, le=3600)
+    guardrails_max_daily_loss: float = Field(0.03, gt=0, le=1)
     max_drawdown_from_peak: float = 0.15  # 15% absolute drawdown → halt
     max_equity_drawdown: float = 0.03  # 日内 equity（含浮动盈亏）回撤 ≥3% → 停新开仓；0=禁用
     use_ai_filter: bool = True
     ai_confidence_threshold: float = 0.7
     paper_trade: bool = False
+
+    # ─── 交易纪律门禁（discipline gate）—— docs/optimization/trading-discipline-enhancement.md ───
+    # 用户已冻结口径（2026-10-10）：纪律时区 Asia/Shanghai（休息日/展示）、日界 22:00 UTC 外汇日、
+    # 保证金分母 equity。参数经 Redis 运行时配置可改（env 为默认值，见 guardrails._runtime_setting）。
+    discipline_timezone: str = "Asia/Shanghai"  # 休息日判断/纪律状态端点渲染时区
+    mt5_server_tz: str = "Europe/Athens"  # 旧 bridge naive 时间转换用（评审 5 F2）
+    discipline_gate_enabled: bool = True  # 总开关：false 时门禁放行并记 kind='discipline_disabled'
+    engine_discipline_enabled: bool = True  # 引擎通道纪律开关（false=引擎豁免全部纪律检查）
+    # 日/周/月边界（22:00 UTC 外汇日 → 周期号 key 用 (utcnow-22h) 生成）
+    discipline_weekly_loss_limit: float = 0.07  # 周亏 ≥7% → 本周剩余禁开
+    discipline_monthly_loss_limit: float = 0.12  # 月亏 ≥12% → 当月剩余禁开
+    discipline_max_trades_per_day_manual: int = 3  # 手动通道日开仓上限
+    discipline_max_trades_per_day_engine: int = 5  # 引擎通道日开仓上限
+    discipline_max_trades_per_week_manual: int = 10  # 手动通道周开仓上限
+    discipline_flip_cooldown_minutes: int = 30  # 同品种反手冷静期
+    discipline_cooldown_minutes: int = 60  # 瞬态闸冷却（非熔断档）
+    discipline_impulse_cooldown_hours: int = 24  # 冲动冷却（阶梯升级：24→72→本周禁）
+    discipline_mandatory_rest_days: list[int] = [4]  # 强制休息日（Asia/Shanghai 周几，4=周五）
+    discipline_consecutive_loss_week_halt: int = 5  # 连亏 ≥5 笔（序列语义）→ 周停
+    discipline_max_single_margin_pct: float = 0.20  # 单笔保证金 ≤ equity×20%（兜底闸）
+    discipline_max_total_margin_pct: float = 0.40  # 总持仓保证金 ≤ equity×40%
+    discipline_max_lots_per_day: float = 1.0  # 防拆单（M5/P3）：日累计手数上限（Σ手数）
 
     # Position management
     max_position_duration_hours: float = 0  # 0=disabled, e.g. 8.0 = auto-close after 8h

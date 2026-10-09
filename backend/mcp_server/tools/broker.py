@@ -81,6 +81,7 @@ async def place_order(
         _connector, _redis, _guardrails,
         symbol=symbol, order_type=order_type, lot=lot, sl=sl, tp=tp,
         strict_symbol=False,
+        channel="ai",
     )
     if not pf.ok:
         return {"executed": False, "rejected": True, "reason": pf.reason}
@@ -153,6 +154,21 @@ async def place_order(
         # 开仓只记频率/间隔，不记胜负 —— 胜负由平仓路径按实际盈亏
         # record_trade_closed(is_win) 记录，否则连亏熔断永不触发。
         await _guardrails.record_order_opened()
+        # 纪律日/周开仓计数 + flip 方向记账（AI 通道，评审 2 R5 按通道分池；
+        # AI 通道无账号维度传参，按全局账号记账，账号粒度统计见 4c 前移项）
+        try:
+            from app.services.discipline_gate import record_order_opened_discipline
+
+            await record_order_opened_discipline(
+                _redis,
+                account_login="0",
+                symbol=symbol,
+                channel="ai",
+                direction=order_type,
+                lot=lot or 0.0,
+            )
+        except Exception as _d_err:
+            logger.warning(f"AI discipline record failed [{symbol}]: {_d_err!r}")
         data = order_result["data"]
         # Send Telegram notification
         if _notifier:
@@ -181,6 +197,37 @@ async def place_order(
                 )
         except Exception as e:
             logger.warning(f"Event log failed: {e}")
+        # AI 通道 DB 落库（评审 8 前移项）：此前 broker.py 不写 OrderAudit/Trade，
+        # Redis 重启回填与复盘统计口径永久缺 AI 通道。补 OrderAudit（可审计、
+        # 与手动通道同表），Trade 行由引擎 reconcile 落库。
+        try:
+            from app.bot.manager import get_global_manager
+            from app.db.models import OrderAudit
+            from app.db.session import async_session as _ai_audit_session
+
+            _mgr2 = get_global_manager()
+            _login = str(getattr(_mgr2, "current_account_login", "0") or "0")
+            _ticket = data.get("ticket")
+            async with _ai_audit_session() as _s:
+                _s.add(
+                    OrderAudit(
+                        symbol=symbol,
+                        order_type=order_type,
+                        requested_lot=lot,
+                        requested_sl=sl,
+                        requested_tp=tp,
+                        expected_price=data.get("price", 0),
+                        fill_price=data.get("price"),
+                        ticket=_ticket,
+                        status="EXECUTED",
+                        source="ai_agent",
+                        account_login=_login,
+                        signal_source="ai_agent",
+                    )
+                )
+                await _s.commit()
+        except Exception as e:
+            logger.warning(f"AI OrderAudit persist failed: {e}")
         return {
             "executed": True,
             "mode": rollout_mode,

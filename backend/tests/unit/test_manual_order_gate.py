@@ -13,7 +13,7 @@
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -111,7 +111,9 @@ async def _drain_tasks(gate):
 
 
 def _loss_deal(minutes_ago=5, lot=0.1, symbol="GOLD", profit=-50.0):
-    t = (datetime.utcnow() - timedelta(minutes=minutes_ago)).isoformat()
+    # M1 起 bridge 输出 UTC 带偏移（+00:00）；naive 会被按旧 bridge EET 转换。
+    # 用带偏移格式模拟新 bridge，确保 martingale/情绪规则按真实时刻计算。
+    t = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
     return {"ticket": 1, "symbol": symbol, "type": "SELL", "lot": lot,
             "price": 2000.0, "profit": profit, "time": t}
 
@@ -193,9 +195,11 @@ async def test_approved_executes_with_manual_magic(gate, session_patched):
     assert kwargs["magic"] == 234100  # MANUAL_MAGIC_NUMBER
     assert kwargs["comment"].startswith("M")  # [Manual] 前缀清洗
     gate.connector.get_account.assert_awaited()  # record_order_opened 前置的执行已发生
-    # 频率计数被更新（否则手动通道对频率限制免疫）
-    assert int(await gate.redis.get(
-        f"guardrails:trades:{datetime.utcnow().date().isoformat()}T{datetime.utcnow().hour:02d}") or 0) == 1
+    # 频率计数被更新（否则手动通道对频率限制免疫）——key 走 22:00 UTC 外汇日界
+    from app.services.discipline import discipline_day_key
+
+    hour_key = f"guardrails:trades:{discipline_day_key()}T{(datetime.now(timezone.utc) - timedelta(hours=22)).hour:02d}"
+    assert int(await gate.redis.get(hour_key) or 0) == 1
 
 
 @pytest.mark.asyncio

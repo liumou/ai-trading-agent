@@ -225,6 +225,7 @@ railway vars set -s backend "KEY=value"  # set env var
 - Health monitor stays in degraded state when MT5 Bridge is offline (by design)
 - Shared db_session can cause `InFailedSQLTransactionError` — mitigated with rollback() calls
 - DB datetime columns: must use `datetime.utcnow()` (naive), NOT `datetime.now(timezone.utc)` (offset-aware) — asyncpg rejects offset-aware for `TIMESTAMP WITHOUT TIME ZONE`
+- **时区约定（M1，2026-10-10）**：bridge 时间语义 = MT5 epoch 秒被宿主机时区解释（旧版输出 naive EET，新版输出带 `+00:00`）。后端所有 bridge 时间经 `app/services/discipline.py:parse_bridge_time_to_naive_utc()` 转 naive UTC 后落库/比较；前端统一 `lib/format.ts:toDate()`（naive 补 Z 当 UTC）+ Asia/Shanghai 显示；纪律计数（次数/熔断/冷却）日界 = 22:00 UTC 外汇日、周/月周期号按 `(utcnow-22h)` 生成、休息日按 Asia/Shanghai（见 `docs/optimization/trading-discipline-enhancement.md` 第九节）。存量 EET 行用 `backend/scripts/backfill_trade_timezone.py` 一次性回填。
 - Claude Code SDK: `rate_limit_event` parse error on heavy usage — handled gracefully in `base.py`
 - WebAuthn passkey auth: disabled due to cross-origin cookie issues on Railway (`.up.railway.app` is public suffix)
 - Deploy: Railway uses Dockerfile CMD, NOT Procfile — always edit `backend/Dockerfile` (Python 3.12, Node.js 22 installed for claude-agent-sdk CLI) CMD for startup changes

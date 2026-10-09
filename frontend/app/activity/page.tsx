@@ -8,6 +8,7 @@ import { PageInstructions } from "@/components/layout/PageInstructions";
 import { EmptyState } from "@/components/ui/empty-state";
 import { showSuccess, showError } from "@/lib/toast";
 import { translateServerText } from "@/lib/serverText";
+import { toDate } from "@/lib/format";
 import api from "@/lib/api";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -56,7 +57,7 @@ const CATEGORIES = ["", "trade", "signal", "sentiment", "optimization", "risk", 
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const TH_TZ = "Asia/Bangkok";
+const TH_TZ = "Asia/Shanghai";
 
 function formatTimeTH(iso: string, locale: string): string {
   return new Date(iso).toLocaleString(locale === "zh" ? "zh-CN" : "en-GB", {
@@ -129,7 +130,7 @@ export default function ActivityPage() {
   const grouped = useMemo(() => {
     const g: Record<string, ActivityItem[]> = {};
     for (const item of visibleItems) {
-      const dateKey = new Date(item.timestamp).toLocaleDateString(dateLocale, {
+      const dateKey = toDate(item.timestamp).toLocaleDateString(dateLocale, {
         timeZone: TH_TZ,
         weekday: "long",
         month: "long",

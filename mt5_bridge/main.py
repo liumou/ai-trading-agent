@@ -6,7 +6,26 @@ Provides HTTP API to interact with MetaTrader 5.
 import hmac
 import math
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _iso_utc(ts) -> str | None:
+    """MT5 epoch 秒 → UTC ISO（带 +00:00）。此前 fromtimestamp 用宿主机时区
+    解释会输出 naive 服务器本地时间（EET），下游当 UTC 用导致时区混乱
+    （见 docs/optimization/trading-discipline-enhancement.md 3.0 节）。"""
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _parse_utc_input(iso: str) -> datetime:
+    """后端发来的时间串（naive=UTC 或带偏移）→ 宿主机本地 naive datetime，
+    MT5 order_send/copy_rates 期望本地时刻。naive 按 UTC 解释（后端内部约定
+    落库/传输一律 naive UTC），避免被宿主机时区误读。"""
+    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().replace(tzinfo=None)
 from enum import Enum
 from typing import Literal
 
@@ -166,8 +185,8 @@ def _serialize_order(o) -> dict:
         "tp": float(o.tp),
         "state": int(o.state),
         "type_time": int(o.type_time),
-        "time_setup": datetime.fromtimestamp(o.time_setup).isoformat() if o.time_setup else None,
-        "time_expiration": datetime.fromtimestamp(o.time_expiration).isoformat() if o.time_expiration else None,
+        "time_setup": _iso_utc(o.time_setup),
+        "time_expiration": _iso_utc(o.time_expiration),
         "comment": o.comment,
         "magic": o.magic,
     }
@@ -286,7 +305,7 @@ async def get_tick(symbol: str):
         "bid": tick.bid,
         "ask": tick.ask,
         "spread": round(tick.ask - tick.bid, 5),
-        "time": datetime.fromtimestamp(tick.time).isoformat(),
+        "time": _iso_utc(tick.time),
     })
 
 
@@ -364,7 +383,7 @@ async def get_ohlcv(symbol: str, timeframe: str = "M15", count: int = 100):
     data = []
     for r in rates:
         data.append({
-            "time": datetime.fromtimestamp(r["time"]).isoformat(),
+            "time": _iso_utc(r["time"]),
             "open": float(r["open"]),
             "high": float(r["high"]),
             "low": float(r["low"]),
@@ -390,6 +409,7 @@ async def get_account():
         "free_margin": info.margin_free,
         "profit": info.profit,
         "currency": info.currency,
+        "leverage": info.leverage,
     })
 
 
@@ -456,7 +476,7 @@ async def get_positions():
             "sl": p.sl,
             "tp": p.tp,
             "profit": p.profit,
-            "open_time": datetime.fromtimestamp(p.time).isoformat(),
+            "open_time": _iso_utc(p.time),
             "comment": p.comment,
             "magic": p.magic,
         })
@@ -711,7 +731,7 @@ async def place_pending_order(req: PendingOrderRequest):
     }
     if req.expiration:
         try:
-            exp_dt = datetime.fromisoformat(req.expiration)
+            exp_dt = _parse_utc_input(req.expiration)
         except ValueError:
             return mt5_response(False, error="Invalid expiration format. Use ISO: YYYY-MM-DDTHH:MM:SS")
         request["type_time"] = mt5.ORDER_TIME_SPECIFIED
@@ -753,7 +773,7 @@ async def modify_pending_order(ticket: int, req: ModifyOrderRequest):
     if int(order.type_time) == mt5.ORDER_TIME_SPECIFIED:
         if req.expiration:
             try:
-                request["expiration"] = datetime.fromisoformat(req.expiration)
+                request["expiration"] = _parse_utc_input(req.expiration)
             except ValueError:
                 return mt5_response(False, error="Invalid expiration format. Use ISO: YYYY-MM-DDTHH:MM:SS")
         elif order.time_expiration:
@@ -800,8 +820,8 @@ async def get_ohlcv_history(symbol: str, timeframe: str = "M15", from_date: str 
     if tf is None:
         return mt5_response(False, error=f"Invalid timeframe: {timeframe}")
     try:
-        dt_from = datetime.fromisoformat(from_date)
-        dt_to = datetime.fromisoformat(to_date)
+        dt_from = _parse_utc_input(from_date)
+        dt_to = _parse_utc_input(to_date)
     except (ValueError, TypeError):
         return mt5_response(False, error="Invalid date format. Use ISO format: YYYY-MM-DD")
 
@@ -811,7 +831,7 @@ async def get_ohlcv_history(symbol: str, timeframe: str = "M15", from_date: str 
     data = []
     for r in rates:
         data.append({
-            "time": datetime.fromtimestamp(r["time"]).isoformat(),
+            "time": _iso_utc(r["time"]),
             "open": float(r["open"]),
             "high": float(r["high"]),
             "low": float(r["low"]),
@@ -828,8 +848,8 @@ async def get_history(days: int = 1, symbol: str | None = None):
     if not ensure_connected():
         return mt5_response(False, error="MT5 not connected")
 
-    from_date = datetime.now() - timedelta(days=days)
-    to_date = datetime.now() + timedelta(days=1)
+    from_date = datetime.now(timezone.utc) - timedelta(days=days)
+    to_date = datetime.now(timezone.utc) + timedelta(days=1)
 
     deals = mt5.history_deals_get(from_date, to_date)
     if deals is None:
@@ -851,7 +871,7 @@ async def get_history(days: int = 1, symbol: str | None = None):
                 "commission": deal.commission,
                 "swap": deal.swap,
                 "comment": deal.comment,
-                "time": datetime.fromtimestamp(deal.time).isoformat(),
+                "time": _iso_utc(deal.time),
             })
 
     return mt5_response(True, data=result)

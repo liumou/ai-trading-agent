@@ -2,6 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { useBotStore } from "@/store/botStore";
+import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export function ConnectionStatus() {
@@ -46,7 +47,7 @@ export function ConnectionStatus() {
 type UITranslations = ReturnType<typeof useTranslations>;
 
 function getTimeAgo(dateStr: string, t: UITranslations): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
+  const diff = Date.now() - toDate(dateStr).getTime();
   const seconds = Math.floor(diff / 1000);
   if (seconds < 5) return t("justNow");
   if (seconds < 60) return t("secondsAgo", { count: seconds });

@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { toDate } from "@/lib/format";
 import {
   getAIUsageSummary,
   getAIUsageTimeseries,
@@ -116,8 +117,8 @@ function formatCost(n: number): string {
 }
 
 function formatTime(iso: string, locale: string): string {
-  return new Date(iso).toLocaleString(locale === "zh" ? "zh-CN" : "en-GB", {
-    timeZone: "Asia/Bangkok",
+  return toDate(iso).toLocaleString(locale === "zh" ? "zh-CN" : "en-GB", {
+    timeZone: "Asia/Shanghai",
     day: "2-digit",
     month: "2-digit",
     hour: "2-digit",

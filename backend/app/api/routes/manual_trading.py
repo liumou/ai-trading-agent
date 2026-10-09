@@ -205,3 +205,53 @@ async def close_position(ticket: int, request: Request):
             return result
         raise HTTPException(status_code=400, detail=result.get("error", "Close failed"))
     return result
+
+
+@router.get("/discipline/status")
+async def discipline_status(request: Request):
+    """纪律状态（M3）：今日/本周开仓次数、冷却/熔断解禁时间、强制休息日。
+    前端 /trading 页展示"被拦原因 + 解禁时间 + 今日次数"。只读，require_auth。"""
+    from app.services.discipline_gate import get_discipline_status
+
+    redis = getattr(request.app.state, "redis", None)
+    return await get_discipline_status(redis, account_login=_account_login(request))
+
+
+@router.get("/discipline/config")
+async def discipline_config(request: Request):
+    """纪律运行时配置（2b，单轨 Redis）：前端 settings 页读取全部参数与当前生效值。"""
+    from app.services.discipline_gate import list_runtime_settings
+
+    redis = getattr(request.app.state, "redis", None)
+    return await list_runtime_settings(redis)
+
+
+@router.put("/discipline/config/{field}")
+async def discipline_config_update(field: str, req: dict, request: Request):
+    """更新单个纪律参数（写 Redis，立即生效，多 worker 一致）。"""
+    from app.services.discipline_gate import set_runtime_setting
+
+    redis = getattr(request.app.state, "redis", None)
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    value = req.get("value")
+    if value is None:
+        raise HTTPException(status_code=422, detail="value required")
+    ok = await set_runtime_setting(redis, field, value)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Unknown discipline setting: {field}")
+    return {"updated": field, "value": value}
+
+
+@router.get("/discipline/stats")
+async def discipline_stats(request: Request, days: int = Query(30, ge=1, le=365)):
+    """复盘统计（4c）：开仓次数/违规/胜率/最大回撤/纪律评分。
+    读 OrderAudit/Trade/BotEvent，只读，require_auth。"""
+    from app.db.session import get_db
+    from app.services.discipline_stats import get_discipline_stats
+
+    db = next(get_db())
+    try:
+        return await get_discipline_stats(db, account_login=_account_login(request), days=days)
+    finally:
+        await db.close()
