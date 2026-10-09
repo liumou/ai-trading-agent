@@ -14,9 +14,11 @@ Endpoints:
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_auth
 from app.config import get_canonical_symbol
+from app.db.session import get_db
 from app.services.position_close import close_position_gated
 
 router = APIRouter(prefix="/api/trading", tags=["trading"], dependencies=[Depends(require_auth)])
@@ -244,14 +246,13 @@ async def discipline_config_update(field: str, req: dict, request: Request):
 
 
 @router.get("/discipline/stats")
-async def discipline_stats(request: Request, days: int = Query(30, ge=1, le=365)):
+async def discipline_stats(
+    request: Request,
+    days: int = Query(30, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+):
     """复盘统计（4c）：开仓次数/违规/胜率/最大回撤/纪律评分。
     读 OrderAudit/Trade/BotEvent，只读，require_auth。"""
-    from app.db.session import get_db
     from app.services.discipline_stats import get_discipline_stats
 
-    db = next(get_db())
-    try:
-        return await get_discipline_stats(db, account_login=_account_login(request), days=days)
-    finally:
-        await db.close()
+    return await get_discipline_stats(db, account_login=_account_login(request), days=days)

@@ -395,7 +395,7 @@ class TradingGuardrails:
         # Update last trade time
         await self.redis.set(f"{_KEY_PREFIX}:last_trade_time", str(time.time()))
 
-    async def record_trade_closed(self, is_win: bool, ticket: int | None = None) -> None:
+    async def record_trade_closed(self, is_win: bool, ticket: int | None = None, account_login: str | None = None) -> None:
         """Record a closed trade outcome for consecutive loss tracking.
 
         Must be called from the close path with the REAL P&L outcome.
@@ -405,19 +405,31 @@ class TradingGuardrails:
         ``ticket`` 传入时按 ticket 幂等：同一笔平仓（重启重检、启动回填）
         只记一次，避免连亏计数虚增。
 
+        ``account_login`` 账号维度（评审 H3）：传入后 streak key 带
+        ``guardrails:loss_streak:{login}`` 前缀 —— 多账号环境下账号 A 连亏
+        不会令账号 B 触达 CONSECUTIVE_LOSS_HALT。``None``/``"0"`` 保持旧
+        key（兼容无账号调用与引导期）。
+
         跨日 streak（评审 7）：序列语义 —— 按平仓时间连续 N 笔亏损，
         跨日/跨周末不中断，中间出现盈利单即归零。用跨日持久化 key
         ``guardrails:loss_streak``（不再用日粒度 ``trade_results`` ——
         该 key 2 天 TTL 会让周五的连亏周一被清空）。
         """
+        if account_login == "0":
+            account_login = None
+        _acc = f":{account_login}" if account_login else ""
         if ticket is not None:
-            seen_key = f"{_KEY_PREFIX}:closed_tickets:{datetime.now(UTC).strftime('%Y-%m-%d')}"
+            # 幂等日界与纪律时区一致（22:00 UTC 外汇日）—— 用自然 UTC 日界会在
+            # 边界两侧重复计数（评审 Medium：同笔平仓在 22:00 前后被记两次）。
+            from app.services.discipline import discipline_day_key
+
+            seen_key = f"{_KEY_PREFIX}:closed_tickets{_acc}:{discipline_day_key()}"
             if await self.redis.sismember(seen_key, ticket):
                 return
             await self.redis.sadd(seen_key, ticket)
             await self.redis.expire(seen_key, 86400 * 2)
 
-        streak_key = f"{_KEY_PREFIX}:loss_streak"
+        streak_key = f"{_KEY_PREFIX}:loss_streak{_acc}"
         # 跨日序列语义：盈利归零、亏损 +1。fakeredis/生产均单 worker 下单路径
         # 串行（per-account 锁 + asyncio），GET+SET 原子足够；多 worker 部署
         # 需 Lua（评审 3 并发竞态项，见 M2 备注）。
@@ -463,13 +475,18 @@ class TradingGuardrails:
 
     # ─── Internal Helpers ────────────────────────────────────────────────────
 
-    async def _get_consecutive_losses(self) -> int:
+    async def _get_consecutive_losses(self, account_login: str | None = None) -> int:
         """Count consecutive losses (跨日序列语义，评审 7)。
 
-        读 ``guardrails:loss_streak``（record_trade_closed 原子维护：盈利归零、
-        亏损 +1、跨日跨周末不中断）。回退日 key 尾部（旧数据兼容）。
+        读 ``guardrails:loss_streak[:{login}]``（record_trade_closed 原子维护：
+        盈利归零、亏损 +1、跨日跨周末不中断）。``account_login`` 账号维度，
+        与 record_trade_closed 保持一致（None/"0" → 旧全局 key，兼容无账号
+        调用与引导期）。回退日 key 尾部（旧数据兼容）。
         """
-        streak_key = f"{_KEY_PREFIX}:loss_streak"
+        if account_login == "0":
+            account_login = None
+        _acc = f":{account_login}" if account_login else ""
+        streak_key = f"{_KEY_PREFIX}:loss_streak{_acc}"
         val = await self.redis.get(streak_key)
         if val is not None:
             try:

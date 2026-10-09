@@ -1490,11 +1490,12 @@ strict_symbol=False,
 
             # 连亏熔断：策略引擎平仓也按真实盈亏记录胜负，保证 validate_order
             # 的 CONSECUTIVE_LOSS_HALT 对两条路径（策略/AI）都生效。
+            # 账号维度（评审 H3）：streak key 带账号前缀，避免多账号串扰。
             try:
                 from mcp_server.guardrails import TradingGuardrails
 
                 gr = TradingGuardrails(self.redis)
-                await gr.record_trade_closed(is_win=profit > 0, ticket=ticket)
+                await gr.record_trade_closed(is_win=profit > 0, ticket=ticket, account_login=self.account_login)
             except Exception as gr_err:
                 logger.error(f"Guardrail trade-closed record failed for {ticket}: {gr_err!r}")
 

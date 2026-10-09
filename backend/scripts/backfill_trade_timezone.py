@@ -34,8 +34,28 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db.models import Trade  # noqa: E402
 
-# 引擎自产 UTC 行的标记（strategy 通道写入，绝不来自 bridge）
-_UTC_ONLY_STRATEGIES = set()  # 留空：保守策略，所有行都尝试换算（UTC 行换算后自洽不变）
+# 引擎自产 UTC 行的 strategy_name（绝不来自 bridge，open_time 为真 UTC，不能换算）。
+# 引擎策略单（strategy.name）、部分平仓重开（partial_tp_from_*）、挂单恢复都写这些；
+# 挂单恢复的 strategy_name 继承原策略名，同样为 UTC。只对 bridge 来源的行换算。
+#
+# Review CRITICAL：此前脚本对所有行按 mt5_server_tz 换算，把引擎自产的正确 UTC
+# 行（strategy_name=具体策略名 / partial_tp_from_*）偏移 3h —— 修好的数据被改坏。
+# 现改为**白名单式只转换 bridge 来源行**：孤儿回填（strategy_name=adopted_from_mt5）
+# 的 open_time 来自 bridge（M1 前 EET naive 直接落库），才需要换算。其余一律不动。
+_BRIDGE_SOURCE_STRATEGIES = {"adopted_from_mt5", "orphan"}
+
+
+def _is_bridge_source(row) -> bool:
+    """判断 Trade 行是否源自 bridge（时间语义为 MT5 宿主机 EET naive）。
+
+    只有明确 bridge 来源的行（strategy_name=adopted_from_mt5/orphan）才转换；
+    引擎策略单 / partial_tp_from_* / 挂单恢复（strategy_name=策略名或继承名）
+    的 open_time 是 engine 自产 `_naive_utc()`（正确 UTC），绝不换算。
+    无法可靠判别来源的行保守跳过（宁可漏修，不把正确数据改坏；--dry-run 核对）。
+    """
+    if not row.strategy_name:
+        return False
+    return str(row.strategy_name) in _BRIDGE_SOURCE_STRATEGIES
 
 
 def _shift_naive(dt: datetime, tz: ZoneInfo) -> datetime:
@@ -54,7 +74,11 @@ async def main(dry_run: bool) -> None:
     async with Session() as session:
         rows = (await session.execute(select(Trade))).scalars().all()
         total = len(rows)
+        skipped = 0  # 非 bridge 来源（引擎自产 UTC 行），不换算
         for row in rows:
+            if not _is_bridge_source(row):
+                skipped += 1
+                continue
             updated = False
             if row.open_time is not None:
                 shifted = _shift_naive(row.open_time, tz)
@@ -75,7 +99,8 @@ async def main(dry_run: bool) -> None:
 
     print(
         f"[{'DRY-RUN ' if dry_run else ''}] trades rows={total} "
-        f"open_time shifted={changed_open} close_time shifted={changed_close}"
+        f"open_time shifted={changed_open} close_time shifted={changed_close} "
+        f"skipped(engine-UTC)={skipped}"
     )
     await engine.dispose()
 

@@ -149,8 +149,8 @@ class TestCircuitBreakerPeriod:
         cb = CircuitBreaker(dredis, symbol="GOLD", account_login="1")
         await cb.record_trade_result(-50.0, ticket=1001)
         await cb.record_trade_result(30.0, ticket=1002)
-        week_pnl = await CircuitBreaker.get_period_pnl(dredis, "week")
-        month_pnl = await CircuitBreaker.get_period_pnl(dredis, "month")
+        week_pnl = await CircuitBreaker.get_period_pnl(dredis, "week", account_login="1")
+        month_pnl = await CircuitBreaker.get_period_pnl(dredis, "month", account_login="1")
         assert week_pnl == -20.0
         assert month_pnl == -20.0
 

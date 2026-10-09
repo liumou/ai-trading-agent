@@ -155,13 +155,17 @@ async def place_order(
         # record_trade_closed(is_win) 记录，否则连亏熔断永不触发。
         await _guardrails.record_order_opened()
         # 纪律日/周开仓计数 + flip 方向记账（AI 通道，评审 2 R5 按通道分池；
-        # AI 通道无账号维度传参，按全局账号记账，账号粒度统计见 4c 前移项）
+        # 账号维度：从全局 manager 取当前账号，与 OrderAudit 落库口径一致，
+        # 账号切换后纪律计数不写死 "0" 错位）
         try:
+            from app.bot.manager import get_global_manager
             from app.services.discipline_gate import record_order_opened_discipline
 
+            _mgr = get_global_manager()
+            _ai_login = str(getattr(_mgr, "current_account_login", "0") or "0")
             await record_order_opened_discipline(
                 _redis,
-                account_login="0",
+                account_login=_ai_login,
                 symbol=symbol,
                 channel="ai",
                 direction=order_type,
@@ -315,9 +319,19 @@ async def close_position(ticket: int) -> dict:
     result = await _connector.close_position(ticket)
     if result.get("success"):
         # 平仓按实际盈亏记录胜负，驱动连亏熔断（CONSECUTIVE_LOSS_HALT）
+        # 账号维度（评审 H3）：streak key 带账号前缀，避免多账号串扰。
         if pos_info is not None:
             close_profit = pos_info.get("profit", 0) or 0
-            await _guardrails.record_trade_closed(is_win=close_profit > 0, ticket=ticket)
+            try:
+                from app.bot.manager import get_global_manager
+
+                _mgr3 = get_global_manager()
+                _ai_close_login = str(getattr(_mgr3, "current_account_login", "0") or "0")
+            except Exception:  # noqa: BLE001
+                _ai_close_login = "0"
+            await _guardrails.record_trade_closed(
+                is_win=close_profit > 0, ticket=ticket, account_login=_ai_close_login
+            )
         # Send Telegram notification
         if _notifier and pos_info:
             try:

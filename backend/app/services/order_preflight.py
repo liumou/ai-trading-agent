@@ -265,9 +265,11 @@ async def preflight_order(
         account_login=account_login or "0",
         symbol=symbol,
         channel=channel,
+        direction=direction or order_type,
         account=account,
         lot=lot,
         positions=normalized_positions,
+        account_daily_pnl=account_daily_pnl,
     )
     if not dg.ok:
         # 手痒信号（4b）：非冷却/非熔断类的拦截（次数/反手/保证金/休息日）

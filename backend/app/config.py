@@ -350,6 +350,7 @@ class Settings(BaseSettings):
     discipline_max_trades_per_day_manual: int = 3  # 手动通道日开仓上限
     discipline_max_trades_per_day_engine: int = 5  # 引擎通道日开仓上限
     discipline_max_trades_per_week_manual: int = 10  # 手动通道周开仓上限
+    discipline_max_trades_per_week_engine: int = 15  # 引擎通道周开仓上限
     discipline_flip_cooldown_minutes: int = 30  # 同品种反手冷静期
     discipline_cooldown_minutes: int = 60  # 瞬态闸冷却（非熔断档）
     discipline_impulse_cooldown_hours: int = 24  # 冲动冷却（阶梯升级：24→72→本周禁）

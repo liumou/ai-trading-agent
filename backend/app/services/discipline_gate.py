@@ -51,13 +51,20 @@ class DisciplineGateResult:
 
 async def check_discipline_gate(
     redis, *, account_login: str, symbol: str, channel: str,
+    direction: str | None = None,
     account: dict | None = None, lot: float | None = None,
     positions: list | None = None,
+    account_daily_pnl: float | None = None,
 ) -> DisciplineGateResult:
     """纪律门禁主入口（preflight 内调用）。
 
     channel: 'manual' | 'engine' | 'ai'（决定次数分池与引擎豁免）。
+    direction: 本次开仓方向（BUY/SELL）——反手硬拒（当日第 2 次方向切换）
+    需要；不传则只做 30min 时间冷却（向后兼容）。
     account/lot/positions：保证金硬上限（1b）需要；preflight 已取到，传入避免重复请求。
+    account_daily_pnl: 账户级当日已实现盈亏（preflight 聚合）——DAILY_HALT
+    rest-of-period 主动触发判定用（评审 CRITICAL：此前读无人写入的
+    discipline:halt:day key，日熔断从不生效）。
 
     总开关语义：settings/Redis 中 discipline_gate_enabled=false 时**完全豁免**（运维
     逃生门，即使 Redis 不可用也放行）；否则 Redis 故障 → fail-closed
@@ -93,6 +100,7 @@ async def check_discipline_gate(
         day_limit_manual = await get_runtime_setting(redis, "max_trades_day_manual")
         day_limit_engine = await get_runtime_setting(redis, "max_trades_day_engine")
         week_limit_manual = await get_runtime_setting(redis, "max_trades_week_manual")
+        week_limit_engine = await get_runtime_setting(redis, "max_trades_week_engine")
         max_single_margin = await get_runtime_setting(redis, "max_single_margin_pct")
         max_total_margin = await get_runtime_setting(redis, "max_total_margin_pct")
 
@@ -137,9 +145,11 @@ async def check_discipline_gate(
                 code="WEEK_HALT",
             )
         # 当前周期 PnL 触发判定（账户级聚合，堵分散亏损旁路）
-        balance = await _balance(redis, account_login)
+        # 分母 = 实时余额（preflight 已取到 account，直接读；不再依赖无写入方的
+        # discipline:balance key —— 评审 CRITICAL：balance 恒 0 使周/月熔断静默失效）。
+        balance = float((account or {}).get("balance") or 0)
         if monthly_loss_limit > 0 and balance > 0:
-            month_pnl = await CircuitBreaker.get_period_pnl(redis, "month")
+            month_pnl = await CircuitBreaker.get_period_pnl(redis, "month", account_login=account_login)
             if month_pnl <= -monthly_loss_limit * balance:
                 await CircuitBreaker.set_period_halt(redis, account_login, "month")
                 return DisciplineGateResult(
@@ -148,7 +158,7 @@ async def check_discipline_gate(
                     code="MONTH_HALT",
                 )
         if weekly_loss_limit > 0 and balance > 0:
-            week_pnl = await CircuitBreaker.get_period_pnl(redis, "week")
+            week_pnl = await CircuitBreaker.get_period_pnl(redis, "week", account_login=account_login)
             if week_pnl <= -weekly_loss_limit * balance:
                 await CircuitBreaker.set_period_halt(redis, account_login, "week")
                 return DisciplineGateResult(
@@ -156,6 +166,31 @@ async def check_discipline_gate(
                     reason="Weekly loss limit reached — trading halted for the rest of the week",
                     code="WEEK_HALT",
                 )
+        # 2b. 连亏周停（评审 HIGH：discipline_consecutive_loss_week_halt 配置
+        #     存在但 gate 从不读 loss_streak —— 声明未接入）。连亏 streak 由
+        #     guardrails.record_trade_closed 按账号维护（跨日/跨周末不中断），
+        #     此处读 streak ≥ 阈值 → 触发本周停手（复用 week halt 语义）。
+        from mcp_server.guardrails import TradingGuardrails as _TG
+
+        _consec_loss_threshold = await get_runtime_setting(redis, "consecutive_loss_week_halt")
+        if _consec_loss_threshold and _consec_loss_threshold > 0:
+            _streak = await _TG(redis)._get_consecutive_losses(account_login)
+            if _streak >= _consec_loss_threshold:
+                await CircuitBreaker.set_period_halt(redis, account_login, "week")
+                return DisciplineGateResult(
+                    ok=False,
+                    reason=f"Consecutive losses {_streak} reached "
+                    f"limit {_consec_loss_threshold} — trading halted for the rest of the week",
+                    code="WEEK_HALT",
+                )
+
+        # 日熔断 rest-of-period（评审 CRITICAL：此前该分支读无人写入的
+        # discipline:halt:day key —— 无 setter，日熔断静默失效）。现在用
+        # preflight 传入的账户级日 PnL 主动触发：日亏 ≥ max_daily_loss×balance
+        # → 写 halt 标记（until = 下一 22:00 UTC 外汇日），当日内后续拒单。
+        from app.config import settings as _cfg
+
+        day_loss_limit = getattr(_cfg, "max_daily_loss", 0.03)
         day_halt = await redis.get(f"discipline:halt:day:{account_login}")
         if day_halt and discipline_now() < _parse_dt(day_halt):
             return DisciplineGateResult(
@@ -163,6 +198,18 @@ async def check_discipline_gate(
                 reason=f"Daily loss limit reached — trading halted until {day_halt} (UTC)",
                 code="DAILY_HALT",
             )
+        if day_loss_limit > 0 and balance > 0 and account_daily_pnl is not None:
+            if account_daily_pnl <= -day_loss_limit * balance:
+                from app.services.discipline import discipline_until_day
+
+                _until = discipline_until_day().isoformat()
+                await redis.set(f"discipline:halt:day:{account_login}", _until, ex=48 * 3600)
+                return DisciplineGateResult(
+                    ok=False,
+                    reason=f"Daily loss {abs(account_daily_pnl):.2f} reaches "
+                    f"limit {day_loss_limit:.0%} of balance — halted until {_until} (UTC)",
+                    code="DAILY_HALT",
+                )
 
         # 3. 冲动冷却（24h 阶梯，绝对时间戳，与日界正交）
         cooldown_until = await redis.get(f"discipline:cooldown:{account_login}")
@@ -177,13 +224,33 @@ async def check_discipline_gate(
                     cooldown_remaining_min=remaining,
                 )
 
-        # 4. 同品种反手冷静期（绝对时间戳 epoch 秒，与日界正交；所有通道写同一 key）
+        # 4. 同品种反手冷静期 + 当日第 2 次反手硬拒（评审 2 R4 / 口径 #4）
+        #    绝对时间戳 epoch 秒，与日界正交（冷却）；当日反手次数 flip_today
+        #    按 22:00 UTC 外汇日界（record_order_opened_discipline 维护）。
         import time as _time
 
         flip = await redis.get(f"discipline:flip:{account_login}:{symbol}")
         if flip:
-            direction, ts_str, count = _parse_flip(flip)
-            if direction and ts_str:
+            last_dir, ts_str, _count, flip_today, flip_day = _parse_flip(flip)
+            # 跨日防御：key 是昨日/更早写入（今日未开仓）→ 当日反手次数视为 0
+            if flip_day and flip_day != discipline_day_key():
+                flip_today = 0
+            # 反手硬拒：本次方向与上次反着、且当日已反手 ≥1 次（本次是第 2 次）
+            if (
+                direction
+                and last_dir
+                and _direction_of(direction) != _direction_of(last_dir)
+                and flip_today >= 1
+            ):
+                return DisciplineGateResult(
+                    ok=False,
+                    reason=(
+                        f"Second direction switch today on {symbol} is rejected — one direction per day "
+                        f"(already flipped {flip_today + 1} time(s) today incl. this attempt)"
+                    ),
+                    code="FLIP_REJECT",
+                )
+            if last_dir and ts_str:
                 try:
                     last_ts_f = float(ts_str)
                 except (TypeError, ValueError):
@@ -195,7 +262,7 @@ async def check_discipline_gate(
                         return DisciplineGateResult(
                             ok=False,
                             reason=f"Frequent long/short switching — wait {remaining}min cooldown after last "
-                            f"{direction} open (min {flip_cooldown}min)",
+                            f"{last_dir} open (min {flip_cooldown}min)",
                             code="FLIP_COOLDOWN",
                             cooldown_remaining_min=remaining,
                         )
@@ -204,7 +271,7 @@ async def check_discipline_gate(
         day_key = f"discipline:trades_day:{discipline_day_key()}:{account_login}:{channel}"
         week_key = f"discipline:trades_week:{discipline_week_key()}:{account_login}:{channel}"
         day_limit = day_limit_manual if channel == "manual" else day_limit_engine
-        week_limit = week_limit_manual if channel == "manual" else 15
+        week_limit = week_limit_manual if channel == "manual" else week_limit_engine
         trades_today = int(await redis.get(day_key) or 0)
         trades_week = int(await redis.get(week_key) or 0)
         if trades_today >= day_limit:
@@ -277,6 +344,26 @@ async def trigger_impulse_cooldown(redis, *, account_login: str) -> int:
             from app.risk.circuit_breaker import CircuitBreaker
 
             await CircuitBreaker.set_period_halt(redis, account_login, "week")
+            # 审计事件（评审 Medium：复盘统计需要看到此链路，否则第 4 次
+            # 触发周停对 discipline_stats 隐形）
+            try:
+                from app.db.models import BotEvent, BotEventType
+                from app.db.session import async_session as _imp_audit_session
+
+                async with _imp_audit_session() as _s:
+                    _s.add(
+                        BotEvent(
+                            event_type=BotEventType.TRADE_BLOCKED,
+                            message=(
+                                f"Impulse cooldown tier-4 triggered (attempt #{count}) — "
+                                f"trading halted for the rest of the week (account {account_login})"
+                            ),
+                            account_login=account_login,
+                        )
+                    )
+                    await _s.commit()
+            except Exception as _audit_err:  # noqa: BLE001
+                logger.debug(f"Impulse cooldown audit event failed: {_audit_err!r}")
             return hours * 3
         if count >= 3:
             hours = hours * 3  # 72h
@@ -327,7 +414,7 @@ async def get_discipline_status(redis, *, account_login: str) -> dict:
         }
         base["max_trades_week"] = {
             "manual": settings.discipline_max_trades_per_week_manual,
-            "engine": 15,
+            "engine": settings.discipline_max_trades_per_week_engine,
         }
         # 冷却（24h 冲动阶梯）
         cooldown_raw = await redis.get(f"discipline:cooldown:{account_login}")
@@ -378,17 +465,32 @@ async def record_order_opened_discipline(
         flip_key = f"discipline:flip:{account_login}:{symbol}"
         raw = await redis.get(flip_key)
         flip_count = 1
+        flip_today = 0  # 当日反手次数（方向切换，22:00 UTC 外汇日界）
+        today_key = discipline_day_key()  # 记录本次记账所属外汇日
         if raw:
             decoded = raw.decode() if isinstance(raw, bytes) else str(raw)
             parts = decoded.split("|")
             if len(parts) >= 3:
                 prev_dir, _prev_ts, prev_count = parts[0], parts[1], parts[2]
+                # 跨日（记录的外汇日 ≠ 今天）→ 当日反手次数归零重计
+                prev_day = parts[4] if len(parts) >= 5 else today_key
+                if prev_day != today_key:
+                    flip_today = 0
                 if prev_dir == direction:
                     try:
                         flip_count = int(prev_count) + 1
                     except (TypeError, ValueError):
                         flip_count = 1
-        await redis.set(flip_key, f"{direction}|{_time.time()}|{flip_count}")
+                else:
+                    # 方向相反 = 反手：连续同向计数重置为 1，当日反手次数 +1
+                    flip_count = 1
+                    try:
+                        flip_today = int(parts[3]) + 1 if len(parts) >= 4 else 1
+                    except (TypeError, ValueError):
+                        flip_today = 1
+        await redis.set(
+            flip_key, f"{direction}|{_time.time()}|{flip_count}|{flip_today}|{today_key}"
+        )
         await redis.expire(flip_key, 7 * 24 * 3600)
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Discipline record failed: {e!r}")
@@ -408,25 +510,28 @@ def _parse_dt(s):
 
 
 def _parse_flip(raw):
-    """flip key 值 'DIR|epoch_sec|count'（bytes 或 str）。"""
+    """flip key 值 'DIR|epoch_sec|count|flip_today|day'（bytes 或 str）。
+
+    第 4 段 flip_today = 当日反手次数（方向切换）；第 5 段 day = 记账所属
+    外汇日（22:00 UTC 日界）。旧数据只有 3 段 → flip_today=0。
+    """
     if raw is None:
-        return None, None, 0
+        return None, None, 0, 0, None
     decoded = raw.decode() if isinstance(raw, bytes) else str(raw)
     parts = decoded.split("|")
     if len(parts) >= 3:
-        return parts[0], parts[1], int(parts[2])
-    return None, None, 0
+        try:
+            flip_today = int(parts[3]) if len(parts) >= 4 else 0
+        except (TypeError, ValueError):
+            flip_today = 0
+        day = parts[4] if len(parts) >= 5 else None
+        return parts[0], parts[1], int(parts[2]), flip_today, day
+    return None, None, 0, 0, None
 
 
-async def _balance(redis, account_login: str) -> float:
-    """账户余额（熔断百分比分母）。优先 Redis 缓存，缺失时保守用 0（不触发）。"""
-    try:
-        raw = await redis.get(f"discipline:balance:{account_login}")
-        if raw:
-            return float(raw)
-    except Exception:  # noqa: BLE001
-        pass
-    return 0.0
+def _direction_of(order_type: str) -> str:
+    """归一化方向：BUY_LIMIT/BUY_STOP → BUY，SELL_* → SELL，其余原样。"""
+    return order_type.split("_")[0].upper() if order_type else ""
 
 
 # ─── Redis 运行时配置（评审 8：单轨——Redis 为真相、settings/env 为默认值）───
@@ -437,6 +542,7 @@ _RUNTIME_INT_FIELDS = {
     "max_trades_day_manual": ("discipline_max_trades_per_day_manual", 3),
     "max_trades_day_engine": ("discipline_max_trades_per_day_engine", 5),
     "max_trades_week_manual": ("discipline_max_trades_per_week_manual", 10),
+    "max_trades_week_engine": ("discipline_max_trades_per_week_engine", 15),
     "flip_cooldown_minutes": ("discipline_flip_cooldown_minutes", 30),
     "impulse_cooldown_hours": ("discipline_impulse_cooldown_hours", 24),
     "consecutive_loss_week_halt": ("discipline_consecutive_loss_week_halt", 5),
@@ -452,16 +558,6 @@ _RUNTIME_BOOL_FIELDS = {
     "gate_enabled": ("discipline_gate_enabled", True),
     "engine_enabled": ("engine_discipline_enabled", True),
 }
-
-
-def _runtime_setting(key: str, default):
-    """运行时读纪律参数：Redis 覆盖 settings（需 await 版本用 get_runtime_setting）。"""
-    try:
-        from app.config import settings as _cfg
-
-        return getattr(_cfg, key, default)
-    except Exception:  # noqa: BLE001
-        return default
 
 
 async def get_runtime_setting(redis, field: str):

@@ -77,10 +77,14 @@ class CircuitBreaker:
 
         # 周/月 PnL 记账（additive，纪律门禁 1a；周期号按 22:00 UTC 外汇日，
         # 见 app/services/discipline.py）。跨日 TTL 兜底清理。
+        # 账号维度（评审 CRITICAL）：周/月 key 带 `acc:{login}:` 前缀，
+        # 与日 PnL 一致 —— 否则 get_period_pnl 按 pattern 全账号求和，账号 A
+        # 亏损会错误触发账号 B 的周/月熔断。
         from app.services.discipline import discipline_month_key, discipline_week_key
 
-        week_key = f"circuit:weekly:{discipline_week_key()}:{self.symbol}"
-        month_key = f"circuit:monthly:{discipline_month_key()}:{self.symbol}"
+        _acc_pref = f"circuit:acc:{self.account_login}:" if self.account_login else "circuit:"
+        week_key = f"{_acc_pref}weekly:{discipline_week_key()}:{self.symbol}"
+        month_key = f"{_acc_pref}monthly:{discipline_month_key()}:{self.symbol}"
         w_cur = float(await self.redis.get(week_key) or 0)
         m_cur = float(await self.redis.get(month_key) or 0)
         pipe = self.redis.pipeline()
@@ -109,14 +113,21 @@ class CircuitBreaker:
         """读取周/月 PnL（账户级聚合；period: 'week' | 'month'）。
 
         纪律门禁 1a：key 按 symbol 分桶（record_trade_result 写入），判定时
-        对当前周期全部 symbol 求和 —— 堵分散亏损旁路（评审 7）。
+        对当前周期、当前账号全部 symbol 求和 —— 堵分散亏损旁路（评审 7）。
+
+        账号维度（评审 CRITICAL）：pattern 限定 `acc:{login}:` 前缀，避免
+        多账号混合求和触发跨账号熔断。account_login=None 保持旧 key（兼容
+        引导期/测试；生产 preflight 总传 login）。
         """
         from app.services.discipline import discipline_month_key, discipline_week_key
 
         period_key = discipline_week_key() if period == "week" else discipline_month_key()
-        pattern = f"circuit:{period}ly:{period_key}:*"
+        # 归一化 "0" 占位 → None（与 _acc_key / __init__ 一致）
+        account_login = None if account_login == "0" else account_login
+        prefix = f"circuit:acc:{account_login}:" if account_login else "circuit:"
+        pattern = f"{prefix}{period}ly:{period_key}:*"
         if symbol:
-            pattern = f"circuit:{period}ly:{period_key}:{symbol}"
+            pattern = f"{prefix}{period}ly:{period_key}:{symbol}"
         keys = await redis.keys(pattern)
         if not keys:
             return 0.0
@@ -391,11 +402,11 @@ class CircuitBreaker:
         n = 0
         for ticket, net in aggregated.items():
             await cb.record_trade_result(net, ticket=ticket)
-            await gr.record_trade_closed(is_win=net > 0, ticket=ticket)
+            await gr.record_trade_closed(is_win=net > 0, ticket=ticket, account_login=account_login)
             n += 1
         for net in no_ticket:
             await cb.record_trade_result(net)
-            await gr.record_trade_closed(is_win=net > 0)
+            await gr.record_trade_closed(is_win=net > 0, account_login=account_login)
             n += 1
         if n:
             logger.info(f"Circuit breaker backfill [{symbol}]: {n} positions reconciled")
