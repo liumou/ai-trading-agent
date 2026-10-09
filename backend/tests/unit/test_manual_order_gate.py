@@ -50,6 +50,15 @@ def _allow_live(monkeypatch):
     monkeypatch.setattr(settings, "llm_allow_live", True)
 
 
+@pytest.fixture(autouse=True)
+def _provider_llm(monkeypatch):
+    """本文件锁定 LLM 审查路径的回归基线 —— 强制走 LLM provider。
+    SystemOne 引擎与 provider 链的行为在 test_systemone.py /
+    test_gate_provider_chain.py（否则默认 local_jev 会绕过 ai_client，
+    下面所有 mock verdict 的测试都会静默失真）。"""
+    monkeypatch.setattr(settings, "manual_review_provider", "llm")
+
+
 @pytest_asyncio.fixture
 async def session_patched(db_engine, monkeypatch):
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker

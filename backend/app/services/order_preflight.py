@@ -40,6 +40,9 @@ class PreflightContext:
     rollout_mode: str
     guardrails: Any
     profile: dict = field(default_factory=dict)
+    # 账户级日亏（聚合全部在线品种，order_preflight 4b 步已算）——
+    # SystemOne loss_chase_combo 规则用；单品种 daily_pnl 会漏掉分散亏损。
+    account_daily_pnl: float | None = None
 
 
 @dataclass
@@ -340,6 +343,7 @@ async def preflight_order(
         spread=spread,
         avg_spread=avg_spread,
         daily_pnl=realized_daily_pnl,
+        account_daily_pnl=account_daily_pnl,
         entry_ref=entry_ref,
         rollout_mode=rollout_mode,
         guardrails=guardrails,

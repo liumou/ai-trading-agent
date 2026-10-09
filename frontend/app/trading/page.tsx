@@ -69,7 +69,7 @@ const INDICATOR_LABEL_KEY: Record<IndicatorKey, string> = {
 };
 
 const REVIEW_POLL_MS = 2000;
-const REVIEW_POLL_MAX = 20; // 2s × 20 = 40s > LLM 25s 预算
+const REVIEW_POLL_MAX = 50; // 2s × 50 = 100s > LLM 兜底超时 90s（SystemOne 正常毫秒级，降级路径不丢终态）
 const POSITIONS_POLL_MS = 10000; // 持仓全量快照周期（品种停跑后 WS 不再推送持仓）
 const QUOTE_POLL_MS = 2000; // WS 断开时的报价兜底周期
 const STALE_TICK_MS = 30000; // 超过此时长未收到新报价 → 标记"延迟"（对齐后端 MAX_TICK_AGE_SECONDS）
@@ -817,7 +817,9 @@ function toReviewState(r: ManualReview): ReviewState {
     status: r.status,
     kind: r.kind,
     reason: r.reason ?? r.error_message,
-    reviewId: r.review_id as number | undefined,
+    // 提交响应带 review_id，轮询 GET /reviews/{id} 只回 id —— 只认 review_id
+    // 会让第一次轮询后 reviewId 变 undefined，确认按钮静默失效（点击无反应）。
+    reviewId: (r.review_id ?? r.id) as number | undefined,
     ruleFlags: r.rule_flags as ReviewState["ruleFlags"],
     llm: r.review?.llm,
   };

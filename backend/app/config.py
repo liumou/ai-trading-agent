@@ -1,6 +1,8 @@
 import json
 
-from pydantic import Field, field_validator
+from typing import Literal
+
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # Per-symbol trading profiles
@@ -202,6 +204,63 @@ class Settings(BaseSettings):
     llm_retry_base_s: float = Field(15, ge=1, le=300)
     llm_retry_max_s: float = Field(120, ge=5, le=600)
 
+    # ─── 手动单审查 provider 链（System One / JEV 式，见 services/systemone.py）───
+    # local_jev：本地确定性规则引擎（毫秒~秒级，默认）；typesafe_jev：外部 JEV
+    # API（需 JEV_API_KEY，Phase 3）；llm：回滚开关 —— 完全恢复旧 LLM 审查行为
+    # （不写 review.systemone 审计块）。非法值启动即报错，不静默回退。
+    manual_review_provider: Literal["local_jev", "typesafe_jev", "llm"] = "local_jev"
+    # 引擎内数据获取（M15/H1/spec/history 四路并发）总封顶（秒）
+    manual_review_fetch_timeout_s: float = Field(5, ge=1, le=30)
+    # OHLCV 最低可用根数（请求 120 根留 buffer）；双 TF 均不足 → 降级 LLM 兜底
+    manual_review_min_bars: int = Field(60, ge=10, le=200)
+    # K 线陈旧度上限（×bar 周期数，同源时钟=bridge tick 时间戳）
+    manual_review_freshness_mult: float = Field(3.0, ge=1.0, le=50.0)
+    # spike_chase：|entry−EMA20|/ATR14 的近 200 根滚动分位阈值
+    manual_review_spike_pct_warn: float = Field(0.90, ge=0.5, le=1.0)
+    manual_review_spike_pct_block: float = Field(0.99, ge=0.5, le=1.0)
+    # exposure_cap：潜在亏损占 equity 比例（tick_value 账户货币计价）
+    manual_review_risk_pct_warn: float = Field(0.02, gt=0, le=1)
+    manual_review_risk_pct_block: float = Field(0.05, gt=0, le=1)
+    # exposure_cap 辅指标：保证金占用占 equity 比例（bridge /account 有 leverage 才启用）
+    manual_review_margin_pct_warn: float = Field(0.25, gt=0, le=1)
+    manual_review_margin_pct_block: float = Field(0.50, gt=0, le=1)
+    # size_near_limit：单笔手数 ≥ 0.8×min(全局上限, 品种上限) 或 ≥ 3×同品种近10笔中位
+    manual_review_size_cap_frac: float = Field(0.8, gt=0, le=1)
+    manual_review_size_med_mult: float = Field(3.0, gt=1, le=20)
+    # loss_chase_combo：账户级日亏 warn 门槛（3% 由硬闸门拒，此处覆盖 1~3% 梯度）
+    manual_review_loss_warn_pct: float = Field(0.01, gt=0, le=0.1)
+    # rr_sanity：RR 下限 / SL 距离 ATR 上限
+    manual_review_rr_min: float = Field(0.25, gt=0, le=10)
+    manual_review_sl_max_atr: float = Field(10.0, gt=0, le=100)
+    # unfamiliar_symbol：全量成交历史窗口（天）
+    manual_review_familiar_days: int = Field(14, ge=1, le=90)
+    # sentiment_conflict：逆向情绪分数阈值
+    manual_review_sent_conflict: float = Field(0.5, gt=0, le=1)
+    # mtf_conflict 升级 REJECTED 需要的各 TF ADX 下限（conflict 单独只 CAUTION）
+    manual_review_mtf_adx_reject: float = Field(25.0, ge=20, le=50)
+    # 降级告警：provider 连续失败 N 次 → CIRCUIT_BREAKER 事件 + Telegram 聚合告警
+    manual_review_degraded_alert_threshold: int = Field(3, ge=1, le=50)
+    # 仅 typesafe_jev 生效：检查置信度下限（local 的 confidence 是构造分非概率）
+    manual_review_min_confidence: float = Field(0.55, ge=0, le=1)
+    # 低置信分诊地板：risk/exec 置信 < 该值 = 应答整体不可靠 → 降级（LLM 兜底）；
+    # 在 地板~min_confidence 之间 → CAUTION 人工确认（free 模型常低置信，
+    # 直接降级会让 JEV 永不生效；直接放行又太松 —— 人在环是正确档位）
+    manual_review_typesafe_conf_floor: float = Field(0.30, ge=0, le=1)
+
+    # ─── TypeSafe JEV 外部决策 API（provider=typesafe_jev 主审；local 失败时兜底）───
+    # API key 属机密：只存 .env/vault，禁入代码/审计/日志/前端（对齐 llm_api_key 约定）。
+    # base_url 若以 /systemone 结尾则原样使用，否则自动拼接（兼容两种配置习惯）。
+    manual_review_typesafe_api_key: str = ""
+    manual_review_typesafe_base_url: str = "https://opencode.ai/zen/v1/systemone"
+    manual_review_typesafe_model: str = "jev-1.13-free"
+    manual_review_typesafe_timeout_s: float = Field(8, ge=1, le=30)
+    manual_review_typesafe_proxy_url: str = ""  # 如 "http://127.0.0.1:7897"；空 = 直连
+    # 简单熔断：连续失败 N 次 → 冷却期内跳过 JEV（避免每单白等 8s），只影响
+    # 本 provider 的可用性判定，不影响决策链 fail-closed 语义
+    manual_review_typesafe_circuit_threshold: int = Field(3, ge=1, le=50)
+    manual_review_typesafe_circuit_cooldown_s: int = Field(300, ge=10, le=3600)
+
+
     # Chat-only budgets; never change autonomous trading loop deadlines.
     chat_total_timeout_s: int = Field(600, ge=30, le=1800)
     chat_request_timeout_s: int = Field(180, ge=5, le=600)
@@ -261,6 +320,13 @@ class Settings(BaseSettings):
     max_daily_loss: float = 0.03
     max_concurrent_trades: int = 3
     max_lot: float = 1.0
+    # ─── 硬闸门（mcp_server/guardrails.py 消费；默认 = 旧硬编码常量，env 可覆盖）───
+    # 三通道共用（AI/MCP/手动）：改动同时收紧自动与手动交易，重启生效。
+    # 注意与 manual_review_*（审查层软阈值）区分：这里是「超过即拒」的硬限。
+    guardrails_max_lot_per_trade: float = Field(1.0, gt=0, le=100)
+    guardrails_max_concurrent_per_symbol: int = Field(3, ge=1, le=50)
+    guardrails_max_concurrent_total: int = Field(5, ge=1, le=100)
+    guardrails_consecutive_loss_halt: int = Field(5, ge=1, le=50)
     max_drawdown_from_peak: float = 0.15  # 15% absolute drawdown → halt
     max_equity_drawdown: float = 0.03  # 日内 equity（含浮动盈亏）回撤 ≥3% → 停新开仓；0=禁用
     use_ai_filter: bool = True
@@ -431,6 +497,20 @@ class Settings(BaseSettings):
         if v not in ("warn", "strict"):
             raise ValueError(f"symbol_startup_validation must be 'warn' or 'strict', got {v!r}")
         return v
+
+    @model_validator(mode="after")
+    def _validate_manual_review_thresholds(self):
+        """跨字段校验：block 阈值必须严格大于对应 warn 阈值（否则 warn 档
+        永远不可达或 block 档失效）——env 手误在启动时报错而非静默生效。"""
+        pairs = [
+            ("manual_review_spike_pct_warn", "manual_review_spike_pct_block"),
+            ("manual_review_risk_pct_warn", "manual_review_risk_pct_block"),
+            ("manual_review_margin_pct_warn", "manual_review_margin_pct_block"),
+        ]
+        for warn_name, block_name in pairs:
+            if getattr(self, warn_name) >= getattr(self, block_name):
+                raise ValueError(f"{block_name} must be > {warn_name}")
+        return self
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

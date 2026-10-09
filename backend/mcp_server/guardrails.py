@@ -16,11 +16,15 @@ import redis.asyncio as redis_lib
 from loguru import logger
 
 # ─── Hard Limits (non-negotiable) ────────────────────────────────────────────
+# 单笔手数 / 并发持仓 / 连亏熔断可通过 env 覆盖（config.Settings：
+#   GUARDRAILS_MAX_LOT_PER_TRADE / GUARDRAILS_MAX_CONCURRENT_PER_SYMBOL /
+#   GUARDRAILS_MAX_CONCURRENT_TOTAL / GUARDRAILS_CONSECUTIVE_LOSS_HALT），
+# 重启生效。下面常量保留为文档化默认值，运行时校验读取 settings。
 #单笔手数	≤ 1.0 lot	超过就拒（MAX_LOT_PER_TRADE）
 #单品种并发持仓	≤ 3 个	已有 3 个时，第 4 个拒（MAX_CONCURRENT_PER_SYMBOL）
 #总持仓	≤ 5 个	已有 5 个时，第 6 个拒（MAX_CONCURRENT_TOTAL）
-##日亏损	≤ 3% 余额	已实现亏损 ÷ 余额 ≥ 3% 就拒（MAX_DAILY_LOSS_PCT）
-#连亏	< 5 笔	连续亏损 ≥ 5 笔熔断拒单（CONSECUTIVE_LOSS_HALT）
+#日亏损	≤ 3% 余额	已实现亏损 ÷ 余额 ≥ 3% 就拒（MAX_DAILY_LOSS_PCT）
+#连亏	< 5 笔	连续亏损 ≥ 5 笔熔断拒单（CONSECUTIVE_LOSS_HALT，按当天成交序列）
 #每小时交易	< 5 笔	本小时已达 5 笔就拒（MAX_TRADES_PER_HOUR）
 #交易最小间隔	≥ 120 秒	距上一笔成交不足 120 秒就拒
 #点差	≤ 3× 均值	当前点差 > 该品种近 20 次滚动均值的 3 倍就拒（MAX_SPREAD_MULTIPLIER）
@@ -54,6 +58,17 @@ ON_TOKEN_FAILURE = "pause"
 
 ROLLOUT_MODES = ("shadow", "paper", "micro", "live")
 MICRO_MAX_LOT = 0.01  # Micro-live caps all orders at 0.01 lot
+
+
+def _env_limit(field: str, default):
+    """运行时读 settings（GUARDRAILS_* env）：重启生效；测试可 monkeypatch。
+    脱离应用上下文（纯脚本/无 .env）时回退文档化默认常量。"""
+    try:
+        from app.config import settings as _cfg
+
+        return getattr(_cfg, field, default)
+    except Exception:  # noqa: BLE001
+        return default
 
 # ─── Redis Keys ──────────────────────────────────────────────────────────────
 
@@ -233,25 +248,28 @@ class TradingGuardrails:
     ) -> GuardrailResult:
         """Core guardrail checks (see :meth:`validate_order` for docs)."""
         # 1. Max lot per trade
-        if lot > MAX_LOT_PER_TRADE:
-            return GuardrailResult(False, f"Lot {lot} exceeds max {MAX_LOT_PER_TRADE}")
+        max_lot = _env_limit("guardrails_max_lot_per_trade", MAX_LOT_PER_TRADE)
+        if lot > max_lot:
+            return GuardrailResult(False, f"Lot {lot} exceeds max {max_lot}")
 
         if lot <= 0:
             return GuardrailResult(False, f"Invalid lot size: {lot}")
 
         # 2. Max concurrent positions per symbol
         symbol_positions = [p for p in current_positions if p.get("symbol") == symbol]
-        if len(symbol_positions) >= MAX_CONCURRENT_PER_SYMBOL:
+        max_sym = _env_limit("guardrails_max_concurrent_per_symbol", MAX_CONCURRENT_PER_SYMBOL)
+        if len(symbol_positions) >= max_sym:
             return GuardrailResult(
                 False,
-                f"{symbol}: {len(symbol_positions)} positions (max {MAX_CONCURRENT_PER_SYMBOL})",
+                f"{symbol}: {len(symbol_positions)} positions (max {max_sym})",
             )
 
         # 3. Max concurrent positions total
-        if len(current_positions) >= MAX_CONCURRENT_TOTAL:
+        max_total = _env_limit("guardrails_max_concurrent_total", MAX_CONCURRENT_TOTAL)
+        if len(current_positions) >= max_total:
             return GuardrailResult(
                 False,
-                f"Total positions {len(current_positions)} (max {MAX_CONCURRENT_TOTAL})",
+                f"Total positions {len(current_positions)} (max {max_total})",
             )
 
         # 3b. SL/TP sanity validation — AI can place garbage orders (no SL,
@@ -298,10 +316,11 @@ class TradingGuardrails:
 
         # 5. Consecutive loss halt
         consecutive_losses = await self._get_consecutive_losses()
-        if consecutive_losses >= CONSECUTIVE_LOSS_HALT:
+        halt = _env_limit("guardrails_consecutive_loss_halt", CONSECUTIVE_LOSS_HALT)
+        if consecutive_losses >= halt:
             return GuardrailResult(
                 False,
-                f"{consecutive_losses} consecutive losses (halt at {CONSECUTIVE_LOSS_HALT})",
+                f"{consecutive_losses} consecutive losses (halt at {halt})",
             )
 
         # 6. Trades per hour

@@ -202,3 +202,16 @@ def make_crossover_df():
         )
 
     return _factory
+
+
+@pytest.fixture(autouse=True)
+def _pin_guardrail_defaults(monkeypatch):
+    """.env 里的 GUARDRAILS_* 覆盖会让依赖默认硬限的测试失真
+    （如 lot 0.1 被 max=0.01 拒、3 仓并发被 max=1 拒）——全局钉回默认；
+    需要自定义硬限的用例自行 monkeypatch。"""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "guardrails_max_lot_per_trade", 1.0)
+    monkeypatch.setattr(settings, "guardrails_max_concurrent_per_symbol", 3)
+    monkeypatch.setattr(settings, "guardrails_max_concurrent_total", 5)
+    monkeypatch.setattr(settings, "guardrails_consecutive_loss_halt", 5)

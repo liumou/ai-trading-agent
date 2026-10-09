@@ -11,7 +11,10 @@ websockets==14.1
 claude-agent-sdk==0.1.50
 mcp>=1.0,<2
 openai>=1.40,<2
-httpx==0.28.1
+
+# [socks] extra = socksio：环境设置 all_proxy=socks5:// 时 httpx 构造 transport 需要它，缺失会让所有出站请求在 client 初始化阶段就抛 ImportError
+httpx[socks]==0.28.1
+
 feedparser==6.0.11
 apscheduler==3.10.4
 loguru==0.7.3

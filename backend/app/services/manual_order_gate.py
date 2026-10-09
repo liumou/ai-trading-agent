@@ -15,9 +15,12 @@ Firewall invariants (v2 plan, tri-critic reviewed):
    gates (state may have drifted) and expires after CONFIRM_TTL_S.
 
 Flow: submit → per-account lock {switching gate → preflight → emotion rules
-(block-level rules reject inline)} → OrderAudit(PENDING_REVIEW) → async LLM
-review → APPROVED: re-verify + execute / CAUTION: PENDING_CONFIRM /
-REJECTED: blocked (+ AI_AGENT_ERROR when it's an infrastructure failure).
+(block-level rules reject inline)} → OrderAudit(PENDING_REVIEW) → async
+provider chain {local_jev (System One deterministic rules, default) →
+optional typesafe_jev → LLM fallback} → APPROVED: re-verify + execute /
+CAUTION: PENDING_CONFIRM / REJECTED: blocked. Provider failures degrade
+along the chain; total failure rejects (fail-closed) + AI_AGENT_ERROR only
+for infrastructure breakdowns (rule rejections are normal TRADE_BLOCKED).
 """
 
 import asyncio
@@ -51,10 +54,19 @@ def _utcnow() -> datetime:
 
 
 class ManualOrderGate:
-    def __init__(self, connector, redis, ai_client):
+    def __init__(self, connector, redis, ai_client, systemone=None, market_data=None):
         self.connector = connector
         self.redis = redis
         self.ai_client = ai_client
+        # SystemOne 链成员：local 引擎（services/systemone.LocalRuleEngine）与
+        # typesafe JEV provider（services/typesafe_jev.TypesafeJevProvider）——
+        # 均为惰性构建；systemone 参数兼容测试注入假引擎（3 参构造不破坏）。
+        # provider 选择/排序在决策时运行时读 settings（env 切换与测试
+        # monkeypatch 依赖），此处不缓存.provider 名称。
+        self._local = systemone
+        self._market_data = market_data
+        self._typesafe = None
+        self._degraded_streak = 0  # provider 连续失败计数（降级告警）
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
 
@@ -128,6 +140,7 @@ class ManualOrderGate:
             )
             if not pf.ok:
                 return await self._reject_inline(audit_id, pf.reason, kind=pf.kind)
+            ctx = pf.ctx
 
             # ─── 情绪化交易规则（block 级直接拒，不烧 LLM token）──────────
             snapshot = await self._build_snapshot(pf.ctx, audit_id)
@@ -138,12 +151,12 @@ class ManualOrderGate:
                     rule_flags=snapshot["rule_flags"],
                 )
 
-        # 硬闸门通过 → 异步 LLM 审查（锁外；执行前重验硬状态）
+        # 硬闸门通过 → 异步审查（锁外；执行前重验硬状态）
         await self._update_audit(audit_id, review={
             "raw_order_type": order_type, "modify_ticket": modify_ticket,
             "comment": comment[:60], "rule_flags": snapshot["rule_flags"],
         })
-        task = asyncio.create_task(self._review_and_maybe_execute(audit_id, snapshot))
+        task = asyncio.create_task(self._review_and_maybe_execute(audit_id, snapshot, ctx))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -153,22 +166,142 @@ class ManualOrderGate:
             "rule_flags": snapshot["rule_flags"],
         }
 
-    # ─── LLM 审查 + 执行 ──────────────────────────────────────────────────
+    # ─── 审查 provider 链 + 执行 ──────────────────────────────────────────
 
-    async def _review_and_maybe_execute(self, audit_id: int, snapshot: dict):
+    async def _review_and_maybe_execute(self, audit_id: int, snapshot: dict, ctx):
         try:
-            await self._review(audit_id, snapshot)
+            await self._decide_review(audit_id, snapshot, ctx)
         except Exception as e:  # noqa: BLE001
             logger.exception(f"ManualGate review task [{audit_id}] crashed")
             await self._reject_inline(
                 audit_id, f"AI review failed: {e!s} — order blocked (fail-closed)",
                 kind="llm_unavailable", retryable=True,
             )
-            await self._ai_error_event(audit_id, f"LLM review crashed: {e!s:.200}")
+            await self._ai_error_event(audit_id, f"review crashed: {e!s:.200}")
 
-    async def _review(self, audit_id: int, snapshot: dict):
-        # 超时只约束 LLM 调用本身 —— 不能包住执行段，否则「订单已成交但
-        # 审计行被取消」会造成不可回滚的孤行。
+    async def _decide_review(self, audit_id: int, snapshot: dict, ctx):
+        """SystemOne 链：primary provider 在前，其余在后，LLM 永远兜底。
+
+        链成员共享 SystemOneDecision 形状；首个产出有效判决者决定，失败沿链
+        降级（如 local 数据盲 → JEV AI 判断 → LLM）。fail-closed 不变式：
+        全链失败拒单。LLM 兜底超时只包 LLM 调用不包执行段（订单成交后审计
+        行不可取消）。
+        """
+        verdict_data: dict | None = None
+        systemone_block: dict = {}
+        chosen_provider = ""
+        if settings.manual_review_provider != "llm":
+            chain = self._systemone_providers()
+            logger.bind(event="manual_review_chain", review_id=audit_id,
+                        provider_cfg=settings.manual_review_provider,
+                        chain=[p.provider for p in chain]).info(
+                f"ManualGate [{audit_id}] systemone chain start — "
+                f"cfg={settings.manual_review_provider!r} chain=[{', '.join(p.provider for p in chain) or 'EMPTY'}]")
+            for provider in chain:
+                decision = None
+                try:
+                    decision = await asyncio.wait_for(
+                        provider.evaluate(snapshot, ctx),
+                        timeout=self._provider_timeout_s(provider),
+                    )
+                except Exception as e:  # noqa: BLE001 — 超时/引擎异常同诊：沿链降级
+                    await self._note_degraded(audit_id, provider=provider.provider, reason=str(e)[:200])
+                if decision is not None:
+                    self._note_recovered()
+                    verdict_data = decision.to_review_llm_shape()
+                    systemone_block = decision.audit_block()
+                    chosen_provider = provider.provider
+                    break
+            if verdict_data is None:
+                logger.warning(
+                    f"ManualGate [{audit_id}] systemone chain produced NO decision "
+                    f"(cfg={settings.manual_review_provider!r}) — LLM fallback")
+        else:
+            logger.info(f"ManualGate [{audit_id}] provider=llm — chain skipped (rollback mode)")
+        if verdict_data is None:
+            verdict_data = await self._llm_review(audit_id, snapshot)
+            if verdict_data is None:
+                logger.warning(f"ManualGate [{audit_id}] LLM fallback also failed — fail-closed reject")
+                return  # 已内联拒（fail-closed）+ AI_AGENT_ERROR
+        await self._apply_verdict(audit_id, verdict_data, snapshot, systemone_block)
+        logger.info(
+            f"ManualGate [{audit_id}] review decided by "
+            f"{'systemone:' + chosen_provider if chosen_provider else 'llm'} "
+            f"verdict={verdict_data.get('verdict')} conf={verdict_data.get('confidence')}")
+
+    def _systemone_providers(self) -> list:
+        """按 manual_review_provider 展开链排序（primary 在前）。
+
+        - local_jev：local → typesafe(已配置) → llm
+        - typesafe_jev：typesafe(已配置) → local → llm（未配置 key 则退化为
+          local → llm，启动 dump 会告警）
+        - llm：不进链（回滚纯度）
+        """
+        order = {
+            "local_jev": ["local_jev", "typesafe_jev"],
+            "typesafe_jev": ["typesafe_jev", "local_jev"],
+        }
+        chain: list = []
+        for name in order.get(settings.manual_review_provider, []):
+            if name == "local_jev":
+                chain.append(self._local_engine())
+            elif name == "typesafe_jev":
+                p = self._typesafe_provider()
+                if p.is_configured():
+                    chain.append(p)
+        return chain
+
+    def _local_engine(self):
+        if self._local is None:
+            from app.mt5.market_data import MarketDataService
+
+            from app.services.systemone import LocalRuleEngine
+
+            self._local = LocalRuleEngine(self._market_data or MarketDataService(self.connector))
+        return self._local
+
+    def _typesafe_provider(self):
+        if self._typesafe is None:
+            from app.mt5.market_data import MarketDataService
+
+            from app.services.typesafe_jev import TypesafeJevProvider
+
+            self._typesafe = TypesafeJevProvider(
+                self._market_data or MarketDataService(self.connector))
+        return self._typesafe
+
+    def _provider_timeout_s(self, provider) -> float:
+        """per-provider 总预算：行情证据拉取 + provider 自身开销。
+        typesafe 的证据拉取与 local 同源（fetch_timeout），外加 JEV HTTP 超时。"""
+        if getattr(provider, "provider", "") == "typesafe_jev":
+            return settings.manual_review_fetch_timeout_s + settings.manual_review_typesafe_timeout_s
+        return settings.manual_review_fetch_timeout_s + 5.0
+
+    async def _note_degraded(self, audit_id: int, *, provider: str, reason: str):
+        """降级遥测：结构化日志 + 连续失败计数，跨阈值发一次聚合告警。
+        只告警不跳过审查（链继续走后续 provider / LLM 兜底，fail-closed
+        语义零改动）——没有告警的话，引擎静默故障会让每单都吃 90s LLM
+        延迟而无人感知。"""
+        self._degraded_streak += 1
+        logger.bind(event="manual_review_degraded", review_id=audit_id,
+                    provider=provider, reason=reason).warning(
+            f"ManualGate [{audit_id}] {provider} degraded → next provider: {reason}")
+        if self._degraded_streak == settings.manual_review_degraded_alert_threshold:
+            await self._log_event(
+                BotEventType.CIRCUIT_BREAKER,
+                f"[Manual] systemone providers failed {self._degraded_streak}x consecutively — "
+                f"manual review falling back to slow LLM ({reason})",
+            )
+
+    def _note_recovered(self):
+        if self._degraded_streak >= settings.manual_review_degraded_alert_threshold:
+            logger.bind(event="manual_review_recovered").info(
+                f"ManualGate systemone recovered after {self._degraded_streak} consecutive degradations")
+        self._degraded_streak = 0
+
+    async def _llm_review(self, audit_id: int, snapshot: dict) -> dict | None:
+        """原 LLM 审查路径原样保留（provider=llm 时是主路径 —— 回滚纯度）。
+        返回规范化 verdict；失败已内联拒（fail-closed）并返回 None。"""
         try:
             raw = await asyncio.wait_for(
                 self.ai_client.complete_json_async(
@@ -178,32 +311,44 @@ class ManualOrderGate:
                 timeout=LLM_REVIEW_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
+            logger.warning(f"ManualGate [{audit_id}] LLM review timed out after {LLM_REVIEW_TIMEOUT_S}s")
             await self._reject_inline(
                 audit_id, f"AI review timed out after {LLM_REVIEW_TIMEOUT_S}s — order blocked (fail-closed)",
                 kind="llm_unavailable", retryable=True,
             )
             await self._ai_error_event(audit_id, "LLM review timeout")
-            return
+            return None
         verdict_data = self._normalize_verdict(raw)
         if verdict_data is None:
+            logger.warning(
+                f"ManualGate [{audit_id}] LLM verdict missing/malformed — raw head: {str(raw)[:160]}")
             await self._reject_inline(
                 audit_id, "AI review unavailable (LLM failure or malformed output) — order blocked (fail-closed)",
                 kind="llm_unavailable", retryable=True,
             )
             await self._ai_error_event(audit_id, "LLM verdict missing/malformed")
-            return
+            return None
+        return verdict_data
 
-        verdict = verdict_data["verdict"]
+    async def _apply_verdict(self, audit_id: int, verdict_data: dict, snapshot: dict,
+                             systemone_block: dict):
+        # 合并进同一个 stored dict 一次性落库（两次独立写有丢字段竞态）
         audit = await self._load_audit(audit_id)
         if audit is None:
             return
         stored = dict(audit.review or {})
-        stored["llm"] = verdict_data
+        stored["llm"] = verdict_data  # 兼容键：前端 ReviewResultCard 与既有测试
+        if systemone_block:
+            stored["systemone"] = systemone_block
         await self._update_audit(audit_id, review=stored)
 
+        verdict = verdict_data["verdict"]
         if verdict == "REJECTED":
+            # 规则拒绝是正常拒绝（TRADE_BLOCKED，retryable=False），绝不发
+            # AI_AGENT_ERROR —— 基础设施故障才走 llm_unavailable + AI_AGENT_ERROR。
+            kind = "systemone_rejected" if systemone_block else "ai_rejected"
             reason = verdict_data.get("reasoning") or "AI review rejected the order"
-            await self._reject_inline(audit_id, reason, kind="ai_rejected",
+            await self._reject_inline(audit_id, reason, kind=kind,
                                       rule_flags=stored.get("rule_flags"), llm=verdict_data)
             return
         if verdict == "CAUTION":

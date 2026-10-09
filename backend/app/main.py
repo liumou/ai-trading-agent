@@ -299,6 +299,32 @@ async def lifespan(app: FastAPI):
 
     app.state.manual_order_gate = ManualOrderGate(connector, redis_client, ai_client)
 
+    # System One provider 生效配置一次性 dump（防 env 手误静默用默认——
+    # 阈值错了风控口径就错了，必须启动时可查；API key 只报已配置/未配置）
+    from app.config import settings as _s
+
+    _jev_status = (
+        "configured" if (_s.manual_review_typesafe_api_key or "").strip()
+        else "NOT configured (key missing → typesafe_jev skipped)"
+    )
+    logger.info(
+        f"Manual review provider={_s.manual_review_provider} "
+        f"fetch_timeout={_s.manual_review_fetch_timeout_s}s min_bars={_s.manual_review_min_bars} "
+        f"freshness_mult={_s.manual_review_freshness_mult} "
+        f"spike=({ _s.manual_review_spike_pct_warn}/{_s.manual_review_spike_pct_block}) "
+        f"risk_pct=({ _s.manual_review_risk_pct_warn}/{_s.manual_review_risk_pct_block}) "
+        f"margin_pct=({ _s.manual_review_margin_pct_warn}/{_s.manual_review_margin_pct_block}) "
+        f"size=({ _s.manual_review_size_cap_frac}/{_s.manual_review_size_med_mult}) "
+        f"loss_warn={_s.manual_review_loss_warn_pct} rr_min={_s.manual_review_rr_min} "
+        f"sl_max_atr={_s.manual_review_sl_max_atr} familiar_days={_s.manual_review_familiar_days} "
+        f"sent_conflict={_s.manual_review_sent_conflict} mtf_adx_reject={_s.manual_review_mtf_adx_reject} "
+        f"degraded_alert={_s.manual_review_degraded_alert_threshold} "
+        f"| JEV({_jev_status}): base={_s.manual_review_typesafe_base_url} "
+        f"model={_s.manual_review_typesafe_model} timeout={_s.manual_review_typesafe_timeout_s}s "
+        f"min_confidence={_s.manual_review_min_confidence} "
+        f"conf_floor={_s.manual_review_typesafe_conf_floor}"
+    )
+
     # Initialize sentiment analyzer (shared)
     sentiment_analyzer = NewsSentimentAnalyzer(ai_client, db_session, redis_client)
     manager.set_sentiment_analyzer(sentiment_analyzer)
