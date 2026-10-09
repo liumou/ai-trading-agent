@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, History } from "lucide-react";
 import {
   cancelPendingOrder,
   closePositionGated,
@@ -473,6 +473,12 @@ export default function TradingPage() {
         >
           <RefreshCw className="size-4" />{t("refresh")}
         </button>
+        <a
+          href="/manual-reviews"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+        >
+          <History className="size-4" />{t("reviewHistory")}
+        </a>
       </PageHeader>
 
       <PageInstructions items={[t("firewallNote")]} />

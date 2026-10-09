@@ -36,7 +36,10 @@ async def client():
     gate.submit_order = AsyncMock(return_value={"status": "PENDING_REVIEW", "review_id": 1, "rule_flags": []})
     gate.confirm_and_execute = AsyncMock(return_value={"status": "EXECUTED", "review_id": 1})
     gate.get_review = AsyncMock(return_value={"id": 1, "status": "EXECUTED"})
-    gate.list_reviews = AsyncMock(return_value=[{"id": 1}])
+    gate.list_reviews = AsyncMock(return_value={
+        "reviews": [{"id": 1}], "total": 1,
+        "stats": {"approved": 1, "caution": 0, "rejected": 0},
+    })
     gate.list_pending_orders = AsyncMock(return_value=[{
         "ticket": 555, "symbol": "GOLD_", "type": "BUY_LIMIT", "lot": 0.1,
         "volume_initial": 0.1, "price_open": 1980.0, "sl": 1970.0, "tp": 2020.0,
@@ -137,6 +140,34 @@ async def test_list_reviews_scoped_to_account(client):
     assert resp.status_code == 200
     assert gate.list_review.await_count if False else True
     assert gate.list_reviews.await_args.kwargs["account_login"] == "10086"
+
+
+@pytest.mark.asyncio
+async def test_list_reviews_passes_filters(client):
+    c, gate = client
+    resp = await c.get(
+        "/api/trading/reviews?days=30&status=EXECUTED&symbol=GOLD_&verdict=APPROVED&offset=10&limit=5"
+    )
+    assert resp.status_code == 200
+    kwargs = gate.list_reviews.await_args.kwargs
+    assert kwargs["days"] == 30
+    assert kwargs["status"] == "EXECUTED"
+    assert kwargs["symbol"] == "GOLD"  # 券商别名 GOLD_ 归一化为规范名
+    assert kwargs["verdict"] == "APPROVED"
+    assert kwargs["offset"] == 10
+    assert kwargs["limit"] == 5
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["stats"] == {"approved": 1, "caution": 0, "rejected": 0}
+    assert body["reviews"][0]["id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_reviews_invalid_verdict_422(client):
+    c, gate = client
+    resp = await c.get("/api/trading/reviews?verdict=MAYBE")
+    assert resp.status_code == 422
+    gate.list_reviews.assert_not_awaited()
 
 
 # ─── 挂单列表 / 撤单 / 改挂单 ─────────────────────────────────────────────

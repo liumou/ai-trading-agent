@@ -11,7 +11,7 @@ Endpoints:
 - POST   /api/trading/positions/{ticket}/close gated close (shared with dashboard route)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -89,10 +89,34 @@ async def confirm_order(review_id: int, request: Request):
     return result
 
 
+_REVIEW_VERDICTS = {"APPROVED", "CAUTION", "REJECTED"}
+
+
 @router.get("/reviews")
-async def list_reviews(request: Request, limit: int = 50):
+async def list_reviews(
+    request: Request,
+    days: int = Query(7, ge=1, le=365),
+    status: str | None = None,
+    symbol: str | None = None,
+    verdict: str | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
     gate = _gate(request)
-    return {"reviews": await gate.list_reviews(account_login=_account_login(request), limit=min(limit, 200))}
+    if verdict:
+        v = verdict.strip().upper()
+        if v not in _REVIEW_VERDICTS:
+            raise HTTPException(status_code=422, detail="verdict must be one of APPROVED/CAUTION/REJECTED")
+        verdict = v
+    return await gate.list_reviews(
+        account_login=_account_login(request),
+        days=days,
+        status=status,
+        symbol=get_canonical_symbol(symbol) if symbol else None,
+        verdict=verdict,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/reviews/{review_id}")

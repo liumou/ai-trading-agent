@@ -125,10 +125,47 @@ export interface ManualReview {
   review?: {
     rule_flags?: { flag: string; severity: string; detail?: string }[];
     llm?: { verdict: string; confidence: number; reasoning: string; risk_flags?: string[]; emotional_indicators?: string[] };
+    systemone?: {
+      provider?: string; // local_jev / typesafe_jev
+      converge?: string; // APPROVED / CAUTION / REJECTED
+      latency_ms?: number;
+      degraded?: boolean;
+      ts?: string;
+      checks?: { name: string; choice: string; confidence: number; evidence?: string }[];
+    };
+    reject_kind?: string;
+    confirm_expires_at?: string;
     [k: string]: unknown;
   };
+  // 便捷字段（后端 _audit_to_dict 纯新增键，历史列表直接展示）
+  verdict?: string | null; // APPROVED / CAUTION / REJECTED / null（在途）
+  provider?: string | null; // local_jev / typesafe_jev / llm / null
+  confidence?: number | null;
+  rule_flags?: { flag: string; severity: string; detail?: string }[];
+  symbol?: string;
+  order_type?: string;
+  requested_lot?: number;
+  requested_sl?: number;
+  requested_tp?: number;
+  order_kind?: string;
+  order_price?: number | null;
+  fill_price?: number | null;
+  account_login?: string;
+  created_at?: string | null;
   ticket?: number;
   [k: string]: unknown;
+}
+
+export interface ManualReviewsStats {
+  approved: number;
+  caution: number;
+  rejected: number;
+}
+
+export interface ManualReviewsResponse {
+  reviews: ManualReview[];
+  total: number;
+  stats: ManualReviewsStats;
 }
 
 export const submitManualOrder = (data: ManualOrderRequest) =>
@@ -137,8 +174,14 @@ export const confirmManualOrder = (reviewId: number) =>
   api.post(`/api/trading/orders/${reviewId}/confirm`);
 export const getManualReview = (reviewId: number) =>
   api.get<ManualReview>(`/api/trading/reviews/${reviewId}`);
-export const getManualReviews = (limit = 50) =>
-  api.get(`/api/trading/reviews`, { params: { limit } });
+export const getManualReviews = (params?: {
+  days?: number;
+  status?: string;
+  symbol?: string;
+  verdict?: string;
+  offset?: number;
+  limit?: number;
+}) => api.get<ManualReviewsResponse>("/api/trading/reviews", { params });
 
 export interface PendingOrder {
   ticket: number;

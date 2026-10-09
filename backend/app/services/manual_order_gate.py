@@ -48,6 +48,39 @@ MARTINGALE_LOT_MULT = 2.0
 
 _VERDICTS = {"APPROVED", "CAUTION", "REJECTED"}
 
+# verdict 不存在 review JSON 时的 status 兜底映射（历史行兼容）。
+_STATUS_VERDICT_MAP = {
+    "REJECTED": "REJECTED",
+    "PENDING_CONFIRM": "CAUTION",
+    "EXECUTED": "APPROVED",
+    "FILLED": "APPROVED",
+}
+
+
+def _verdict_of(a: OrderAudit) -> str | None:
+    """推导一条审查记录的审查结论（APPROVED/CAUTION/REJECTED）。
+
+    优先级：review.llm.verdict（LLM 与 JEV 路径同形）→ review.systemone.converge
+    → 按 status 兜底映射。无审查数据（如 PENDING_REVIEW 在途）返回 None。
+    """
+    review = a.review or {}
+    llm = review.get("llm")
+    if isinstance(llm, dict):
+        v = str(llm.get("verdict", "")).strip().upper()
+        if v in _VERDICTS:
+            return v
+    systemone = review.get("systemone")
+    if isinstance(systemone, dict):
+        # converge 是收敛器完整输出 dict（含 verdict 键）；早期形状可能是字符串。
+        converge = systemone.get("converge")
+        if isinstance(converge, dict):
+            v = str(converge.get("verdict", "")).strip().upper()
+        else:
+            v = str(converge or "").strip().upper()
+        if v in _VERDICTS:
+            return v
+    return _STATUS_VERDICT_MAP.get(a.status)
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
@@ -644,15 +677,52 @@ class ManualOrderGate:
             return None
         return _audit_to_dict(audit)
 
-    async def list_reviews(self, account_login: str | None = None, limit: int = 50) -> list[dict]:
+    async def list_reviews(
+        self,
+        account_login: str | None = None,
+        limit: int = 50,
+        days: int = 7,
+        status: str | None = None,
+        symbol: str | None = None,
+        verdict: str | None = None,
+        offset: int = 0,
+    ) -> dict:
+        """历史审查记录查询（manual 通道，按当前账号）。
+
+        SQL 过滤：source / account_login / created_at≥cutoff / status / symbol；
+        verdict 存在 review JSON 内，取窗口行后在内存推导过滤（单用户量小，
+        先例 history.py 同款内存分页）。返回
+        {"reviews": [...], "total": N, "stats": {approved, caution, rejected}}，
+        total/stats 基于过滤后未分页集合。
+        """
         from app.db.session import async_session
 
+        cutoff = datetime.utcnow() - timedelta(days=days)
         async with async_session() as session:
-            stmt = select(OrderAudit).where(OrderAudit.source == "manual").order_by(OrderAudit.id.desc()).limit(limit)
+            stmt = (
+                select(OrderAudit)
+                .where(OrderAudit.source == "manual")
+                .where(OrderAudit.created_at >= cutoff)
+                .order_by(OrderAudit.id.desc())
+            )
             if account_login:
                 stmt = stmt.where(OrderAudit.account_login == account_login)
+            if status:
+                stmt = stmt.where(OrderAudit.status == status)
+            if symbol:
+                stmt = stmt.where(OrderAudit.symbol == symbol)
             rows = (await session.execute(stmt)).scalars().all()
-            return [_audit_to_dict(r) for r in rows]
+
+        if verdict:
+            rows = [r for r in rows if _verdict_of(r) == verdict]
+        total = len(rows)
+        stats = {
+            "approved": sum(1 for r in rows if _verdict_of(r) == "APPROVED"),
+            "caution": sum(1 for r in rows if _verdict_of(r) == "CAUTION"),
+            "rejected": sum(1 for r in rows if _verdict_of(r) == "REJECTED"),
+        }
+        page = rows[offset : offset + limit]
+        return {"reviews": [_audit_to_dict(r) for r in page], "total": total, "stats": stats}
 
     async def list_pending_orders(self) -> list[dict]:
         res = await self.connector.get_orders()
@@ -860,6 +930,8 @@ class ManualOrderGate:
 
 def _audit_to_dict(a: OrderAudit) -> dict:
     review = dict(a.review or {})
+    systemone = review.get("systemone") if isinstance(review.get("systemone"), dict) else {}
+    llm = review.get("llm") if isinstance(review.get("llm"), dict) else {}
     return {
         "id": a.id, "symbol": a.symbol, "order_type": a.order_type,
         "requested_lot": a.requested_lot, "requested_sl": a.requested_sl,
@@ -872,5 +944,11 @@ def _audit_to_dict(a: OrderAudit) -> dict:
         "reason": a.error_message,
         "kind": review.get("reject_kind"),
         "retryable": review.get("retryable"),
+        # 便捷字段（纯新增键，向后兼容）：verdict/provider/confidence/rule_flags
+        # 供历史审查列表直接展示，避免前端重复解析 review JSON。
+        "verdict": _verdict_of(a),
+        "provider": systemone.get("provider") or ("llm" if llm else None),
+        "confidence": llm.get("confidence"),
+        "rule_flags": review.get("rule_flags"),
         "review": a.review, "created_at": a.created_at.isoformat() if a.created_at else None,
     }

@@ -25,6 +25,7 @@ import {
   LogOut,
   Activity,
   Shield,
+  ShieldCheck,
   Zap,
   Database,
   CandlestickChart,
@@ -57,6 +58,7 @@ const navGroups: NavGroup[] = [
       { href: "/chat", labelKey: "agentChat", icon: MessagesSquare },
       { href: "/backtest", labelKey: "backtest", icon: BarChart3 },
       { href: "/history", labelKey: "history", icon: History },
+      { href: "/manual-reviews", labelKey: "manualReviews", icon: ShieldCheck },
     ],
   },
   {
