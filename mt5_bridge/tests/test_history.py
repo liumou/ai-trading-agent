@@ -18,14 +18,16 @@ AUTH = {"X-Bridge-Key": "test-key"}
 def _order_ns(**overrides):
     """已成交订单（history_orders_get 返回项）。
 
-    真实 MT5 MqlTradeOrder 字段：没有 position_id！SL/TP/开仓价在此对象上，
-    关联持仓靠 deal.order → order.ticket。
+    真实 MT5 MqlTradeOrder 字段：没有 position_id！SL/TP 在此对象上，
+    关联持仓靠 deal.order → order.ticket。**市价单的 price_open 是 0.0**（MT5
+    不设价、服务器成交），真实开仓价在开仓成交（entry deal）的 price ——
+    所以这里 price_open 默认 0，模拟市价单。
     """
     base = dict(
         ticket=111,                       # 订单 ticket（deal.order 关联它）
         symbol="GOLD", type=0,            # ORDER_TYPE_BUY
         volume_initial=0.1, volume_current=0.1,
-        price_open=2000.0, price_current=2010.0,
+        price_open=0.0, price_current=2010.0,   # 市价单 price_open=0（真实 MT5 语义）
         sl=1990.0, tp=2030.0,
         time_setup=1700000000, time_done=1700000100,
         comment="", magic=234000,
@@ -84,7 +86,7 @@ def test_history_full_fields(client, mt5_mock):
     r = rows[0]
     assert r["ticket"] == 5001                  # position_id（来自成交）
     assert r["type"] == "BUY"                   # 开仓成交 type=0
-    assert r["open_price"] == 2000.0            # 来自订单 price_open
+    assert r["open_price"] == 2000.0            # 来自开仓成交 price（市价单订单 price_open=0）
     assert r["close_price"] == 2020.0           # 来自平仓成交
     assert r["sl"] == 1990.0                    # 来自订单（deal.order→order.ticket）
     assert r["tp"] == 2030.0
@@ -110,15 +112,17 @@ def test_history_direction_from_deal_type(client, mt5_mock):
     assert rows[0]["type"] == "SELL"
 
 
-def test_history_open_time_uses_time_done(client, mt5_mock):
-    """开仓时间优先 time_done（成交时间），回落 time_setup（挂单创建时间）。"""
+def test_history_open_time_from_entry_deal(client, mt5_mock):
+    """开仓时间来自开仓成交 time（1700000100），不读订单的 time_done/time_setup
+    —— 订单时间字段与成交时间可能不同（挂单触发/延迟成交），成交时间才是真实开仓时刻。"""
     mt5_mock.history_orders_get.return_value = [
         _order_ns(time_done=1700000500, time_setup=1700000000)
     ]
     mt5_mock.history_deals_get.return_value = [_entry_deal_ns(), _exit_deal_ns()]
 
     rows = client.get("/history", headers=AUTH).json()["data"]
-    assert rows[0]["open_time"].startswith("2023-11-14T22:21:40")  # 1700000500 UTC
+    assert rows[0]["open_time"].startswith("2023-11-14T22:15:00")  # 1700000100 = 开仓成交 time
+    assert rows[0]["open_time"] != rows[0]["close_time"]            # 与平仓时间分离
 
 
 def test_history_open_price_fallback_without_order(client, mt5_mock):

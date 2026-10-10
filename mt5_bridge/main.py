@@ -937,18 +937,18 @@ async def get_history(days: int = 1, symbol: str | None = None):
         if not _symbol_matches(entry_deal["symbol"], symbol):
             continue  # 用开仓成交的 symbol 过滤（后端消费同一来源）
 
-        # SL/TP / 开仓价：经创建持仓的订单（entry deal.order）匹配。
+        # SL/TP 经创建持仓的订单（entry deal.order）匹配。开仓价/时间一律用
+        # entry deal：市价单的 order.price_open 是 0.0（MT5 不设价，服务器成交），
+        # 只有成交价（entry deal.price / time）才是真实开仓价。
         order = order_by_ticket.get(entry_deal["order"])
         if order is not None:
             sl = float(order.sl)
             tp = float(order.tp)
-            open_price = float(order.price_open)
-            open_time = _iso_utc(order.time_done or order.time_setup)
         else:
             sl = 0.0
             tp = 0.0
-            open_price = entry_deal["price"]
-            open_time = _iso_utc(entry_deal["time"])
+        open_price = entry_deal["price"]
+        open_time = _iso_utc(entry_deal["time"])
 
         # 方向由开仓成交类型判定：DEAL_TYPE 0=BUY 1=SELL
         direction = "SELL" if entry_deal["type"] % 2 == 1 else "BUY"
