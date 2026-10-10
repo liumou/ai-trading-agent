@@ -213,7 +213,7 @@ trade_reviews 表 (completed: classification/review/review_history/flagged/provi
 
 ## 九、测试
 
-- `test_trade_reviews.py`（35 用例）：输入组装（bot/manual/降级）、白名单校验、服务端四分类推导（self-report 不一致 flagged、低置信 flagged、**confidence 越界 fail-closed**、LLM None/畸形/超时/异常 fail-closed）、Store 状态机（IDOR/自然键幂等/claim 二次 None/lease recover/`previous` 保留 review_history/`reuse_or_create` force 复用/summary 计数）、**`_fetch_manual_deal` 三态**（found/not_found/bridge_down）、**`_run_one` 手动单全链路端到端**（bridge 回查 → 组装 → LLM → completed + skilled_win）、路由（幂等/force 复用/配额 429）。
+- `test_trade_reviews.py`（37 用例）：输入组装（bot/manual/降级）、白名单校验、服务端四分类推导（self-report 不一致 flagged、低置信 flagged、**confidence 越界 fail-closed**、LLM None/畸形/超时/异常 fail-closed）、Store 状态机（IDOR/自然键幂等/claim 二次 None/lease recover/`previous` 保留 review_history/`reuse_or_create` force 复用/summary 计数）、**`_fetch_manual_deal` 三态**（found/not_found/bridge_down）、**`_run_one` 手动单全链路端到端**（bridge 回查 → 组装 → LLM → completed + skilled_win）、路由（幂等/force 复用/配额 429/并发竞态幂等兜底）、**输出侧清洗进链**（白名单外剥离 + secret 打码 + 超长截断）。
 - `test_api_history.py`：account_login 透传（bot + manual 三处）。
 - 前端 tsc 0 错误 + `npm run build` exit 0。
 
@@ -228,7 +228,23 @@ trade_reviews 表 (completed: classification/review/review_history/flagged/provi
 | MEDIUM | confidence 越界仅 flagged → fail-closed |
 | MEDIUM | worker 运行期 lease 不回收 → 主循环周期 recover |
 
-> **回归基线**：1211 通过；10 失败均为既有环境配置问题（8× multi_agent 因 `.env` 配 `MODEL_ORCHESTRATOR=deepseek-v4-flash`、2× feishu 因 `.env` 配 webhook），与本功能无关（feishu env 清空后 2/2 通过；ml_barrier 完整重跑 20/20 稳定）。
+### 第二次 code-review 修复（2026-10-11，superpowers 独立复查，Verdict With fixes）
+
+| Severity | 问题 | 修复 |
+|----------|------|------|
+| HIGH | 输出侧清洗未真正进链：`trade_reviewer` 本地 `_bounded_str` 只做 `s[:limit]` 截断，不含 `sanitize._redact_str` 的打码/单行化/去注入分隔符——白名单内自由文本（summary/lessons）里的明文 `sk-` 密钥原样持久化 | 本地 `_bounded_str` 改用 `_redact_str(str(value))`（单行化 + Bearer/sk-/secret 打码 + 去分隔符）再截断；删冗余 `@staticmethod _bounded_str` 跳板 |
+| MEDIUM | POST 触发端手动单分支无账号归属校验（客户端 `account_login` 直接可用，多账号用户可为他账号触发复盘消耗 LLM 配额） | 手动单分支 `account_login` 改走 `_query_account_login(request, ...)` 服务端推导（与 GET 端一致） |
+| MEDIUM | `reuse_or_create` 并发竞态（双请求同时 SELECT 无人 → 双双 INSERT 自然键冲突）无 IntegrityError 兜底，文档承诺 409 不实 | `trigger_review` 捕获 IntegrityError → 幂等查已有返回（不 500） |
+| Minor | 冗余 `@staticmethod _bounded_str` 跳板 | 删除 |
+
+**误报排查**（审查者漏读，验证后不修）：
+- `review.loss_causes` 入库空值：`run()` 返回**顶层** causes，`finish()` 读顶层——链路正确，根因标签正常落库
+- `/history` `pendingReviews` key miss：`history/page.tsx:59` 用 `useTranslations("tradeReview")`，key 就在该 namespace——正常
+- migration ruff 格式（UP035/I001）：全部 20 个迁移都 `from typing import Sequence, Union`，alembic 目录被 pyproject exclude——改一个会破坏仓库一致性，不修
+
+**新增测试**（35 → 37）：`test_run_output_sanitization_in_chain`（白名单外标签剥离 + secret 打码 + 超长截断）、`test_trigger_integrity_race_idempotent`（并发竞态幂等兜底）。
+
+> **回归基线**：1211 通过；10 失败均为既有环境配置问题（8× multi_agent 因 `.env` 配 `MODEL_ORCHESTRATOR=deepseek-v4-flash`、2× feishu 因 `.env` 配 webhook），与本功能无关（feishu env 清空后 2/2 通过；ml_barrier 完整重跑 20/20 稳定）。第二次修复后 44 相关测试全过 + ruff 干净。
 
 ---
 

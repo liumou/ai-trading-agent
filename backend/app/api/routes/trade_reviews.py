@@ -111,7 +111,9 @@ async def create_trade_review(
         ticket, account_login = trade["ticket"], trade["account_login"]
         symbol, open_time = trade["symbol"], trade["open_time"]
     else:
-        # 手动单：ticket+account_login 定位（归属过滤由 store 查询强制）。
+        # 手动单：归属由服务端 manager.current_account_login 推导（与 GET 端
+        # _query_account_login 一致，防 IDOR 为他账号触发复盘 / 消耗 LLM 配额）。
+        account_login = _query_account_login(request, account_login or "0")
         symbol = ""
         open_time = datetime.utcnow()
 

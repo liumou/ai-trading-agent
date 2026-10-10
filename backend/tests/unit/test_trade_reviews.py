@@ -173,6 +173,33 @@ class TestWhitelist:
         v, oob = _confidence_or_fail(-0.5)
         assert v is None and oob is True
 
+    async def test_run_output_sanitization_in_chain(self, reviewer):
+        """输出侧清洗真实进链（评审建议）：
+        即使 LLM 返回白名单外/恶意/超长内容，run() 的最终 result
+        —— 白名单外标签被丢弃、超长 summary 被截断、secret 键值被打码。"""
+        long_summary = "x" * 5000  # 远超 REVIEW_SUMMARY_LIMIT
+        reviewer.ai.complete_json_async = AsyncMock(return_value={
+            "reasoning_correct": True,
+            "confidence": 0.9,
+            "loss_causes": ["逆势开仓", "恶意注入标签", "<script>alert(1)</script>"],
+            "lessons": ["api_key = sk-abc123def456ghijkl", "正经教训"],
+            "summary": long_summary,
+        })
+        inp = await reviewer.build_input(trade=_bot_trade(profit=-100.0))
+        result = await reviewer.run(inp)
+
+        assert result.get("error") is None
+        # 白名单外标签被过滤，只留白名单内
+        assert result["loss_causes"] == ["逆势开仓"]
+        # 恶意标签即使被 mock 返回，白名单校验丢弃（不在白名单）
+        assert not any("script" in c for c in result["loss_causes"])
+        # 教训里的 secret 键格式被打码（sk- 前缀），不再出现明文
+        assert "sk-abc123def456ghijkl" not in " ".join(result["lessons"])
+        # 超长 summary 被截断到 REVIEW_SUMMARY_LIMIT 内
+        from app.constants import REVIEW_SUMMARY_LIMIT
+
+        assert len(result["summary"]) <= REVIEW_SUMMARY_LIMIT
+
 
 # ─── 3. 服务端四分类推导 ────────────────────────────────────────────────────
 
@@ -572,6 +599,35 @@ class TestRoutes:
             account_login="0", ticket=7202, symbol="GOLD",
         )
         assert r1["id"] == r2["id"]  # 幂等复用
+
+    async def test_trigger_integrity_race_idempotent(self, db_engine, redis_client):
+        """并发竞态幂等兜底（评审 Minor-1）：两个请求同时 SELECT 无人 → 双双
+        INSERT，自然键 partial unique index 冲突抛 IntegrityError。trigger_review
+        应捕获并幂等返回已有记录，而非 500。"""
+        from sqlalchemy.exc import IntegrityError
+
+        store = TradeReviewStore(factory=async_session_like(db_engine))
+        # 先插入一条 pending 记录（并发窗口中的「另一请求已写入」侧）
+        async with async_session_like(db_engine)() as db:
+            first = await trigger_review(
+                store=store, username="owner", redis_client=redis_client,
+                account_login="0", ticket=7301, symbol="GOLD", db=db, trade_id=None,
+            )
+        assert first["status"] == "pending"
+
+        # 模拟竞态：reuse_or_create 抛 IntegrityError（另一侧刚 INSERT 完）。
+        async def _boom(*args, **kwargs):
+            raise IntegrityError("stmt", {}, Exception("duplicate key"))
+
+        store.reuse_or_create = AsyncMock(side_effect=_boom)
+        async with async_session_like(db_engine)() as db:
+            result = await trigger_review(
+                store=store, username="owner", redis_client=redis_client,
+                account_login="0", ticket=7301, symbol="GOLD", db=db, trade_id=None,
+            )
+        # 幂等兜底：返回已有记录而非异常
+        assert result["ticket"] == 7301
+        assert result["status"] == "pending"
 
     async def test_trigger_force_creates_new(self, db_engine, redis_client):
         """force 重审：UPDATE 复用同 id（不产生第二行，PG partial unique index

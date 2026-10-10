@@ -22,6 +22,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.trade_reviewer import TradeReviewer
@@ -492,10 +493,21 @@ async def trigger_review(
     # force 重审 / failed 重试：UPDATE 复用旧行（PG partial unique index 下
     # 手动单同 (ticket, account_login) 不可 INSERT 第二行），旧 review 保留
     # 在行上，worker finish 时并入 review_history。
-    row, _previous = await store.reuse_or_create(
-        ticket=ticket, account_login=account_login, symbol=symbol,
-        trade_id=trade_id, open_time=open_time,
-    )
+    try:
+        row, _previous = await store.reuse_or_create(
+            ticket=ticket, account_login=account_login, symbol=symbol,
+            trade_id=trade_id, open_time=open_time,
+        )
+    except IntegrityError:
+        # 并发窗口：两个请求同时走到 SELECT 无人 → 双双 INSERT，自然键 partial
+        # unique index 冲突（手动单 trade_id NULL）。幂等兜底：查已有非失败记录
+        # 返回，不 500（文档承诺 409/幂等）。reuse_or_create 的 db.begin() context
+        # 已在异常路径自动回滚事务，无需额外 rollback。
+        logger.warning(f"trade review natural key race on ticket={ticket} -> reuse existing")
+        existing = await store.find_by_natural_key(ticket, account_login)
+        if existing is not None:
+            return _public_review(existing)
+        raise
     if db is not None:
         await log_audit(
             db, action="trade_review.trigger", actor=username,

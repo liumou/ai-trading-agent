@@ -25,7 +25,7 @@ import pandas as pd
 from loguru import logger
 
 from app.ai.client import AIClient
-from app.ai.sanitize import clean
+from app.ai.sanitize import _redact_str, clean
 from app.ai.trade_accountability import TradeAccountabilityTracker
 from app.config import settings
 from app.constants import (
@@ -441,11 +441,6 @@ class TradeReviewer:
             "market_context_degraded": (inp.market_context_degraded if inp else False),
         }
 
-    @staticmethod
-    def _bounded_str(value, limit: int) -> str:
-        return _bounded_str(value, limit)
-
-
 # ─── 输出侧校验工具（模块级，便于单测） ────────────────────────────────
 
 
@@ -523,10 +518,15 @@ def _confidence_or_fail(value) -> tuple[float | None, bool]:
 
 
 def _bounded_str(value, limit: int) -> str:
-    """截断单字符串到指定上限（UTF-8 安全）。"""
+    """截断 + 清洗单字符串到上限（UTF-8 安全 + secret 打码 + 注入分隔符清理）。
+
+    输出侧统一走 sanitize._redact_str：单行化、去指令分隔符、Bearer/sk-/secret 打码，
+    再按 limit 截断。评审发现本地旧实现只做 s[:limit]，白名单外内容可把明文 secret
+    原样持久化进 review（Important-1）。
+    """
     if value is None:
         return ""
-    s = str(value).strip()
+    s = _redact_str(str(value))
     return s[:limit]
 
 
