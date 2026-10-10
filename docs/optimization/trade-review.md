@@ -244,6 +244,15 @@ trade_reviews 表 (completed: classification/review/review_history/flagged/provi
 
 **新增测试**（35 → 37）：`test_run_output_sanitization_in_chain`（白名单外标签剥离 + secret 打码 + 超长截断）、`test_trigger_integrity_race_idempotent`（并发竞态幂等兜底）。
 
+### 实盘反馈修复（2026-10-11）
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 复盘后 `lessons`/`improvement_actions`/`summary` 字段为空 | **system prompt 未要求 LLM 输出这些字段**——规则只列了 `reasoning_correct`/根因/`confidence`，规则 5「只输出 JSON」未定义 JSON 结构 → LLM 大概率不生成 → `raw.get(...)` 为 None → `_validate_strings(None)`=[] / `_bounded_str(None)`="" | prompt 加规则 5/6：明确 JSON 必须包含且只包含 `reasoning_correct`/`loss_causes` 或 `win_causes`/`lessons`/`improvement_actions`/`summary`/`confidence`，并要求 lessons/actions/summary 用简体中文且必须存在 |
+| 复盘列「对·赢」「错·亏」码值不直观 | 四分类缩写徽章无解释 | Badge 加 `title` tooltip 显示完整分类文案（「做对了·盈利」等） |
+
+> 已有复盘记录不会自动补全——重新触发（force 重审）后按新 prompt 重新生成。
+
 > **回归基线**：1211 通过；10 失败均为既有环境配置问题（8× multi_agent 因 `.env` 配 `MODEL_ORCHESTRATOR=deepseek-v4-flash`、2× feishu 因 `.env` 配 webhook），与本功能无关（feishu env 清空后 2/2 通过；ml_barrier 完整重跑 20/20 稳定）。第二次修复后 44 相关测试全过 + ruff 干净。
 
 ---

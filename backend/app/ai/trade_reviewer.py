@@ -305,7 +305,17 @@ class TradeReviewer:
             "3. 亏损单的根因从 `loss_causes` 里选（最多 3 个），盈利单从 `win_causes`"
             "里选（最多 3 个）；都不匹配时给最接近的，绝不创造新标签。\n"
             "4. `confidence` 输出 0 到 1 之间的数字（0.5 以下表示不确定）。\n"
-            "5. 只输出 JSON，不要输出任何其他文字。\n"
+            "5. 只输出一个 JSON 对象，不要输出任何其他文字。JSON 必须包含且只包含：\n"
+            "   {\n"
+            "     \"reasoning_correct\": true,\n"
+            "     \"loss_causes\": [\"标签1\", \"标签2\"],  // 盈利单用 win_causes\n"
+            "     \"lessons\": [\"经验教训1\", \"经验教训2\"],\n"
+            "     \"improvement_actions\": [\"改进建议1\"],\n"
+            "     \"summary\": \"一两句话总结这笔交易\",\n"
+            "     \"confidence\": 0.8\n"
+            "   }\n"
+            "6. `lessons`、`improvement_actions`、`summary` 必须用简体中文，且必须存在"
+            "（哪怕是一句话），不能省略或留空。\n"
         )
         data: dict[str, Any] = {
             "trade": {

@@ -65,9 +65,10 @@ function ReviewCell({
   }
   if (completed && review?.classification) {
     const shortKey = `classShort${review.classification.charAt(0).toUpperCase()}${review.classification.slice(1)}`;
+    const fullKey = `class${review.classification.charAt(0).toUpperCase()}${review.classification.slice(1)}`;
     return (
       <div className="flex items-center justify-center gap-1.5">
-        <Badge className={cn("border cursor-pointer hover:opacity-80", REVIEW_CLASS_COLORS[review.classification] ?? "border-border text-muted-foreground")} onClick={() => onOpen(trade)}>
+        <Badge title={t(fullKey)} className={cn("border cursor-pointer hover:opacity-80", REVIEW_CLASS_COLORS[review.classification] ?? "border-border text-muted-foreground")} onClick={() => onOpen(trade)}>
           {t(shortKey)}
         </Badge>
       </div>
