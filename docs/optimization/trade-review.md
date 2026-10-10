@@ -250,6 +250,7 @@ trade_reviews 表 (completed: classification/review/review_history/flagged/provi
 |------|------|------|
 | 复盘后 `lessons`/`improvement_actions`/`summary` 字段为空 | **system prompt 未要求 LLM 输出这些字段**——规则只列了 `reasoning_correct`/根因/`confidence`，规则 5「只输出 JSON」未定义 JSON 结构 → LLM 大概率不生成 → `raw.get(...)` 为 None → `_validate_strings(None)`=[] / `_bounded_str(None)`="" | prompt 加规则 5/6：明确 JSON 必须包含且只包含 `reasoning_correct`/`loss_causes` 或 `win_causes`/`lessons`/`improvement_actions`/`summary`/`confidence`，并要求 lessons/actions/summary 用简体中文且必须存在 |
 | 复盘列「对·赢」「错·亏」码值不直观 | 四分类缩写徽章无解释 | Badge 加 `title` tooltip 显示完整分类文案（「做对了·盈利」等） |
+| 复盘列显示原始 key（`tradeReview.classShortSkilled_win`） | 分类值 `skilled_win` 是 snake_case，key 拼接 `首字母大写+原样` 生成 `classShortSkilled_win`，翻译文件 key 是驼峰 `classShortSkilledWin` → next-intl 找不到 key 渲染原始字符串 | 新增 `classKeyPascal()`（snake_case → PascalCase）统一转换，history 页与弹窗徽章共用 |
 
 > 已有复盘记录不会自动补全——重新触发（force 重审）后按新 prompt 重新生成。
 

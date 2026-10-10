@@ -24,7 +24,7 @@ import {
 } from "@/lib/api";
 import { showSuccess, showError } from "@/lib/toast";
 import { toDate } from "@/lib/format";
-import { TradeReviewDialog, REVIEW_CLASS_COLORS } from "@/components/trading/TradeReviewDialog";
+import { TradeReviewDialog, REVIEW_CLASS_COLORS, classKeyPascal } from "@/components/trading/TradeReviewDialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -64,8 +64,9 @@ function ReviewCell({
     return <Loader2 className="mx-auto size-3.5 animate-spin text-muted-foreground" />;
   }
   if (completed && review?.classification) {
-    const shortKey = `classShort${review.classification.charAt(0).toUpperCase()}${review.classification.slice(1)}`;
-    const fullKey = `class${review.classification.charAt(0).toUpperCase()}${review.classification.slice(1)}`;
+    const pascal = classKeyPascal(review.classification);
+    const shortKey = `classShort${pascal}`;
+    const fullKey = `class${pascal}`;
     return (
       <div className="flex items-center justify-center gap-1.5">
         <Badge title={t(fullKey)} className={cn("border cursor-pointer hover:opacity-80", REVIEW_CLASS_COLORS[review.classification] ?? "border-border text-muted-foreground")} onClick={() => onOpen(trade)}>

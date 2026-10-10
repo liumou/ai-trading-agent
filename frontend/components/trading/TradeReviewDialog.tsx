@@ -38,10 +38,24 @@ function classificationDescKey(cls: string): string {
   return CLASS_DESC_KEYS[cls as ClassKey] ?? "classSkilledWinDesc";
 }
 
+/** snake_case 分类值 → PascalCase（skilled_win → SkilledWin），用于拼接翻译 key。
+ *
+ * 后端 classification 是 snake_case（如 skilled_win），翻译文件 key 是驼峰
+ * （classShortSkilledWin）。直接 `首字母大写 + 原样` 会生成 classShortSkilled_win
+ * 找不到 key → next-intl 渲染原始 key 字符串（历史页复盘列曾显示
+ * `tradeReview.classShortSkilled_win`）。
+ */
+export function classKeyPascal(classification: string): string {
+  return classification
+    .split("_")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("");
+}
+
 function ClassificationBadge({ classification, flagged }: { classification: string | null; flagged?: boolean }) {
   const t = useTranslations("tradeReview");
   if (!classification) return null;
-  const key = `class${classification.charAt(0).toUpperCase()}${classification.slice(1)}` as const;
+  const key = `class${classKeyPascal(classification)}` as const;
   return (
     <Badge className={cn("border", REVIEW_CLASS_COLORS[classification] ?? "border-border text-muted-foreground")}>
       {t(key)}
