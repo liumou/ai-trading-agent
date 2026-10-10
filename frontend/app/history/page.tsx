@@ -10,7 +10,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Download, BarChart3, TrendingUp, DollarSign, Target, History, Archive } from "lucide-react";
+import {
+  Download, BarChart3, TrendingUp, DollarSign, Target, History, Archive,
+  ChevronLeft, ChevronRight,
+} from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
 import { StatCard } from "@/components/ui/stat-card";
@@ -46,6 +49,14 @@ export default function HistoryPage() {
   const [symbols, setSymbols] = useState<{symbol: string; display_name: string}[]>([]);
   const [loading, setLoading] = useState(true);
   const [archiving, setArchiving] = useState(false);
+  // 分页：page 当前页（0-based），pageSize 每页条数。分页只影响表格视图，
+  // 汇总/图表/CSV 导出均基于全量 trades，与分页状态解耦。
+  const [page, setPage] = useState(0);
+  const pageSize = 20;
+  const totalPages = Math.max(1, Math.ceil(trades.length / pageSize));
+  // 越界保护：归档/数据刷新后条数变少，page 可能超过最后一页 → 钳制到末页
+  const safePage = Math.min(page, totalPages - 1);
+  const pagedTrades = trades.slice(safePage * pageSize, (safePage + 1) * pageSize);
 
   useEffect(() => {
     getSymbols().then((res) => {
@@ -69,6 +80,9 @@ export default function HistoryPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // 筛选条件（天数/品种）变化时回到第一页，避免停留在越界页码
+  useEffect(() => { setPage(0); }, [days, symbolFilter]);
+
   const handleArchiveDemoTrades = async () => {
     const date = prompt(t("archivePrompt"), new Date().toISOString().slice(0, 10));
     if (!date) return;
@@ -78,6 +92,7 @@ export default function HistoryPage() {
       const res = await archiveTrades(date);
       showSuccess(t("archivedTitle"), t("archivedMessage", { count: res.data.archived }));
       await fetchData();
+      setPage(0); // 归档后数据收缩，回到第一页
     } catch { showError(t("archiveFailed")); } finally { setArchiving(false); }
   };
 
@@ -196,7 +211,7 @@ export default function HistoryPage() {
                               </TableRow>
                             </TableHeader>
                             <TableBody>
-                              {trades.map((t) => (
+                              {pagedTrades.map((t) => (
                                 <TableRow key={t.id} className="hover:bg-muted/30 transition-colors">
                                   <TableCell className="text-muted-foreground text-xs">
                                     {toDate(t.open_time).toLocaleDateString(dateLocale, { timeZone: "Asia/Shanghai" })}
@@ -247,6 +262,38 @@ export default function HistoryPage() {
                             {total >= 0 ? "+" : ""}${Math.abs(total).toFixed(2)}
                           </span>
                         </div>
+
+                        {/* Pagination bar */}
+                        {trades.length > pageSize && (
+                          <nav role="navigation" aria-label={t("paginationLabel")} className="flex items-center justify-between px-4 py-2 border-t border-border">
+                            <span className="text-xs text-muted-foreground">
+                              {t("paginationShowing", { from: safePage * pageSize + 1, to: Math.min((safePage + 1) * pageSize, trades.length), total: trades.length })}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                variant="outline"
+                                size="icon-xs"
+                                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                                disabled={safePage === 0}
+                                aria-label={t("paginationPrev")}
+                              >
+                                <ChevronLeft className="size-3" />
+                              </Button>
+                              <span className="text-xs text-muted-foreground px-2" aria-current="page">
+                                {t("paginationPage", { page: safePage + 1, pages: totalPages })}
+                              </span>
+                              <Button
+                                variant="outline"
+                                size="icon-xs"
+                                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                                disabled={safePage >= totalPages - 1}
+                                aria-label={t("paginationNext")}
+                              >
+                                <ChevronRight className="size-3" />
+                              </Button>
+                            </div>
+                          </nav>
+                        )}
                       </>
                     );
                   })()}

@@ -14,12 +14,15 @@ zoneinfo 处理 DST）。可区分来源的行（strategy_name=manual / comment 
     python scripts/backfill_trade_timezone.py [--dry-run]
 
 注意：脚本不处理 OrderAudit（其 created_at 为 UTC，从未混入 bridge 时间）。
+
+**同步实现**：本脚本是一次性批量 UPDATE，用同步 SQLAlchemy（create_engine +
+DATABASE_URL_SYNC=psycopg2 驱动）；不要用 create_async_engine —— 它要求
+asyncpg 驱动，而 DATABASE_URL_SYNC 是 psycopg2（2026-10-10 修复）。
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
 import sys
 from datetime import datetime
@@ -27,8 +30,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import select  # noqa: E402
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession  # noqa: E402
+from sqlalchemy import create_engine, select  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.config import settings  # noqa: E402
@@ -64,15 +66,15 @@ def _shift_naive(dt: datetime, tz: ZoneInfo) -> datetime:
     return aware.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
 
-async def main(dry_run: bool) -> None:
+def main(dry_run: bool) -> None:
     dsn = os.environ.get("DATABASE_URL_SYNC") or settings.database_url_sync
-    engine = create_async_engine(dsn)
-    Session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    engine = create_engine(dsn)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
     tz = ZoneInfo(settings.mt5_server_tz)
     changed_open = changed_close = total = 0
 
-    async with Session() as session:
-        rows = (await session.execute(select(Trade))).scalars().all()
+    with Session() as session:
+        rows = session.execute(select(Trade)).scalars().all()
         total = len(rows)
         skipped = 0  # 非 bridge 来源（引擎自产 UTC 行），不换算
         for row in rows:
@@ -95,18 +97,18 @@ async def main(dry_run: bool) -> None:
             if updated and not dry_run:
                 session.add(row)
         if not dry_run:
-            await session.commit()
+            session.commit()
 
     print(
         f"[{'DRY-RUN ' if dry_run else ''}] trades rows={total} "
         f"open_time shifted={changed_open} close_time shifted={changed_close} "
         f"skipped(engine-UTC)={skipped}"
     )
-    await engine.dispose()
+    engine.dispose()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="回填 trades 表 EET naive 时间为 UTC")
     parser.add_argument("--dry-run", action="store_true", help="只统计不写库")
     args = parser.parse_args()
-    asyncio.run(main(args.dry_run))
+    main(args.dry_run)
