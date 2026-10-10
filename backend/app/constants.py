@@ -173,3 +173,59 @@ INDICATOR_ICHIMOKU_DISPLACEMENT = 26
 # 图表展示的指标数值统一按固定 2 位小数舍入（RSI/MACD 是无量纲值，
 # 按价格 price_decimals 舍入是语义错误）。
 INDICATOR_DECIMALS = 2
+
+# ─── Trade Review（历史订单 AI 深度复盘）───────────────────────────────────
+
+# 四分类问责枚举（对齐 TradeAccountabilityTracker / 产品四象限）。服务端用
+# pnl>0 × reasoning_correct 确定性推导，LLM 自报值仅交叉校验。
+REVIEW_CLASS_SKILLED_WIN = "skilled_win"  # 判断正确 + 盈利 → 强化
+REVIEW_CLASS_CORRECT_PROCESS = "correct_process"  # 判断正确 + 亏损 → 方差不调整
+REVIEW_CLASS_LUCKY_WIN = "lucky_win"  # 判断错误 + 盈利 → 噪音不强化
+REVIEW_CLASS_REAL_MISTAKE = "real_mistake"  # 判断错误 + 亏损 → 学习调整
+REVIEW_CLASSIFICATIONS = (
+    REVIEW_CLASS_SKILLED_WIN,
+    REVIEW_CLASS_CORRECT_PROCESS,
+    REVIEW_CLASS_LUCKY_WIN,
+    REVIEW_CLASS_REAL_MISTAKE,
+)
+
+# LLM 输出的根因标签白名单（防自由文本 + 未来教训匹配需字段化）。
+REVIEW_LOSS_CAUSES = (
+    "逆势开仓",
+    "止损过近",
+    "止损过宽",
+    "进场过早",
+    "进场过晚",
+    "追涨杀跌",
+    "波动率异常",
+    "重大消息冲击",
+    "持仓过短",
+    "持仓过长",
+    "情绪化操作",
+    "频率过高",
+    "仓位过重",
+    "未设止损",
+    "数据缺失",
+)
+REVIEW_WIN_CAUSES = (
+    "顺势交易",
+    "止损保护",
+    "耐心持仓",
+    "分批止盈",
+    "点位精准",
+    "波动率配合",
+    "情绪稳定",
+    "纪律执行",
+    "仓位合理",
+)
+
+# 复盘字段长度/上限（统一 bounded_text 截断入口）。
+REVIEW_SUMMARY_LIMIT = 4000  # 自由文本 summary 总上限
+REVIEW_ITEM_LIMIT = 500  # 单条 lessons/improvement_actions/根因描述上限
+REVIEW_CAUSES_LIMIT = 6  # loss_causes/win_causes 单次最多条数
+REVIEW_LESSONS_LIMIT = 5  # lessons 最多条数
+REVIEW_ACTIONS_LIMIT = 5  # improvement_actions 最多条数
+REVIEW_MIN_CONFIDENCE = 0.5  # 低于此置信前端显示低置信徽标 + 服务端 flagged
+REVIEW_WINDOW_DAYS = 30  # 跨单模式统计窗口
+REVIEW_OPEN_WINDOW_PAD_S = 300  # 行情窗口前后各放宽 5 分钟（对齐 OHLCV 采样）
+REVIEW_MAX_OHLCV_BARS = 5000  # 行情窗口特征提取最大 K 线条数

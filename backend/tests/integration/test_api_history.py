@@ -80,6 +80,25 @@ class TestHistoryRoutes:
         data = resp.json()
         assert "trades" in data
 
+    async def test_get_trades_account_login(self, client, db_session):
+        """bot 单必须透传 account_login（前端复盘触发按 (ticket, account_login) 归属）。"""
+        from datetime import datetime as _dt
+
+        db_session.add(Trade(
+            ticket=7771, symbol="GOLD", type="BUY", lot=0.1,
+            open_price=2000.0, close_price=2010.0, sl=1990.0, tp=2020.0,
+            open_time=_dt.now(), close_time=_dt.now(), profit=100.0,
+            strategy_name="ema_crossover", account_login="12345678",
+        ))
+        await db_session.commit()
+
+        resp = await client.get("/api/history/trades?days=30")
+        assert resp.status_code == 200
+        bot_rows = [r for r in resp.json()["trades"] if r["source"] == "bot"]
+        assert bot_rows, "bot 行应存在"
+        assert all(r.get("account_login") for r in bot_rows)
+        assert any(r.get("account_login") == "12345678" for r in bot_rows)
+
     async def test_get_trades_empty(self, client):
         resp = await client.get("/api/history/trades?days=1")
         assert resp.status_code == 200
@@ -194,3 +213,4 @@ class TestHistoryRoutes:
         assert r["tp"] == 2030.0
         assert r["open_time"] != r["close_time"]    # 开仓/平仓时间分离
         assert r["profit"] == 19.85                 # 净额优先
+        assert r["account_login"] == "0"            # 手动单归属兜底

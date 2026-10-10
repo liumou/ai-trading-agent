@@ -54,6 +54,9 @@ from app.api.routes import (
 from app.api.routes import (
     symbols as symbols_routes,
 )
+from app.api.routes import (
+    trade_reviews as trade_reviews_routes,
+)
 from app.api.websocket import router as ws_router
 from app.api.ws_runners import router as ws_runners_router
 from app.auth import require_auth
@@ -73,7 +76,7 @@ from app.db.observability import (
     long_hold_tracker,
     slow_query_tracker,
 )
-from app.db.schema_ddl import SYMBOL_CONFIG_ACCOUNT_LOGIN_DDL
+from app.db.schema_ddl import SYMBOL_CONFIG_ACCOUNT_LOGIN_DDL, TRADE_REVIEWS_DDL
 from app.db.session import async_session
 from app.db.session import engine as db_engine
 from app.health import check_health
@@ -248,6 +251,8 @@ async def lifespan(app: FastAPI):
 # ── symbol_configs 账号隔离（与迁移 c1d2e3f4a5b6 共享 DDL，幂等兜底）──
         # 单一真相源见 app/db/schema_ddl.py —— 此处不再逐条重复，避免漂移。
         *SYMBOL_CONFIG_ACCOUNT_LOGIN_DDL,
+        # trade_reviews（历史订单 AI 复盘）共享 DDL，幂等兜底（迁移 ab1c2d3e4f50）。
+        *TRADE_REVIEWS_DDL,
     ]
     for stmt in schema_stmts:
         try:
@@ -565,6 +570,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Chat worker init failed (non-fatal): {e}")
 
+    # Trade-review worker（历史订单 AI 复盘，non-fatal）。复盘任务暂存队列，
+    # 表不存在时安全降级，pending alembic 迁移不丢任务。
+    # 复用 lifespan 已构建的 ai_client/hist_collector，避免 worker 自建连接。
+    trade_review_stop = asyncio.Event()
+    try:
+        from app.ai.trade_accountability import TradeAccountabilityTracker
+        from app.ai.trade_reviewer import TradeReviewer
+        from app.services.trade_reviews import trade_review_worker
+
+        trade_reviewer = TradeReviewer(
+            ai_client=ai_client,
+            market_data=getattr(hist_collector, "market_data", None),
+            collector=hist_collector,
+            accountability=TradeAccountabilityTracker(),
+        )
+        app.state.trade_review_worker_task = asyncio.create_task(
+            trade_review_worker(trade_review_stop, reviewer=trade_reviewer)
+        )
+        logger.info("Trade review worker started")
+    except Exception as e:
+        logger.warning(f"Trade review worker init failed (non-fatal): {e}")
+
     # Start symbol-config hot-reload subscriber
     await manager.start_reload_subscriber()
 
@@ -596,6 +623,12 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+    trade_review_stop.set()
+    tr_task = getattr(app.state, "trade_review_worker_task", None)
+    if tr_task is not None:
+        tr_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await tr_task
     if hasattr(app.state, "runner_manager"):
         await app.state.runner_manager.shutdown()
     if "runner_db_session" in dir():
@@ -730,6 +763,7 @@ app.include_router(memory_routes.router)
 app.include_router(quant.router)
 app.include_router(symbols_routes.router)
 app.include_router(price_alerts_routes.router)
+app.include_router(trade_reviews_routes.router)
 app.include_router(ws_router)
 app.include_router(ws_runners_router)
 

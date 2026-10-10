@@ -268,6 +268,15 @@ class Settings(BaseSettings):
     chat_max_turns: int = Field(15, ge=2, le=30)
     chat_worker_poll_s: float = Field(2, ge=0.1, le=30)
     chat_lease_s: int = Field(30, ge=10, le=300)
+    # Trade-review（历史订单 AI 复盘）配额与超时。复盘是重 LLM 操作，每日每用户
+    # 配额防成本滥用（Redis 计数）；超时只约束单次 LLM 调用（wait_for 包裹）。
+    trade_review_daily_quota: int = Field(30, ge=1, le=200)
+    trade_review_max_batch: int = Field(50, ge=1, le=100)
+    trade_review_timeout_s: int = Field(120, ge=10, le=600)
+    trade_review_lease_s: int = Field(120, ge=10, le=600)
+    trade_review_poll_s: float = Field(2, ge=0.1, le=30)  # worker 空转轮询间隔
+    trade_review_timeframe: str = Field("M15", min_length=2, max_length=10)  # 复盘行情窗口 K 线周期
+    trade_review_max_tokens: int = Field(1200, ge=200, le=4000)  # 复盘 LLM 输出 token 上限
     # Multi-agent（旧 run_multi_agent）循环预算：reflector / 分析师 / orchestrator。
     # 默认值对齐此前硬编码值；慢 LLM 端点可在 .env 里调高（不要悄悄放宽自动交易时限）。
     # 预算耗尽会让 openai_loop 返回兜底失败文案——下游必须把它当「分析失败」而非「无信号」。

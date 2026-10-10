@@ -586,6 +586,45 @@ class AgentChatEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+# ─── 历史订单 AI 深度复盘 ─────────────────────────────────────────────────────
+
+
+class TradeReview(Base):
+    """单笔历史订单的 AI 深度复盘记录（独立于引擎规则产物 post_trade_analysis）。
+
+    物理自然键为 (ticket, account_login) —— bot 自动单与手动单（MT5 通道，
+    不进 trades 表）都有 ticket；trade_id 仅作 bot 单的冗余关联列（手动单为 NULL）。
+    status 状态机：pending → running → completed / failed（worker DB 原子转移）。
+    review 存结构化结论（classification / 根因标签 / lessons / improvement_actions），
+    不存原始 prompt 与全字段（数据最小化）。重审保留旧版进 review_history。
+    """
+
+    __tablename__ = "trade_reviews"
+    __table_args__ = (Index("ix_trade_reviews_natural_key", "ticket", "account_login"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    trade_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # bot 单关联，手动单为 NULL
+    ticket: Mapped[int] = mapped_column(BigInteger)  # bot 单亦非空 → 统一自然键
+    account_login: Mapped[str] = mapped_column(
+        String(32), default="0", server_default="0", index=True
+    )  # 所属 MT5 账号（多账号隔离，ticket 跨账号可重复）
+    symbol: Mapped[str] = mapped_column(String(20))
+    classification: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", index=True)
+    review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_history: Mapped[list | None] = mapped_column(JSON, nullable=True)  # 重审保留旧版
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    flagged: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # 低置信/校验不一致
+    worker_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    open_time: Mapped[datetime] = mapped_column(DateTime, index=True)  # naive UTC，排序/周月报聚合
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 # ─── 行情提醒（价格阈值 → 飞书卡片）─────────────────────────────────────────
 
 

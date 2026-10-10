@@ -32,6 +32,7 @@
   "thStrategy": "策略",
   "thReason": "原因",
   "thAi": "AI",
+  "thReview": "复盘",
   "summaryStats": "{total} 笔交易 · {wins} 胜 / {losses} 负 · 胜率 {rate}%",
   "paginationShowing": "第 {from}-{to} 条 / 共 {total} 条",
   "paginationPage": "{page} / {pages} 页",

@@ -32,6 +32,7 @@
   "thStrategy": "Strategy",
   "thReason": "Reason",
   "thAi": "AI",
+  "thReview": "Review",
   "summaryStats": "{total} trades · {wins}W / {losses}L · Win rate {rate}%",
   "paginationShowing": "Showing {from}-{to} of {total}",
   "paginationPage": "{page} / {pages}",

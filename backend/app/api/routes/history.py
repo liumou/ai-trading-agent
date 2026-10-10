@@ -105,6 +105,7 @@ async def get_trades(
                 "trade_reason": getattr(t, "trade_reason", None),
                 "pre_trade_snapshot": getattr(t, "pre_trade_snapshot", None),
                 "post_trade_analysis": getattr(t, "post_trade_analysis", None),
+                "account_login": getattr(t, "account_login", None) or "0",
                 "source": "bot",
             }
         else:
@@ -127,6 +128,7 @@ async def get_trades(
                 "trade_reason": None,
                 "pre_trade_snapshot": None,
                 "post_trade_analysis": None,
+                "account_login": "0",  # raw SQL fallback 不查该列，兜底账号归属
                 "source": "bot",
             }
 
@@ -138,6 +140,8 @@ async def get_trades(
             from app.api.routes.bot import _get_engine
 
             engine = _get_engine(symbol) if symbol else next(iter(_manager.engines.values()))
+            # 手动单归属：bridge 只在当前活跃账号上取历史，故 deal 属于当前账号
+            merge_account_login = getattr(engine, "account_login", "0") or "0"
             mt5_result = await engine.connector.get_history(days=days, symbol=symbol or None)
             if mt5_result.get("success"):
                 for deal in mt5_result.get("data", []):
@@ -184,6 +188,7 @@ async def get_trades(
                             "strategy_name": "manual",
                             "ai_sentiment_label": None,
                             "ai_sentiment_score": None,
+                            "account_login": merge_account_login,
                             "source": "mt5",
                         }
                     )

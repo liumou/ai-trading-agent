@@ -32,3 +32,39 @@ SYMBOL_CONFIG_ACCOUNT_LOGIN_DDL: list[str] = [
     "ON symbol_configs (account_login, symbol)",
     "CREATE INDEX IF NOT EXISTS ix_symbol_configs_account_login ON symbol_configs (account_login)",
 ]
+
+TRADE_REVIEWS_DDL: list[str] = [
+    # trade_reviews 表（幂等）。与模型 TradeReview 声明保持一致；migration 与
+    # lifespan 共用本常量，消除双写漂移。review 用 JSON（不追 JSONB，新表不锁表）。
+    """CREATE TABLE IF NOT EXISTS trade_reviews (
+        id BIGSERIAL PRIMARY KEY,
+        trade_id BIGINT,
+        ticket BIGINT NOT NULL,
+        account_login VARCHAR(32) NOT NULL DEFAULT '0',
+        symbol VARCHAR(20) NOT NULL,
+        classification VARCHAR(32),
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        review JSON,
+        review_history JSON,
+        error TEXT,
+        provider_name VARCHAR(32),
+        confidence DOUBLE PRECISION,
+        flagged BOOLEAN NOT NULL DEFAULT FALSE,
+        worker_token VARCHAR(36),
+        lease_until TIMESTAMP,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        open_time TIMESTAMP NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_trade_reviews_natural_key ON trade_reviews (ticket, account_login)",
+    "CREATE INDEX IF NOT EXISTS ix_trade_reviews_status ON trade_reviews (status)",
+    "CREATE INDEX IF NOT EXISTS ix_trade_reviews_open_time ON trade_reviews (open_time)",
+    # PG partial unique index（生产去重最后防线；SQLite 无 partial index，测试
+    # 依赖应用层幂等逻辑 —— 详见迁移注释）。bot 单按 trade_id 去重（trade_id 非空），
+    # 手动单按 (ticket, account_login) 去重（trade_id 为 NULL）。
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_trade_reviews_trade_id_excl_null "
+    "ON trade_reviews (trade_id) WHERE trade_id IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_trade_reviews_ticket_account_excl_null "
+    "ON trade_reviews (ticket, account_login) WHERE trade_id IS NULL",
+]

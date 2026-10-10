@@ -218,6 +218,70 @@ export const getTradeHistory = (params?: {
 export const getPerformance = (days?: number, symbol?: string) =>
   api.get("/api/history/performance", { params: { days, symbol } });
 
+// Trade Reviews — 历史订单 AI 深度复盘
+/** AI 复盘分类：skilled_win（正确+盈利）/ correct_process（正确+亏损）/ lucky_win（错误+盈利）/ real_mistake（错误+亏损） */
+export type TradeReviewClassification =
+  | "skilled_win"
+  | "correct_process"
+  | "lucky_win"
+  | "real_mistake";
+
+export interface TradeReview {
+  id: number;
+  trade_id: number | null;
+  ticket: number;
+  account_login: string;
+  symbol: string;
+  status: string; // pending / running / completed / failed
+  classification: TradeReviewClassification | null;
+  confidence: number | null;
+  flagged: boolean;
+  review?: {
+    reasoning_correct: boolean | null;
+    loss_causes?: string[];
+    win_causes?: string[];
+    lessons?: string[];
+    improvement_actions?: string[];
+    summary?: string;
+  } | null;
+  review_history?: Array<Record<string, unknown>> | null;
+  error?: string | null;
+  provider_name?: string | null;
+  open_time?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface TradeReviewSummary {
+  total: number;
+  window_days: number;
+  breakdown: Record<string, number>;
+  real_mistakes: number;
+  top_causes: { cause: string; count: number }[];
+}
+
+export const triggerTradeReview = (body: {
+  trade_id?: number;
+  ticket?: number;
+  account_login?: string;
+  force?: boolean;
+}) => api.post<{ status: string; review: TradeReview }>("/api/trade-reviews", body);
+
+export const getTradeReviewById = (reviewId: number, accountLogin: string) =>
+  api.get<TradeReview>(`/api/trade-reviews/${reviewId}`, { params: { account_login: accountLogin } });
+
+export const getLatestTradeReviewByTicket = (ticket: number, accountLogin: string) =>
+  api.get<TradeReview>(`/api/trade-reviews/by-ticket/${ticket}`, { params: { account_login: accountLogin } });
+
+export const batchTradeReviews = (items: { trade_id?: number; ticket?: number; account_login?: string }[], force?: boolean) =>
+  api.post<{ created: number; failed: Array<{ ticket?: number; trade_id?: number; error: string }>; created_items: TradeReview[] }>(
+    "/api/trade-reviews/batch",
+    { items, force },
+  );
+
+export const getTradeReviewSummary = (accountLogin: string, days = 30) =>
+  api.get<TradeReviewSummary>("/api/trade-reviews/summary", { params: { account_login: accountLogin, days } });
+
 // Strategy
 export const getAvailableStrategies = () => api.get("/api/strategy/available");
 export const getCurrentStrategy = () => api.get("/api/strategy/current");

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,15 +12,21 @@ import {
 } from "@/components/ui/table";
 import {
   Download, BarChart3, TrendingUp, DollarSign, Target, History, Archive,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, Sparkles, Loader2, RefreshCw,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
 import { StatCard } from "@/components/ui/stat-card";
 import SentimentBadge from "@/components/ai/SentimentBadge";
-import { getTradeHistory, getPerformance, getSymbols, archiveTrades } from "@/lib/api";
+import {
+  getTradeHistory, getPerformance, getSymbols, archiveTrades,
+  getLatestTradeReviewByTicket, type TradeReview,
+} from "@/lib/api";
 import { showSuccess, showError } from "@/lib/toast";
 import { toDate } from "@/lib/format";
+import { TradeReviewDialog, REVIEW_CLASS_COLORS } from "@/components/trading/TradeReviewDialog";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { SymbolTabs } from "@/components/ui/symbol-tabs";
@@ -29,14 +35,68 @@ import {
 } from "recharts";
 
 type Trade = {
-  id: number; ticket: number; symbol: string; type: string; lot: number;
+  id: number | null; ticket: number; symbol: string; type: string; lot: number;
   open_price: number; close_price: number | null; sl: number; tp: number;
   open_time: string; close_time: string | null; profit: number | null;
   strategy_name: string; ai_sentiment_label: string | null; ai_sentiment_score: number | null;
   trade_reason: string | null;
   pre_trade_snapshot: Record<string, unknown> | null;
   post_trade_analysis: { exit_reason: string; duration_hours: number | null; outcome: string; profit_usd: number; entry_regime: string; exit_regime: string | null; summary_th: string } | null;
+  source: "bot" | "mt5";
+  account_login: string;
 };
+
+/** 复盘操作单元格：无复盘 → 高亮「复盘」按钮；有复盘 → 分类徽章 + 查看/重审；加载中 → 灰态。 */
+function ReviewCell({
+  trade, review, loading, onOpen, onTriggered,
+}: {
+  trade: Trade;
+  review: TradeReview | null;
+  loading: boolean;
+  onOpen: (t: Trade) => void;
+  onTriggered: (t: Trade) => void;
+}) {
+  const t = useTranslations("tradeReview");
+  const key = `${trade.source}-${trade.ticket}`;
+  const completed = review?.status === "completed";
+
+  if (loading) {
+    return <Loader2 className="mx-auto size-3.5 animate-spin text-muted-foreground" />;
+  }
+  if (completed && review?.classification) {
+    const shortKey = `classShort${review.classification.charAt(0).toUpperCase()}${review.classification.slice(1)}`;
+    return (
+      <div className="flex items-center justify-center gap-1.5">
+        <Badge className={cn("border cursor-pointer hover:opacity-80", REVIEW_CLASS_COLORS[review.classification] ?? "border-border text-muted-foreground")} onClick={() => onOpen(trade)}>
+          {t(shortKey)}
+        </Badge>
+      </div>
+    );
+  }
+  if (review?.status === "failed") {
+    return (
+      <Button variant="outline" size="sm" className="h-6 px-2 text-xs text-destructive border-destructive/30 hover:bg-destructive/10" onClick={() => onOpen(trade)}>
+        <RefreshCw className="size-3 mr-1" />
+        {t("retry")}
+      </Button>
+    );
+  }
+  if (review?.status === "running" || review?.status === "pending") {
+    return (
+      <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-muted-foreground" disabled>
+        <Loader2 className="size-3 animate-spin mr-1" />
+        {t("running")}
+      </Button>
+    );
+  }
+  // 无复盘 → 高亮触发
+  return (
+    <Button variant="outline" size="sm" className="h-6 px-2 text-xs text-primary border-primary/30 hover:bg-primary/10" onClick={() => onOpen(trade)}>
+      <Sparkles className="size-3 mr-1" />
+      {t("trigger")}
+    </Button>
+  );
+}
 
 export default function HistoryPage() {
   const t = useTranslations("history");
@@ -94,6 +154,88 @@ export default function HistoryPage() {
       await fetchData();
       setPage(0); // 归档后数据收缩，回到第一页
     } catch { showError(t("archiveFailed")); } finally { setArchiving(false); }
+  };
+
+  // ─── AI 深度复盘状态 ─────────────────────────────────────────────
+  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
+  const [selectedReview, setSelectedReview] = useState<TradeReview | null>(null);
+  const [selectedTrigger, setSelectedTrigger] = useState<{ trade_id?: number; ticket?: number; account_login?: string } | null>(null);
+  const [reviewByTicket, setReviewByTicket] = useState<Record<string, TradeReview>>({});
+  const [loadingReviews, setLoadingReviews] = useState<Set<string>>(new Set());
+  const pollTimersRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+
+  // 待复盘提示：已平仓（有 profit）且无 completed 复盘的交易
+  const pendingReviewCount = trades.filter((t) => {
+    if (t.profit === null) return false;
+    const r = reviewByTicket[`${t.source}-${t.ticket}`];
+    return !r || r.status !== "completed";
+  }).length;
+
+  // 按 (source, ticket) 查各交易的最新复盘（后端按 account_login 归属）
+  const fetchReviewByTicket = useCallback(async (t: Trade) => {
+    const key = `${t.source}-${t.ticket}`;
+    setLoadingReviews((prev) => new Set(prev).add(key));
+    try {
+      const res = await getLatestTradeReviewByTicket(t.ticket, t.account_login);
+      setReviewByTicket((prev) => ({ ...prev, [key]: res.data }));
+    } catch { /* 无复盘记录（404）→ 保持未复盘状态 */ } finally {
+      setLoadingReviews((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  }, []);
+
+  // trades 变化后，为所有已平仓交易补查复盘状态（只查一次，避免循环依赖）
+  useEffect(() => {
+    for (const t of trades) {
+      if (t.profit === null) continue;
+      void fetchReviewByTicket(t);
+    }
+  }, [trades, fetchReviewByTicket]);
+
+  // 卸载时清理所有轮询定时器
+  useEffect(() => () => {
+    for (const k of Object.keys(pollTimersRef.current)) clearInterval(pollTimersRef.current[k]);
+  }, []);
+
+  // 打开复盘弹窗：已有复盘 → 查看；无 → 触发模式
+  const openReview = (t: Trade) => {
+    const key = `${t.source}-${t.ticket}`;
+    const existing = reviewByTicket[key];
+    setSelectedReview(existing?.status === "completed" ? existing : null);
+    setSelectedTrigger({
+      trade_id: t.source === "bot" && t.id ? t.id : undefined,
+      ticket: t.ticket,
+      account_login: t.account_login,
+    });
+    setReviewDialogOpen(true);
+  };
+
+  // 复盘触发后 → 每 2s 轮询该 ticket 的复盘直到终态
+  const handleReviewTriggered = (t: Trade) => {
+    const key = `${t.source}-${t.ticket}`;
+    // 清理已有轮询
+    if (pollTimersRef.current[key]) clearInterval(pollTimersRef.current[key]);
+    pollTimersRef.current[key] = setInterval(async () => {
+      try {
+        const res = await getLatestTradeReviewByTicket(t.ticket, t.account_login);
+        const status = res.data?.status;
+        setReviewByTicket((prev) => ({ ...prev, [key]: res.data }));
+        if (status === "completed" || status === "failed") {
+          clearInterval(pollTimersRef.current[key]);
+          delete pollTimersRef.current[key];
+          setSelectedReview(res.data ?? null);
+        }
+      } catch {
+        clearInterval(pollTimersRef.current[key]);
+        delete pollTimersRef.current[key];
+      }
+    }, 2000);
+    // 兜底：最长轮询 2 分钟自动停止
+    window.setTimeout(() => {
+      if (pollTimersRef.current[key]) {
+        clearInterval(pollTimersRef.current[key]);
+        delete pollTimersRef.current[key];
+      }
+    }, 120000);
   };
 
   const handleExportCSV = () => {
@@ -154,6 +296,32 @@ export default function HistoryPage() {
         ]}
       />
 
+      {/* 待复盘提示：有已平仓且未完成的复盘 */}
+      {pendingReviewCount > 0 && (
+        <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-foreground/90">
+          <Sparkles className="size-3.5 shrink-0 text-primary" />
+          <span className="font-medium">
+            {t("pendingReviews", { count: pendingReviewCount })}
+          </span>
+          <span className="text-muted-foreground">{t("pendingReviewsHint")}</span>
+        </div>
+      )}
+
+      {/* AI 深度复盘弹窗 */}
+      <TradeReviewDialog
+        open={reviewDialogOpen}
+        onOpenChange={setReviewDialogOpen}
+        review={selectedReview}
+        triggerBody={selectedTrigger}
+        onTriggered={() => {
+          if (selectedTrigger?.ticket) {
+            const t = trades.find((x) => x.ticket === selectedTrigger.ticket);
+            if (t) handleReviewTriggered(t);
+          }
+        }}
+        polling={selectedReview?.status === "running" || selectedReview?.status === "pending"}
+      />
+
       <Tabs defaultValue="trades">
         <TabsList>
           <TabsTrigger value="trades">{t("tradesTab")}</TabsTrigger>
@@ -208,11 +376,12 @@ export default function HistoryPage() {
                                 <TableHead className="text-xs">{t("thStrategy")}</TableHead>
                                 {hasReason && <TableHead className="text-xs">{t("thReason")}</TableHead>}
                                 {hasSentiment && <TableHead className="text-xs text-center">{t("thAi")}</TableHead>}
+                                <TableHead className="text-xs text-center">{t("thReview")}</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
                               {pagedTrades.map((t) => (
-                                <TableRow key={t.id} className="hover:bg-muted/30 transition-colors">
+                                <TableRow key={`${t.source}-${t.ticket}`} className="hover:bg-muted/30 transition-colors">
                                   <TableCell className="text-muted-foreground text-xs">
                                     {toDate(t.open_time).toLocaleDateString(dateLocale, { timeZone: "Asia/Shanghai" })}
                                   </TableCell>
@@ -244,6 +413,20 @@ export default function HistoryPage() {
                                       {t.ai_sentiment_label ? (
                                         <SentimentBadge label={t.ai_sentiment_label} score={t.ai_sentiment_score || 0} size="sm" />
                                       ) : null}
+                                    </TableCell>
+                                  )}
+                                  {/* 复盘操作列 */}
+                                  {t.profit === null ? (
+                                    <TableCell className="text-center" />
+                                  ) : (
+                                    <TableCell className="text-center">
+                                      <ReviewCell
+                                        trade={t}
+                                        review={reviewByTicket[`${t.source}-${t.ticket}`] ?? null}
+                                        loading={loadingReviews.has(`${t.source}-${t.ticket}`)}
+                                        onOpen={openReview}
+                                        onTriggered={handleReviewTriggered}
+                                      />
                                     </TableCell>
                                   )}
                                 </TableRow>
