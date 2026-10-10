@@ -13,6 +13,7 @@ from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from app.ai.circuit_breaker import llm_circuit_breaker
 from app.ai.client import AIClient
 from app.ai.news_sentiment import NewsSentimentAnalyzer
 from app.ai.strategy_optimizer import StrategyOptimizer
@@ -49,6 +50,8 @@ from app.api.routes import (
 from app.api.routes import metrics as metrics_routes
 from app.api.routes import (
     price_alerts as price_alerts_routes,
+)
+from app.api.routes import (
     symbols as symbols_routes,
 )
 from app.api.websocket import router as ws_router
@@ -75,9 +78,8 @@ from app.db.session import async_session
 from app.db.session import engine as db_engine
 from app.health import check_health
 from app.mt5.connector import MT5BridgeConnector
-from app.notifications.telegram import TelegramNotifier
 from app.notifications.feishu import FeishuNotifier
-from app.ai.circuit_breaker import llm_circuit_breaker
+from app.notifications.telegram import TelegramNotifier
 
 
 def _init_sentry() -> None:
@@ -480,6 +482,23 @@ async def lifespan(app: FastAPI):
     price_alert_service = PriceAlertService(feishu_notifier, redis_client)
     scheduler.set_price_alert_service(price_alert_service)
     app.state.price_alert_service = price_alert_service
+
+    # 构建飞书 K 线图定时发送服务并注入 scheduler（每 15 分钟发 M15 + H1 图）
+    from app.notifications.feishu_image import FeishuImageUploader
+    from app.services.kline_sender import KlineSender
+
+    feishu_image_uploader = FeishuImageUploader(
+        app_id=getattr(settings, "feishu_app_id", ""),
+        app_secret=getattr(settings, "feishu_app_secret", ""),
+    )
+    kline_sender = KlineSender(
+        feishu_notifier=feishu_notifier,
+        uploader=feishu_image_uploader,
+        engines_provider=scheduler._engines_snapshot,
+    )
+    scheduler.set_kline_sender(kline_sender)
+    app.state.feishu_image_uploader = feishu_image_uploader
+    app.state.kline_sender = kline_sender
 
     scheduler.start()
     scheduler.scheduler.add_job(

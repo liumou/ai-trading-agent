@@ -1,5 +1,4 @@
 import json
-
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -382,6 +381,10 @@ class Settings(BaseSettings):
 
     # 飞书群自定义机器人 webhook（完整 URL，含 token，属机密：只存 env，禁止进代码/DB/前端）
     feishu_webhook_url: str = ""  # 空 = 禁用飞书通知
+
+    # 飞书开放平台应用凭据（用于上传 K 线图获取 image_key，属机密：只存 env / Vault）
+    feishu_app_id: str = ""  # 应用 App ID
+    feishu_app_secret: str = ""  # 应用 App Secret
 
     # FRED API (macro data)
     fred_api_key: str = ""

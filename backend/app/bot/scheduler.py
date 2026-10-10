@@ -58,6 +58,7 @@ class BotScheduler:
         self._candle_job_ids: dict[str, str] = {}  # timeframe → job_id
         self._health_monitor = None  # set via set_health_monitor()
         self._price_alert_service = None  # set via set_price_alert_service()
+        self._kline_sender = None  # set via set_kline_sender()
         self._background_tasks: set[asyncio.Task] = set()
 
     def set_health_monitor(self, monitor):
@@ -66,6 +67,13 @@ class BotScheduler:
     def set_price_alert_service(self, service):
         """注入行情提醒巡检引擎（main.py lifespan 构建后调用）。"""
         self._price_alert_service = service
+
+    def set_kline_sender(self, sender):
+        """注入飞书 K 线图定时发送服务（main.py lifespan 构建后调用）。
+
+        该服务自行读取引擎快照并判定夜窗/开市，scheduler 只负责定时触发。
+        """
+        self._kline_sender = sender
 
     @property
     def _engines(self) -> dict[str, BotEngine]:
@@ -119,6 +127,19 @@ class BotScheduler:
             max_instances=1,
             coalesce=True,
         )
+
+        # 飞书 K 线图定时发送：每 15 分钟对启用且有行情的品种发 M15 + H1 两张图。
+        # 夜窗（Asia/Shanghai 00:00–08:00）在 KlineSender 内部判定，这里只负责触发。
+        if self._kline_sender is not None:
+            self.scheduler.add_job(
+                self._kline_broadcast_job,
+                "cron",
+                minute="0,15,30,45",
+                id="kline_chart_broadcast",
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info("Kline chart broadcast job scheduled (every 15 min)")
 
         # Weekly optimization: Monday 06:00 UTC
         self.scheduler.add_job(
@@ -607,6 +628,15 @@ class BotScheduler:
             await self._price_alert_service.check_all()
         except Exception as e:
             logger.error(f"Price alert job error: {e}")
+
+    async def _kline_broadcast_job(self):
+        """触发飞书 K 线图发送（每 15 分钟）。失败仅记录日志，不影响其他任务。"""
+        if not self._kline_sender:
+            return
+        try:
+            await self._kline_sender.send_all()
+        except Exception as e:
+            logger.error(f"Kline broadcast job error: {e}")
 
     async def _weekly_optimize_job(self):
         logger.info("Weekly optimization triggered")

@@ -1,6 +1,8 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pandas==2.2.3
+# K 线图渲染（飞书定时 K 线图卡片）；mplfinance 依赖 matplotlib
+mplfinance==0.12.10b0
 sqlalchemy[asyncio]>=2.0.40
 asyncpg==0.30.0
 psycopg2-binary==2.9.10

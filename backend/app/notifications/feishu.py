@@ -7,6 +7,8 @@
 - 发送失败只记录日志，绝不抛出异常影响调用方（对齐 TelegramNotifier._send 模式）。
 """
 
+from datetime import UTC
+
 import httpx
 from loguru import logger
 
@@ -139,13 +141,56 @@ class FeishuNotifier:
         ok = await self._post(payload)
         return ok
 
+    def _build_kline_card(self, symbol: str, timeframe: str, image_key: str) -> dict:
+        """构造 K 线图卡片（内嵌图片）。
+
+        注意：飞书自定义机器人 webhook 的卡片 ``img`` 元素，``alt`` 字段必须是
+        对象结构（``{"tag": "plain_text", "content": "..."}``），不是纯字符串。
+        实测踩坑：字符串 alt 会返回 200621 "parse card json err"。
+        """
+        display = _symbol_display_name(symbol)
+        header_content = f"📊 {display} · {timeframe} K线图"
+        elements = [
+            {
+                "tag": "img",
+                "img_key": image_key,
+                "alt": {"tag": "plain_text", "content": f"{display} {timeframe} K线"},
+            },
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": f"品种 {symbol}（{display}）· {timeframe} 周期 · {_now_str()}",
+                    }
+                ],
+            },
+        ]
+        return {
+            "msg_type": "interactive",
+            "card": {
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": header_content}, "template": "blue"},
+                "elements": elements,
+            },
+        }
+
+    async def send_kline_card(self, symbol: str, timeframe: str, image_key: str) -> bool:
+        """发送 K 线图卡片（图片已上传，此方法只发卡片）。成功返回 True，失败返回 False。"""
+        if not image_key:
+            logger.warning(f"Kline card skipped [{symbol} {timeframe}]: empty image_key")
+            return False
+        payload = self._build_kline_card(symbol, timeframe, image_key)
+        ok = await self._post(payload)
+        return ok
+
     async def send_test_card(self, symbol: str = "GOLD", current_price: float = 0.0) -> bool:
         """发送测试卡片（验证 webhook 配置）。供 /api/price-alerts/test 端点调用。"""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         display = _symbol_display_name(symbol)
         template = "blue"
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         payload = {
             "msg_type": "interactive",
             "card": {
@@ -172,6 +217,6 @@ class FeishuNotifier:
 
 def _now_str() -> str:
     """当前 UTC 时间的可读字符串，用于卡片注脚。"""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S (UTC)")
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S (UTC)")

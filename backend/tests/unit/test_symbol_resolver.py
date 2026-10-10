@@ -44,6 +44,21 @@ def test_idempotent_on_alias_input():
     assert to_broker_alias("GOLDm#") == "GOLDm#"
 
 
+def test_alias_follows_account_switch():
+    # 不同 MT5 账号（不同券商）对同一 canonical 品种 GOLD 的 broker_alias 可能不同。
+    # load_profiles_into_memory() 在账号切换后重建 SYMBOL_PROFILES，to_broker_alias
+    # 必须跟随当前账号（profile 里 broker_alias 最新值），不能残留旧账号别名。
+    # 账号 A：GOLD → GOLD_
+    SYMBOL_PROFILES["GOLD"] = {"broker_alias": "GOLD_"}
+    assert to_broker_alias("GOLD") == "GOLD_"
+    # 账号切换后：GOLD → XAUUSD（另一券商）
+    SYMBOL_PROFILES["GOLD"] = {"broker_alias": "XAUUSD"}
+    assert to_broker_alias("GOLD") == "XAUUSD"
+    # 无 alias（静态默认 / 未同步）→ 原样返回 canonical，绝不猜别名
+    SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0}
+    assert to_broker_alias("GOLD") == "GOLD"
+
+
 def test_empty_input_returns_empty():
     assert to_broker_alias("") == ""
 
