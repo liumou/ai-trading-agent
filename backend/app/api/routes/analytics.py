@@ -103,7 +103,9 @@ async def _compute_performance(symbol, days, db, _manager, SimpleNamespace):
                         continue
                     if not _deal_matches_symbol(deal, symbol):
                         continue
-                    deal_profit = deal.get("profit")
+                    # 净额优先（含 commission/swap），与 history.py 口径一致；
+                    # 旧版 Bridge 无 net_profit 字段时回落毛额 profit。
+                    deal_profit = deal.get("net_profit", deal.get("profit"))
                     if deal_profit is None:
                         continue
                     trades.append(

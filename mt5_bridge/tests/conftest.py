@@ -66,6 +66,8 @@ _mt5_module.symbol_info_tick = _mt5_mock.symbol_info_tick
 _mt5_module.order_send = _mt5_mock.order_send
 _mt5_module.orders_get = _mt5_mock.orders_get
 _mt5_module.positions_get = _mt5_mock.positions_get
+_mt5_module.history_orders_get = _mt5_mock.history_orders_get
+_mt5_module.history_deals_get = _mt5_mock.history_deals_get
 
 
 @pytest.fixture

@@ -82,10 +82,10 @@ export default function HistoryPage() {
   };
 
   const handleExportCSV = () => {
-    const headers = "Ticket,Symbol,Type,Lot,Open Price,Close Price,SL,TP,Profit,Strategy,Sentiment\n";
+    const headers = "Ticket,Symbol,Type,Lot,Open Time,Close Time,Open Price,Close Price,SL,TP,Profit,Strategy,Sentiment\n";
     const rows = trades
       .map((t) =>
-        `${t.ticket},${t.symbol},${t.type},${t.lot},${t.open_price},${t.close_price ?? ""},${t.sl},${t.tp},${t.profit ?? ""},${t.strategy_name},${t.ai_sentiment_label ?? ""}`
+        `${t.ticket},${t.symbol},${t.type},${t.lot},${t.open_time},${t.close_time ?? ""},${t.open_price},${t.close_price ?? ""},${t.sl},${t.tp},${t.profit ?? ""},${t.strategy_name},${t.ai_sentiment_label ?? ""}`
       )
       .join("\n");
     const blob = new Blob([headers + rows], { type: "text/csv" });
@@ -180,12 +180,15 @@ export default function HistoryPage() {
                           <Table>
                             <TableHeader>
                               <TableRow>
-                                <TableHead className="text-xs">{t("thTime")}</TableHead>
+                                <TableHead className="text-xs">{t("thOpenTime")}</TableHead>
+                                <TableHead className="text-xs">{t("thCloseTime")}</TableHead>
                                 <TableHead className="text-xs">{t("thSymbol")}</TableHead>
                                 <TableHead className="text-xs">{t("thType")}</TableHead>
                                 <TableHead className="text-xs text-right">{t("thLot")}</TableHead>
                                 <TableHead className="text-xs text-right">{t("thOpen")}</TableHead>
                                 <TableHead className="text-xs text-right">{t("thClose")}</TableHead>
+                                <TableHead className="text-xs text-right">{t("thSl")}</TableHead>
+                                <TableHead className="text-xs text-right">{t("thTp")}</TableHead>
                                 <TableHead className="text-xs text-right">{t("thPnl")}</TableHead>
                                 <TableHead className="text-xs">{t("thStrategy")}</TableHead>
                                 {hasReason && <TableHead className="text-xs">{t("thReason")}</TableHead>}
@@ -198,6 +201,11 @@ export default function HistoryPage() {
                                   <TableCell className="text-muted-foreground text-xs">
                                     {toDate(t.open_time).toLocaleDateString(dateLocale, { timeZone: "Asia/Shanghai" })}
                                   </TableCell>
+                                  <TableCell className="text-muted-foreground text-xs">
+                                    {t.close_time
+                                      ? toDate(t.close_time).toLocaleDateString(dateLocale, { timeZone: "Asia/Shanghai" })
+                                      : "—"}
+                                  </TableCell>
                                   <TableCell className="text-xs font-medium">{t.symbol}</TableCell>
                                   <TableCell className={`text-xs font-semibold ${t.type === "BUY" ? "text-success dark:text-green-400" : "text-destructive"}`}>
                                     {t.type}
@@ -205,6 +213,8 @@ export default function HistoryPage() {
                                   <TableCell className="text-right text-xs font-mono">{t.lot}</TableCell>
                                   <TableCell className="text-right text-xs font-mono">{t.open_price.toFixed(2)}</TableCell>
                                   <TableCell className="text-right text-xs font-mono">{t.close_price?.toFixed(2) ?? "—"}</TableCell>
+                                  <TableCell className="text-right text-xs font-mono">{t.sl > 0 ? t.sl.toFixed(2) : "—"}</TableCell>
+                                  <TableCell className="text-right text-xs font-mono">{t.tp > 0 ? t.tp.toFixed(2) : "—"}</TableCell>
                                   <TableCell className={`text-right text-xs font-mono font-semibold ${(t.profit ?? 0) >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}>
                                     {t.profit !== null ? `${t.profit >= 0 ? "+" : ""}${t.profit.toFixed(2)}` : "—"}
                                   </TableCell>

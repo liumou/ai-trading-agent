@@ -155,6 +155,15 @@ async def get_trades(
                         continue
                     if not _deal_matches_symbol(deal, symbol):
                         continue
+                    # Bridge 新字段契约：open_price/open_time/sl/tp/close_time 由
+                    # orders+deals 配对产出（Phase 3 重写 /history）。旧版 Bridge
+                    # 只有 price/time（平仓语义）—— 字段缺失时回退，避免开仓价
+                    # 错误显示成平仓价。
+                    # Bridge open_time 已是 ISO 字符串（_iso_utc 输出）；旧版无
+                    # open_time 字段时回落 deal_time（datetime）。统一转字符串。
+                    open_time = deal.get("open_time") or deal_time
+                    if isinstance(open_time, datetime):
+                        open_time = open_time.isoformat()
                     rows.append(
                         {
                             "id": None,
@@ -162,21 +171,26 @@ async def get_trades(
                             "symbol": deal.get("symbol", ""),
                             "type": deal_type,
                             "lot": deal.get("lot", 0),
+                            # 混合部署期：旧版 Bridge 无 open_price 字段时回落
+                            # price（平仓价），与 open_time 回落 deal_time 一致，
+                            # 避免开仓价显示 0。
                             "open_price": deal.get("open_price") or deal.get("price", 0),
-                            "close_price": deal.get("price", 0),
-                            "sl": 0,
-                            "tp": 0,
-                            "open_time": deal_time.isoformat(),
+                            "close_price": deal.get("close_price") or deal.get("price", 0),
+                            "sl": deal.get("sl", 0),
+                            "tp": deal.get("tp", 0),
+                            "open_time": open_time,
                             "close_time": deal_time.isoformat(),
-                            "profit": deal.get("profit", 0),
+                            "profit": deal.get("net_profit", deal.get("profit", 0)),
                             "strategy_name": "manual",
                             "ai_sentiment_label": None,
                             "ai_sentiment_score": None,
                             "source": "mt5",
                         }
                     )
-        except Exception:
-            pass
+        except Exception as _merge_err:
+            import logging
+
+            logging.getLogger(__name__).warning(f"[HIST-MERGE] {_merge_err!r}")
 
     # Sort by open_time desc, apply offset/limit
     rows.sort(key=lambda x: x["open_time"], reverse=True)
@@ -248,7 +262,9 @@ async def _fetch_daily_pnl(symbol, db, _manager):
     if mt5_deals:
         mt5_tickets = {d.get("ticket") for d in mt5_deals}
         extra_db = [t for t in db_trades if t.ticket not in mt5_tickets]
-        profits = [d["profit"] for d in mt5_deals] + [t.profit for t in extra_db]
+        # 净额优先（新 Bridge net_profit = profit+commission+swap，与 DB 引擎
+        # 记账语义一致）；旧 Bridge 无 net_profit 回落毛额 profit。
+        profits = [d.get("net_profit", d.get("profit", 0)) for d in mt5_deals] + [t.profit for t in extra_db]
     else:
         profits = [t.profit for t in db_trades]
 
@@ -310,7 +326,7 @@ async def get_performance(
                         continue
                     if not _deal_matches_symbol(deal, symbol):
                         continue
-                    deal_profit = deal.get("profit")
+                    deal_profit = deal.get("net_profit", deal.get("profit"))
                     if deal_profit is None:
                         continue
                     profits.append(deal_profit)

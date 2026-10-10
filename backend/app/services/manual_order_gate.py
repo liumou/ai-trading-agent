@@ -816,7 +816,9 @@ class ManualOrderGate:
 
         if deals:
             last = deals[0]
-            last_profit = float(last.get("profit") or 0)
+            # 净额优先（含 commission/swap），与 history.py 口径一致；旧版
+            # Bridge 无 net_profit 字段时回落毛额 profit。
+            last_profit = float(last.get("net_profit", last.get("profit")) or 0)
             last_lot = float(last.get("lot") or 0)
             try:
                 last_time = parse_bridge_time_to_naive_utc(str(last.get("time")))

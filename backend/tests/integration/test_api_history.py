@@ -88,6 +88,109 @@ class TestHistoryRoutes:
         resp = await client.get("/api/history/daily-pnl?days=365")
         assert resp.status_code == 200
 
+    async def test_get_daily_pnl_net_profit_priority(self, client, monkeypatch):
+        """daily-pnl 净额优先（net_profit 含 commission/swap），与 history
+        合并行口径一致；旧 Bridge 无 net_profit 时回落毛额 profit。"""
+        from datetime import UTC, datetime
+        from unittest.mock import AsyncMock
+
+        today_close = datetime.now(UTC).replace(microsecond=0).isoformat()
+
+        class _FakeEngine:
+            connector = AsyncMock()
+            connector.get_history.return_value = {
+                "success": True,
+                "data": [{
+                    "ticket": 7777,
+                    "symbol": "GOLD",
+                    "type": "BUY",
+                    "lot": 0.1,
+                    "open_price": 2000.0,
+                    "open_time": today_close,
+                    "sl": 0.0,
+                    "tp": 0.0,
+                    "close_price": 2020.0,
+                    "close_time": today_close,
+                    # daily-pnl 按 close_time>=今天 00:00 UTC 过滤，close 必须今天
+                    "time": today_close,
+                    "price": 2020.0,
+                    "profit": 20.0,
+                    "net_profit": 19.85,  # 净额优先
+                }],
+            }
+
+        class _FakeManager:
+            engines = {"GOLD": _FakeEngine()}
+
+        monkeypatch.setattr(
+            "app.bot.manager.get_global_manager", lambda: _FakeManager()
+        )
+        monkeypatch.setattr(
+            "app.api.routes.bot._get_engine", lambda symbol=None: _FakeEngine()
+        )
+
+        resp = await client.get("/api/history/daily-pnl?days=365")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["daily_pnl"] == 19.85   # 净额而非毛额 20.0
+        assert data["trade_count"] == 1
+
     async def test_get_performance(self, client, seeded_db):
         resp = await client.get("/api/history/performance?days=365")
         assert resp.status_code == 200
+
+    async def test_get_trades_uses_bridge_new_fields(self, client, monkeypatch):
+        """MT5 合并通道字段契约：开仓价≠平仓价、SL/TP 真实值、开仓/平仓时间分离。
+
+        Bridge 新版 /history 返回 open_price/open_time/sl/tp/close_price/
+        close_time/net_profit（订单-成交配对）。合并行不能再用「open_price=price」
+        的旧兜底 —— 否则「开仓价=平仓价」bug 复现。
+        """
+        from unittest.mock import AsyncMock
+
+        class _FakeEngine:
+            connector = AsyncMock()
+            connector.get_history.return_value = {
+                "success": True,
+                "data": [{
+                    "ticket": 9999,
+                    "symbol": "GOLD",
+                    "type": "BUY",
+                    "lot": 0.1,
+                    "open_price": 2000.0,
+                    "open_time": "2026-10-01T10:00:00+00:00",
+                    "sl": 1990.0,
+                    "tp": 2030.0,
+                    "close_price": 2020.0,
+                    "close_time": "2026-10-01T12:00:00+00:00",
+                    "profit": 20.0,
+                    "net_profit": 19.85,
+                    "time": "2026-10-01T12:00:00+00:00",   # 兼容别名
+                    "price": 2020.0,                       # 兼容别名
+                }],
+            }
+
+        class _FakeManager:
+            engines = {"GOLD": _FakeEngine()}
+
+        # history.py 函数内 import get_global_manager，故 patch 源头模块
+        monkeypatch.setattr(
+            "app.bot.manager.get_global_manager", lambda: _FakeManager()
+        )
+        monkeypatch.setattr(
+            "app.api.routes.bot._get_engine", lambda symbol=None: _FakeEngine()
+        )
+
+        resp = await client.get("/api/history/trades?days=365")
+        assert resp.status_code == 200
+        rows = resp.json()["trades"]
+        mt5_rows = [r for r in rows if r["source"] == "mt5"]
+        assert mt5_rows, "MT5 合并行应存在"
+        r = mt5_rows[0]
+        assert r["open_price"] == 2000.0      # 开仓价来自订单，不是平仓价
+        assert r["close_price"] == 2020.0
+        assert r["open_price"] != r["close_price"]  # 核心：不再相同
+        assert r["sl"] == 1990.0
+        assert r["tp"] == 2030.0
+        assert r["open_time"] != r["close_time"]    # 开仓/平仓时间分离
+        assert r["profit"] == 19.85                 # 净额优先

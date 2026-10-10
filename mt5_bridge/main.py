@@ -18,6 +18,20 @@ def _iso_utc(ts) -> str | None:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _symbol_matches(deal_symbol: str, wanted: str | None) -> bool:
+    """品种匹配：宽松归一（去下划线/全小写）比较。
+
+    券商别名可能带后缀（``GOLD_``、``GOLDmicro``），后端
+    ``_deal_matches_symbol`` 有完整别名映射；Bridge 只做最宽松兜底，
+    避免严格逐字比较把带下划线的合法成交误过滤。"""
+    if not wanted:
+        return True
+    return (
+        deal_symbol.replace("_", "").lower()
+        == wanted.replace("_", "").lower()
+    )
+
+
 def _parse_utc_input(iso: str) -> datetime:
     """后端发来的时间串（naive=UTC 或带偏移）→ 宿主机本地 naive datetime，
     MT5 order_send/copy_rates 期望本地时刻。naive 按 UTC 解释（后端内部约定
@@ -844,34 +858,123 @@ async def get_ohlcv_history(symbol: str, timeframe: str = "M15", from_date: str 
 
 @app.get("/history", dependencies=[Depends(verify_api_key)])
 async def get_history(days: int = 1, symbol: str | None = None):
-    """Get closed deals (trades) from the last N days, optionally filtered by symbol."""
+    """Get closed deals (trades) from the last N days, optionally filtered by symbol.
+
+    关联配对（成交 + 订单），**以成交为锚** —— ``MqlTradeOrder`` 没有
+    ``position_id``，只有 ``MqlTradeDeal`` 有，故不能从订单侧聚合持仓：
+    - ``history_deals_get`` 的 entry==0（开仓）成交提供 开仓价/开仓时间/方向
+      （DEAL_TYPE 0=BUY 1=SELL，挂单触发的开仓成交 type 也是 0/1，天然覆盖
+      SELL_LIMIT 等挂单方向）；entry==1（平仓）成交提供 平仓价/平仓时间/盈亏。
+      二者按 ``position_id`` 配对，一个持仓对应 0..N 条平仓成交（部分平仓），
+      盈亏按净额聚合（profit+commission+swap），平仓价/时间取最后一条成交。
+    - ``history_orders_get`` 的订单经 ``deal.order == order.ticket`` 匹配，
+      提供 SL/TP（``MqlTradeDeal`` 无 sl/tp，且``MqlTradeOrder`` 才有）。
+      匹配不到时 SL/TP 记 0、开仓价/时间回落开仓成交 —— 不应使整行消失。
+    - 仅平仓完成的持仓进入历史（有 entry==1 成交）。
+    """
     if not ensure_connected():
         return mt5_response(False, error="MT5 not connected")
 
     from_date = datetime.now(timezone.utc) - timedelta(days=days)
     to_date = datetime.now(timezone.utc) + timedelta(days=1)
 
+    orders = mt5.history_orders_get(from_date, to_date)
     deals = mt5.history_deals_get(from_date, to_date)
-    if deals is None:
+    if orders is None or deals is None:
         return mt5_response(True, data=[])
 
-    result = []
+    # 订单侧：deal.order → order.ticket 取 SL/TP。MqlTradeOrder 无 position_id，
+    # 靠 ticket 关联。
+    order_by_ticket = {getattr(o, "ticket", None): o for o in orders}
+
+    # 成交侧按 position_id 聚合。profit 保持毛额（Σ profit），commission/swap
+    # 分别求和 —— 后端 CircuitBreaker.net_pnl 会再算 profit+commission+swap，
+    # 此处若直接给净额会导致后端双计。net_profit 是本端点一次性算好的净额，
+    # 历史展示可直接使用。价格/时间取最后一条（时间戳最大）—— 部分平仓时
+    # 最终平仓价才是历史页应显示的值。
+    entry_by_position: dict[int, dict] = {}
+    exit_by_position: dict[int, dict] = {}
     for deal in deals:
-        if deal.entry == 1 and deal.type in (0, 1):  # entry=1 means exit, type 0=buy 1=sell
-            if symbol and deal.symbol != symbol:
-                continue
-            result.append({
-                "ticket": deal.position_id,
-                "deal_ticket": deal.ticket,
+        pos_id = getattr(deal, "position_id", None)
+        if pos_id is None or pos_id == 0:
+            continue
+        if deal.entry == 0 and deal.type in (0, 1):  # entry=0 open, 0=buy 1=sell
+            # 加仓时同一 position 多条开仓成交：setdefault 保留首条即可
+            entry_by_position.setdefault(pos_id, {
                 "symbol": deal.symbol,
-                "type": "BUY" if deal.type == 1 else "SELL",  # exit type is opposite
-                "lot": deal.volume,
-                "price": deal.price,
-                "profit": deal.profit,
-                "commission": deal.commission,
-                "swap": deal.swap,
-                "comment": deal.comment,
-                "time": _iso_utc(deal.time),
+                "price": float(deal.price),
+                "time": int(deal.time),
+                "type": int(deal.type),
+                "lot": float(deal.volume),
+                "order": getattr(deal, "order", None),
             })
+        elif deal.entry == 1 and deal.type in (0, 1):  # entry=1 exit
+            cur = exit_by_position.get(pos_id)
+            if cur is None:
+                exit_by_position[pos_id] = {
+                    "price": float(deal.price),
+                    "time": int(deal.time),
+                    "profit": float(deal.profit or 0),
+                    "commission": float(deal.commission or 0),
+                    "swap": float(deal.swap or 0),
+                    "comment": getattr(deal, "comment", ""),
+                }
+            else:
+                cur["profit"] += float(deal.profit or 0)
+                cur["commission"] += float(deal.commission or 0)
+                cur["swap"] += float(deal.swap or 0)
+                if int(deal.time) >= cur["time"]:  # 部分平仓：取最后一条
+                    cur["price"] = float(deal.price)
+                    cur["time"] = int(deal.time)
+                    if getattr(deal, "comment", ""):
+                        cur["comment"] = deal.comment
+
+    result = []
+    for pos_id, entry_deal in entry_by_position.items():
+        exit_deal = exit_by_position.get(pos_id)
+        if exit_deal is None:
+            continue  # 持仓中（无平仓成交）不进入历史
+        if not _symbol_matches(entry_deal["symbol"], symbol):
+            continue  # 用开仓成交的 symbol 过滤（后端消费同一来源）
+
+        # SL/TP / 开仓价：经创建持仓的订单（entry deal.order）匹配。
+        order = order_by_ticket.get(entry_deal["order"])
+        if order is not None:
+            sl = float(order.sl)
+            tp = float(order.tp)
+            open_price = float(order.price_open)
+            open_time = _iso_utc(order.time_done or order.time_setup)
+        else:
+            sl = 0.0
+            tp = 0.0
+            open_price = entry_deal["price"]
+            open_time = _iso_utc(entry_deal["time"])
+
+        # 方向由开仓成交类型判定：DEAL_TYPE 0=BUY 1=SELL
+        direction = "SELL" if entry_deal["type"] % 2 == 1 else "BUY"
+        close_price = exit_deal["price"]
+        close_time_iso = _iso_utc(exit_deal["time"])
+        profit = round(exit_deal["profit"], 2)
+        result.append({
+            "ticket": pos_id,
+            "symbol": entry_deal["symbol"],
+            "type": direction,
+            "lot": entry_deal["lot"],
+            "open_price": open_price,
+            "open_time": open_time,
+            "sl": sl,
+            "tp": tp,
+            "close_price": close_price,
+            "close_time": close_time_iso,
+            # 兼容别名：旧版 Bridge 只有 price/time（平仓语义），后端引擎/
+            # 分析/统计等多处直接读这两个键，升级 Bridge 后不能破坏它们。
+            "price": close_price,
+            "time": close_time_iso,
+            "profit": profit,
+            "commission": round(exit_deal["commission"], 2),
+            "swap": round(exit_deal["swap"], 2),
+            "net_profit": round(profit + exit_deal["commission"] + exit_deal["swap"], 2),
+            "comment": exit_deal["comment"],
+        })
 
     return mt5_response(True, data=result)
