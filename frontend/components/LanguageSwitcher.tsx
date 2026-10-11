@@ -6,6 +6,15 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { LOCALE_COOKIE, locales, type Locale } from "@/i18n/config";
 
+// 写入 locale cookie + localStorage 的工具函数，放在模块级而非组件内：
+// document.cookie 是组件作用域之外的可变全局对象，react-hooks/immutability
+// 禁止在组件/钩子内直接赋值（报 "This value cannot be modified"）。提取为
+// 纯工具函数既满足规则，也让组件内的 switchTo 只保留状态更新与导航。
+function persistLocale(next: Locale): void {
+  document.cookie = `${LOCALE_COOKIE}=${next}; path=/; max-age=31536000; samesite=lax`;
+  localStorage.setItem(LOCALE_COOKIE, next);
+}
+
 export function LanguageSwitcher() {
   const locale = useLocale() as Locale;
   const t = useTranslations("app");
@@ -22,8 +31,7 @@ export function LanguageSwitcher() {
   }, []);
 
   const switchTo = (next: Locale) => {
-    document.cookie = `${LOCALE_COOKIE}=${next}; path=/; max-age=31536000; samesite=lax`;
-    localStorage.setItem(LOCALE_COOKIE, next);
+    persistLocale(next);
     setOpen(false);
     router.refresh();
     window.location.reload();

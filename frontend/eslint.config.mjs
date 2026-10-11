@@ -20,6 +20,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // 本仓库历史上把 Python 虚拟环境建在 frontend/ 下（已在 .gitignore），
+    // 其 site-packages 里带第三方 JS（matplotlib web backend）。CI 没有
+    // .venv，所以不忽略会让本地 lint 多报 5 个来自 matplotlib 的
+    // no-this-alias error，与 CI 结果不一致 —— 这里一并排除。
+    ".venv/**",
+    "venv/**",
   ]),
 ]);
 
