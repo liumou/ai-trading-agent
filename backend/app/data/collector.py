@@ -2,7 +2,7 @@
 Historical Data Collector — fetches OHLCV from MT5 bridge and stores in DB.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 from loguru import logger
@@ -73,11 +73,18 @@ class HistoricalDataCollector:
         """Insert bars, skip duplicates via ON CONFLICT DO NOTHING."""
         rows = []
         for time_idx, row in df.iterrows():
+            bar_time = time_idx.to_pydatetime()
+            # 统一转 naive UTC：新 bridge 输出带 +00:00（offset-aware），
+            # 而 ohlcv_data.time 是 TIMESTAMP WITHOUT TIME ZONE —— asyncpg
+            # 拒绝 aware 写入（"can't subtract offset-naive and offset-aware"）。
+            # 与 trade_reviewer._naive / backtest.engine 同一范式；naive 输入原样保留。
+            if bar_time.tzinfo is not None:
+                bar_time = bar_time.astimezone(UTC).replace(tzinfo=None)
             rows.append(
                 {
                     "symbol": symbol,
                     "timeframe": timeframe,
-                    "time": time_idx.to_pydatetime(),
+                    "time": bar_time,
                     "open": float(row["open"]),
                     "high": float(row["high"]),
                     "low": float(row["low"]),
