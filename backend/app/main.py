@@ -114,6 +114,49 @@ def _init_sentry() -> None:
 _init_sentry()
 
 
+async def _restore_active_account(manager, db_session) -> None:
+    """把 manager.current_account_login 从 DB 的 is_active 标志恢复（幂等）。
+
+    引擎随后按该账号设置 account_login（manager.reload_engines / set_current_account
+    已实现），使重启后的交易记账、复盘归属与品种配置看到同一份账号。只改
+    account_login 与持仓缓存，不启动引擎（引擎在后续 manager.start 才放行），
+    所以这里恢复账号不会绕过 PAUSED 闸门。DB 不可用时静默降级为 '0'。
+
+    软删账号（is_deleted=True）必须排除：它已经被用户标记为不再使用，不能被
+    自动重新激活为交易账号。这与查询侧不同 —— 查询侧（_resolve_owned_account
+    / _review_only_rows）要**放行**软删账号，因为复盘挂在 MT5 登录号而非账号 id
+    上，用户"删除后重建同一券商账号"会产生新 id，过滤 id 会让存量复盘不可见。
+    两处是有意区分，不是遗漏。
+    """
+    from sqlalchemy import select
+
+    from app.db.models import MT5Account
+
+    try:
+        result = await db_session.execute(
+            select(MT5Account.login).where(
+                MT5Account.is_active.is_(True),
+                MT5Account.is_deleted.is_(False),
+            )
+        )
+        login = result.scalar_one_or_none()
+        if login is not None:
+            await manager.set_current_account(str(login))
+            logger.info(f"Active account restored on startup: {login}")
+    except Exception as e:
+        logger.warning(f"Active account restore skipped: {type(e).__name__}")
+    finally:
+        # db_session 是共享长生命周期会话，后续服务全部复用。SELECT 会 autobegin
+        # 一个事务，无论成功失败都必须结束：失败会留下失败事务
+        # （asyncpg InFailedSQLTransactionError），成功则事务一直开着占着连接。
+        # 本函数只读、manager.set_current_account 只改内存与电路断路器不碰 DB，
+        # 所以回滚不会撤销任何写入 —— 只是让连接回到 idle。
+        try:
+            await db_session.rollback()
+        except Exception:  # noqa: BLE001 — 回滚本身失败也不能阻断启动
+            logger.warning("Active account restore rollback failed")
+
+
 async def _validate_symbols_at_startup(connector, manager, notifier) -> None:
     """校验每个已启用品种在券商侧仍然存在且可交易。
 
@@ -293,6 +336,11 @@ async def lifespan(app: FastAPI):
 
     # Initialize BotManager (creates one engine per symbol)
     manager = BotManager(connector, db_session, redis_client)
+
+    # 恢复活跃账号：manager.current_account_login 是内存态，重启归零为 "0"，
+    # 而 mt5_accounts.is_active 是 DB 持久态。两套"当前账号"定义不一致会让
+    # 重启后的历史复盘/持仓归属全部落到 '0' 桶（复盘徽章丢失的复现路径）。
+    await _restore_active_account(manager, db_session)
 
     # Initialize AccountSwitchService (Phase 5) — 挂到 app.state 供 /switch 端点调用
     from app.bot.account_switch import AccountSwitchService

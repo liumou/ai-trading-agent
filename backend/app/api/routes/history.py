@@ -197,11 +197,112 @@ async def get_trades(
 
             logging.getLogger(__name__).warning(f"[HIST-MERGE] {_merge_err!r}")
 
+    # 3. Review-only rows — 复盘记录挂在 (ticket, account_login) 上，但订单
+    # 数据本身可能已不可查（MT5 bridge 只回当前活跃账号，切换后原账号的手动
+    # 单消失）。这类行以占位形态补出，保证复盘徽章在 /history 里可见。
+    rows.extend(await _review_only_rows(
+        cutoff, rows, symbol=symbol, trade_type=trade_type, strategy=strategy,
+    ))
+
     # Sort by open_time desc, apply offset/limit
     rows.sort(key=lambda x: x["open_time"], reverse=True)
     paginated = rows[offset : offset + limit]
 
     return {"trades": paginated, "total": len(rows)}
+
+
+async def _review_only_rows(
+    cutoff: datetime,
+    rows: list[dict],
+    symbol: str | None = None,
+    trade_type: str | None = None,
+    strategy: str | None = None,
+) -> list[dict]:
+    """补出"有复盘、无订单数据"的行（source='review_only'）。
+
+    按 (ticket, account_login) 与 /api/trade-reviews/by-ticket 的查询键一致，
+    跨账号都能回看；open_time 用复盘记录的 open_time（与交易时间语义对齐）。
+    缺 close_time → 前端按"持仓中"渲染，不进入复盘统计（profit 为 null）。
+
+    复用 /trades 的 symbol / trade_type / strategy 过滤：review_only 行没有真实
+    订单数据，trade_type 与 strategy 都未知（strategy_name 是占位符 "review_only"
+    而非真实策略名）—— 因此按类型或策略筛选时整类不出现；按品种筛选时用复盘
+    记录里的 symbol，空品种行不会出现（不确定的归属不该混进筛选结果）。
+
+    账号边界：只扫用户自己登记的 mt5_accounts 登录号 + '0' 遗留桶。复盘只能为
+    这些账号创建（POST 触发端点校验归属），且跨账号回看是本次修复明确支持的
+    能力 —— 但"跨账号"不等于"任意账号"，未登记账号的复盘不该出现在结果里。
+    顺带把扫描从全表收敛到账号集合，review 行数增长后不会拖慢 /history。
+
+    注意（多用户边界）：当前是单 owner 部署，账号经鉴权的 /api/accounts 登记，
+    故"所有已登记账号 + '0'"即合理边界。若未来支持每用户独立账号集，此处的
+    owned 集合与 _resolve_owned_account 的注册检查都必须改为按 auth subject 收敛，
+    否则跨用户可见成为 IDOR。
+
+    刻意不过滤 is_deleted：复盘挂在 MT5 登录号而非 mt5_accounts.id 上，用户
+    "删除后重建同一券商账号"会得到新 id，过滤已删行会让存量复盘变不可见。
+    这与启动恢复侧（_restore_active_account 排除软删，避免重新激活废弃账号）
+    是有意区分。
+    """
+    if trade_type or strategy:
+        # 订单数据不可查 → 方向与策略都无从判断。此时若补出占位行，它们在
+        # 已按该条件过滤的结果里会"看起来属于"该类型/策略，比完全不出现更糟
+        # （错误的归属信息，而非无信息）。
+        return []
+    existing = {(r["ticket"], r.get("account_login") or "0") for r in rows}
+    try:
+        from sqlalchemy import select as _select
+
+        from app.db.models import MT5Account, TradeReview
+        from app.db.session import async_session
+
+        async with async_session() as session:
+            # '0' 遗留桶 + 全部登记账号（含已切换走、已禁用、已软删的）
+            owned = {"0"} | {
+                str(login) for login in (await session.execute(
+                    _select(MT5Account.login)
+                )).scalars().all()
+            }
+            reviews = (await session.execute(_select(TradeReview).where(
+                TradeReview.open_time >= cutoff,
+                TradeReview.account_login.in_(owned),
+            ))).scalars().all()
+    except Exception as e:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).warning(f"[HIST-REVIEWS] review-only scan failed: {e!r}")
+        return []
+
+    extras: list[dict] = []
+    for rev in reviews:
+        account = rev.account_login or "0"
+        if (rev.ticket, account) in existing:
+            continue
+        if symbol and get_canonical_symbol(rev.symbol or "") != symbol:
+            continue
+        extras.append({
+            "id": None,
+            "ticket": rev.ticket,
+            "symbol": rev.symbol or "",
+            "type": "",
+            "lot": 0,
+            "open_price": 0,
+            "close_price": None,
+            "sl": 0,
+            "tp": 0,
+            "open_time": rev.open_time.isoformat(),
+            "close_time": None,
+            "profit": None,
+            "strategy_name": "review_only",
+            "ai_sentiment_label": None,
+            "ai_sentiment_score": None,
+            "trade_reason": None,
+            "pre_trade_snapshot": None,
+            "post_trade_analysis": None,
+            "account_login": account,
+            "source": "review_only",
+        })
+    return extras
 
 
 @router.get("/daily-pnl")

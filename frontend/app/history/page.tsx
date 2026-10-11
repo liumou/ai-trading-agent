@@ -42,7 +42,9 @@ type Trade = {
   trade_reason: string | null;
   pre_trade_snapshot: Record<string, unknown> | null;
   post_trade_analysis: { exit_reason: string; duration_hours: number | null; outcome: string; profit_usd: number; entry_regime: string; exit_regime: string | null; summary_th: string } | null;
-  source: "bot" | "mt5";
+  // "review_only" = 有复盘记录但订单数据已不可查（MT5 bridge 只回当前活跃
+  // 账号，切换后原账号的手动单消失）。这类行只承载复盘徽章，价格列用占位。
+  source: "bot" | "mt5" | "review_only";
   account_login: string;
 };
 
@@ -166,9 +168,11 @@ export default function HistoryPage() {
   const [loadingReviews, setLoadingReviews] = useState<Set<string>>(new Set());
   const pollTimersRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
-  // 待复盘提示：已平仓（有 profit）且无 completed 复盘的交易
+  // 待复盘提示：已平仓（有 profit）且无 completed 复盘的交易。review_only 行
+  // 是"有复盘但订单数据已不可查"的占位行，订单本身已不在可见历史里（无法
+  // 再触发新复盘），不参与待复盘计数。
   const pendingReviewCount = trades.filter((t) => {
-    if (t.profit === null) return false;
+    if (t.profit === null || t.source === "review_only") return false;
     const r = reviewByTicket[`${t.source}-${t.ticket}`];
     return !r || r.status !== "completed";
   }).length;
@@ -185,10 +189,12 @@ export default function HistoryPage() {
     }
   }, []);
 
-  // trades 变化后，为所有已平仓交易补查复盘状态（只查一次，避免循环依赖）
+  // trades 变化后，为所有已平仓交易补查复盘状态（只查一次，避免循环依赖）。
+  // review_only 行是"有复盘但订单数据已不可查"的占位行，必须参与查询——
+  // 它们存在的目的就是让复盘徽章在切换账号后仍可见。
   useEffect(() => {
     for (const t of trades) {
-      if (t.profit === null) continue;
+      if (t.profit === null && t.source !== "review_only") continue;
       void fetchReviewByTicket(t);
     }
   }, [trades, fetchReviewByTicket]);
@@ -242,7 +248,11 @@ export default function HistoryPage() {
 
   const handleExportCSV = () => {
     const headers = "Ticket,Symbol,Type,Lot,Open Time,Close Time,Open Price,Close Price,SL,TP,Profit,Strategy,Sentiment\n";
-    const rows = trades
+    // review_only 行不是真实交易（订单数据已不可查，手数/价格/盈亏全为占位），
+    // 导出会变成一行全 0，污染下游统计。它们存在的意义是表格里能看到复盘徽章，
+    // 不需要进导出。导出行数据此与提示文案里的计数保持一致。
+    const exported = trades.filter((t) => t.source !== "review_only");
+    const rows = exported
       .map((t) =>
         `${t.ticket},${t.symbol},${t.type},${t.lot},${t.open_time},${t.close_time ?? ""},${t.open_price},${t.close_price ?? ""},${t.sl},${t.tp},${t.profit ?? ""},${t.strategy_name},${t.ai_sentiment_label ?? ""}`
       )
@@ -252,7 +262,7 @@ export default function HistoryPage() {
     a.href = URL.createObjectURL(blob);
     a.download = `trades_${days}d.csv`;
     a.click();
-    showSuccess(t("csvExported"), t("tradesExported", { count: trades.length }));
+    showSuccess(t("csvExported"), t("tradesExported", { count: exported.length }));
   };
 
   return (
@@ -354,9 +364,13 @@ export default function HistoryPage() {
                   {(() => {
                     const hasReason = trades.some((t) => t.trade_reason);
                     const hasSentiment = trades.some((t) => t.ai_sentiment_label);
-                    const total = trades.reduce((s, t) => s + (t.profit ?? 0), 0);
-                    const wins = trades.filter((t) => (t.profit ?? 0) > 0).length;
-                    const losses = trades.length - wins;
+                    // 统计只看真实盈亏：review_only 行（有复盘但订单数据已不可查）
+                    // 与未平仓行 profit 为 null，既不进总额也不算胜负——把它们算作
+                    // 亏损会让胜率被系统性低估。
+                    const settled = trades.filter((t) => t.profit !== null);
+                    const total = settled.reduce((s, t) => s + (t.profit ?? 0), 0);
+                    const wins = settled.filter((t) => (t.profit ?? 0) > 0).length;
+                    const losses = settled.length - wins;
 
                     return (
                       <>
@@ -392,19 +406,31 @@ export default function HistoryPage() {
                                       ? toDate(t.close_time).toLocaleDateString(dateLocale, { timeZone: "Asia/Shanghai" })
                                       : "—"}
                                   </TableCell>
-                                  <TableCell className="text-xs font-medium">{t.symbol}</TableCell>
-                                  <TableCell className={`text-xs font-semibold ${t.type === "BUY" ? "text-success dark:text-green-400" : "text-destructive"}`}>
-                                    {t.type}
+                                  {/* 占位行的 symbol 来自复盘记录（手动单为空）——
+                                      空值显示占位符，避免看起来像渲染失败 */}
+                                  <TableCell className={`text-xs font-medium ${!t.symbol ? "text-muted-foreground" : ""}`}>{t.symbol || "—"}</TableCell>
+                                  {/* review_only 行是"有复盘但订单数据已不可查"
+                                      的占位行，方向/价格列全部为占位空值 */}
+                                  <TableCell className={`text-xs font-semibold ${!t.type ? "text-muted-foreground" : t.type === "BUY" ? "text-success dark:text-green-400" : "text-destructive"}`}>
+                                    {t.type || "—"}
                                   </TableCell>
-                                  <TableCell className="text-right text-xs font-mono">{t.lot}</TableCell>
-                                  <TableCell className="text-right text-xs font-mono">{t.open_price.toFixed(2)}</TableCell>
+                                  {/* 占位行没有真实手数/开仓价，显示 "—" 而非 0.00——
+                                      0.00 看起来像有效价格，会被误读为成交价 */}
+                                  <TableCell className="text-right text-xs font-mono">{t.source === "review_only" ? "—" : t.lot}</TableCell>
+                                  <TableCell className="text-right text-xs font-mono">{t.source === "review_only" ? "—" : t.open_price.toFixed(2)}</TableCell>
                                   <TableCell className="text-right text-xs font-mono">{t.close_price?.toFixed(2) ?? "—"}</TableCell>
                                   <TableCell className="text-right text-xs font-mono">{t.sl > 0 ? t.sl.toFixed(2) : "—"}</TableCell>
                                   <TableCell className="text-right text-xs font-mono">{t.tp > 0 ? t.tp.toFixed(2) : "—"}</TableCell>
-                                  <TableCell className={`text-right text-xs font-mono font-semibold ${(t.profit ?? 0) >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}>
+                                  {/* profit 三态配色：有值按盈亏着色；null 显示 "—" 且
+                                      用中性色（占位行为 null，不能被 (null??0)>=0 判成盈利绿） */}
+                                  <TableCell className={`text-right text-xs font-mono font-semibold ${t.profit === null ? "text-muted-foreground" : t.profit >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}>
                                     {t.profit !== null ? `${t.profit >= 0 ? "+" : ""}${t.profit.toFixed(2)}` : "—"}
                                   </TableCell>
-                                  <TableCell className="text-xs text-muted-foreground">{t.strategy_name}</TableCell>
+                                  {/* "review_only" 是后端内部标记（有复盘但订单数据已不可查），
+                                      不是策略名——同行的复盘徽章已表达状态，这里显示占位符 */}
+                                  <TableCell className="text-xs text-muted-foreground">
+                                    {t.source === "review_only" ? "—" : t.strategy_name}
+                                  </TableCell>
                                   {hasReason && (
                                     <TableCell className="text-xs text-muted-foreground max-w-[180px] truncate" title={t.trade_reason || undefined}>
                                       {t.trade_reason || "—"}
@@ -417,8 +443,10 @@ export default function HistoryPage() {
                                       ) : null}
                                     </TableCell>
                                   )}
-                                  {/* 复盘操作列 */}
-                                  {t.profit === null ? (
+                                  {/* 复盘操作列：review_only 行 profit 为 null
+                                      （无订单数据），但必须显示复盘徽章——
+                                      它存在的唯一目的就是让切换账号后仍能回看复盘 */}
+                                  {t.profit === null && t.source !== "review_only" ? (
                                     <TableCell className="text-center" />
                                   ) : (
                                     <TableCell className="text-center">
@@ -441,7 +469,7 @@ export default function HistoryPage() {
                         {/* Summary bar at bottom */}
                         <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-muted/20 rounded-b-xl">
                           <span className="text-xs text-muted-foreground font-medium">
-                            {t("summaryStats", { total: trades.length, wins, losses, rate: trades.length > 0 ? ((wins / trades.length) * 100).toFixed(0) : 0 })}
+                            {t("summaryStats", { total: trades.length, wins, losses, rate: settled.length > 0 ? ((wins / settled.length) * 100).toFixed(0) : 0 })}
                           </span>
                           <span className={`text-sm font-bold font-mono ${total >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}>
                             {total >= 0 ? "+" : ""}${Math.abs(total).toFixed(2)}
