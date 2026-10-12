@@ -337,6 +337,21 @@ export const runWalkForward = (params: {
   initial_balance?: number;
   count?: number;
 }) => api.post("/api/backtest/walk-forward", params, { timeout: 180000 });
+export const runGeneticOptimize = (params: {
+  strategy: string;
+  param_ranges: Record<string, [number, number]>;
+  pop_size?: number;
+  generations?: number;
+  seed?: number;
+  symbol?: string;
+  timeframe?: string;
+  source?: string;
+  from_date?: string;
+  to_date?: string;
+  initial_balance?: number;
+  min_trades?: number;
+  count?: number;
+}) => api.post("/api/backtest/genetic-optimize", params, { timeout: 180000 });
 
 // Agent Prompts
 export const getAgentPrompts = () => api.get("/api/agent-prompts");

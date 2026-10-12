@@ -14,7 +14,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Play, BarChart3, TrendingUp, DollarSign, Target,
   AlertTriangle, Search, Loader2, FlaskConical, Zap, Footprints,
-  CheckCircle, XCircle, Dice5,
+  CheckCircle, XCircle, Dice5, Dna, Grid3X3, ShieldCheck, ShieldAlert,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageInstructions } from "@/components/layout/PageInstructions";
@@ -22,7 +22,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { showSuccess, showError } from "@/lib/toast";
 import { TIMEFRAMES } from "@/components/ui/timeframe-selector";
 import {
-  runBacktest, runOptimize, runWalkForward, runMonteCarlo, runCointegration, runPermutationTest, runOverfittingScore, getCurrentStrategy, getDataStatus, getSymbols,
+  runBacktest, runOptimize, runGeneticOptimize, runWalkForward, runMonteCarlo, runCointegration, runPermutationTest, runOverfittingScore, getCurrentStrategy, getDataStatus, getSymbols,
 } from "@/lib/api";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -108,6 +108,21 @@ function buildDefaultGridInputs(strat: string): Record<string, string> {
   return result;
 }
 
+/** 从 STRATEGY_PARAMS 的 defaults 推导遗传优化的参数范围（min,max），
+ * 取默认值数组的首尾作为边界。 */
+function buildDefaultRangeInputs(strat: string): Record<string, string> {
+  const params = STRATEGY_PARAMS[strat] || [];
+  const result: Record<string, string> = {};
+  for (const p of params) {
+    if (p.defaults.length > 0) {
+      const min = Math.min(...p.defaults);
+      const max = Math.max(...p.defaults);
+      result[p.key] = `${min},${max}`;
+    }
+  }
+  return result;
+}
+
 // ─── Page ─────────────────────────────────────────────────────────
 
 export default function BacktestPage() {
@@ -129,6 +144,16 @@ export default function BacktestPage() {
   const [optimizing, setOptimizing] = useState(false);
   const [paramGridInputs, setParamGridInputs] = useState<Record<string, string>>(
     () => buildDefaultGridInputs("ema_crossover")
+  );
+  // 遗传优化状态：搜索方式（grid=穷举 / genetic=遗传）+ 遗传超参
+  const [optMode, setOptMode] = useState<"grid" | "genetic">("grid");
+  const [geneticResult, setGeneticResult] = useState<Record<string, unknown> | null>(null);
+  const [geneticRunning, setGeneticRunning] = useState(false);
+  const [genPopSize, setGenPopSize] = useState(48);
+  const [genGenerations, setGenGenerations] = useState(15);
+  const [genSeed, setGenSeed] = useState(0);
+  const [genRangeInputs, setGenRangeInputs] = useState<Record<string, string>>(
+    () => buildDefaultRangeInputs("ema_crossover")
   );
 
   // Walk-Forward state
@@ -156,6 +181,8 @@ export default function BacktestPage() {
   const handleStrategyChange = (v: string) => {
     setStrategy(v);
     setParamGridInputs(buildDefaultGridInputs(v));
+    setGenRangeInputs(buildDefaultRangeInputs(v));
+    setGeneticResult(null);
   };
 
   useEffect(() => {
@@ -203,6 +230,33 @@ export default function BacktestPage() {
       setOptResult(res.data);
       showSuccess(t("toasts.optimizationCompleted"));
     } catch { showError(t("toasts.optimizationFailed")); } finally { setOptimizing(false); }
+  };
+
+  const handleGeneticOptimize = async () => {
+    setGeneticRunning(true);
+    setGeneticResult(null);
+    try {
+      // 遗传优化用参数范围（min,max），从 genRangeInputs 解析
+      const paramRanges: Record<string, [number, number]> = {};
+      for (const [key, value] of Object.entries(genRangeInputs)) {
+        const parts = value.split(",").map(Number).filter((n) => !isNaN(n));
+        if (parts.length >= 2 && parts[0] < parts[1]) {
+          paramRanges[key] = [parts[0], parts[1]];
+        }
+      }
+      const params: Record<string, unknown> = {
+        strategy, symbol, timeframe, initial_balance: balance, source,
+        param_ranges: paramRanges,
+        pop_size: genPopSize,
+        generations: genGenerations,
+        seed: genSeed,
+      };
+      if (source === "db") { params.from_date = fromDate; params.to_date = toDate; }
+      else { params.count = count; }
+      const res = await runGeneticOptimize(params as Parameters<typeof runGeneticOptimize>[0]);
+      setGeneticResult(res.data);
+      showSuccess(t("toasts.geneticCompleted"));
+    } catch { showError(t("toasts.geneticFailed")); } finally { setGeneticRunning(false); }
   };
 
   const handleWalkForward = async () => {
@@ -457,38 +511,136 @@ export default function BacktestPage() {
         <TabsContent value="optimize" className="space-y-4 mt-0">
           {configForm}
 
-          {/* Dynamic Parameter Grid */}
-          <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{t("optimizer.parameterGrid")}</h3>
-            {currentParams.length > 0 ? (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {currentParams.map((p) => (
-                  <div key={p.key} className="space-y-1">
-                    <label className="text-[11px] text-muted-foreground font-medium">{t(`params.${p.labelKey}`)}</label>
+          {/* 搜索方式切换：穷举（网格）/ 遗传 */}
+          <div className="flex gap-2">
+            <Button
+              variant={optMode === "grid" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setOptMode("grid")}
+              className="rounded-lg"
+            >
+              <Grid3X3 className="size-3.5 mr-1.5" />
+              {t("optimizer.modeGrid")}
+            </Button>
+            <Button
+              variant={optMode === "genetic" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setOptMode("genetic")}
+              className="rounded-lg"
+            >
+              <Dna className="size-3.5 mr-1.5" />
+              {t("optimizer.modeGenetic")}
+            </Button>
+          </div>
+
+          {optMode === "grid" && (
+            <>
+              {/* Dynamic Parameter Grid */}
+              <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{t("optimizer.parameterGrid")}</h3>
+                {currentParams.length > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {currentParams.map((p) => (
+                      <div key={p.key} className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground font-medium">{t(`params.${p.labelKey}`)}</label>
+                        <Input
+                          value={paramGridInputs[p.key] || ""}
+                          onChange={(e) => setParamGridInputs((prev) => ({ ...prev, [p.key]: e.target.value }))}
+                          placeholder={p.defaults.join(",")}
+                          className="text-sm font-mono"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground py-2">
+                    {strategy === "ml_signal"
+                      ? t("optimizer.mlSignalHint")
+                      : t("optimizer.noParams")}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex justify-end">
+                <Button onClick={handleOptimize} disabled={optimizing || currentParams.length === 0} className="rounded-lg font-medium min-w-35">
+                  {optimizing ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <Search className="size-4 mr-1.5" />}
+                  {optimizing ? t("actions.optimizing") : t("actions.runGridSearch")}
+                </Button>
+              </div>
+            </>
+          )}
+
+          {optMode === "genetic" && (
+            <>
+              {/* Genetic: param ranges + hyperparams */}
+              <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{t("optimizer.geneticRanges")}</h3>
+                <p className="text-[11px] text-muted-foreground">{t("optimizer.geneticRangesHint")}</p>
+                {currentParams.length > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {currentParams.map((p) => (
+                      <div key={p.key} className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground font-medium">{t(`params.${p.labelKey}`)}</label>
+                        <Input
+                          value={genRangeInputs[p.key] || ""}
+                          onChange={(e) => setGenRangeInputs((prev) => ({ ...prev, [p.key]: e.target.value }))}
+                          placeholder="min,max"
+                          className="text-sm font-mono"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground py-2">
+                    {strategy === "ml_signal"
+                      ? t("optimizer.mlSignalHint")
+                      : t("optimizer.noParams")}
+                  </p>
+                )}
+              </div>
+
+              {/* Genetic hyperparams */}
+              <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{t("optimizer.geneticHyper")}</h3>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-muted-foreground font-medium">{t("optimizer.popSize")}</label>
                     <Input
-                      value={paramGridInputs[p.key] || ""}
-                      onChange={(e) => setParamGridInputs((prev) => ({ ...prev, [p.key]: e.target.value }))}
-                      placeholder={p.defaults.join(",")}
+                      type="number" min={4} max={500}
+                      value={genPopSize}
+                      onChange={(e) => setGenPopSize(Number(e.target.value))}
                       className="text-sm font-mono"
                     />
                   </div>
-                ))}
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-muted-foreground font-medium">{t("optimizer.generations")}</label>
+                    <Input
+                      type="number" min={1} max={200}
+                      value={genGenerations}
+                      onChange={(e) => setGenGenerations(Number(e.target.value))}
+                      className="text-sm font-mono"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-muted-foreground font-medium">{t("optimizer.seed")}</label>
+                    <Input
+                      type="number" min={0}
+                      value={genSeed}
+                      onChange={(e) => setGenSeed(Number(e.target.value))}
+                      className="text-sm font-mono"
+                    />
+                  </div>
+                </div>
               </div>
-            ) : (
-              <p className="text-xs text-muted-foreground py-2">
-                {strategy === "ml_signal"
-                  ? t("optimizer.mlSignalHint")
-                  : t("optimizer.noParams")}
-              </p>
-            )}
-          </div>
 
-          <div className="flex justify-end">
-            <Button onClick={handleOptimize} disabled={optimizing || currentParams.length === 0} className="rounded-lg font-medium min-w-35">
-              {optimizing ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <Search className="size-4 mr-1.5" />}
-              {optimizing ? t("actions.optimizing") : t("actions.runGridSearch")}
-            </Button>
-          </div>
+              <div className="flex justify-end">
+                <Button onClick={handleGeneticOptimize} disabled={geneticRunning || currentParams.length === 0} className="rounded-lg font-medium min-w-35">
+                  {geneticRunning ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <Dna className="size-4 mr-1.5" />}
+                  {geneticRunning ? t("actions.geneticOptimizing") : t("actions.runGeneticSearch")}
+                </Button>
+              </div>
+            </>
+          )}
 
           {optResult && !optResult.error && (
             <div className="space-y-4">
@@ -552,7 +704,75 @@ export default function BacktestPage() {
             </div>
           )}
 
-          {!optResult && !optimizing && (
+          {geneticResult && !(geneticResult as Record<string, unknown>).error && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatCard icon={Target} label={t("optimizer.bestFitness")} value={(geneticResult.best_fitness as number).toFixed(4)} variant="gold" />
+                <StatCard icon={Dna} label={t("optimizer.totalGenerations")} value={geneticResult.total_generations as number} />
+                <StatCard icon={Footprints} label={t("optimizer.testedIndividuals")} value={geneticResult.tested_individuals as number} />
+                <StatCard
+                  icon={geneticResult.leader_params ? ShieldCheck : ShieldAlert}
+                  label={t("optimizer.oosGate")}
+                  value={geneticResult.leader_params ? t("optimizer.oosPassed") : t("optimizer.oosNotPassed")}
+                  variant={geneticResult.leader_params ? "success" : "warning"}
+                />
+              </div>
+
+              {/* 每代 fitness 曲线 */}
+              {(geneticResult.history as Record<string, number>[])?.length > 0 && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">{t("optimizer.fitnessCurve")}</h3>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <AreaChart data={geneticResult.history as Record<string, number>[]}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
+                      <XAxis dataKey="gen" tick={{ fontSize: 11 }} stroke="rgba(148,163,184,0.4)" />
+                      <YAxis tick={{ fontSize: 11 }} stroke="rgba(148,163,184,0.4)" domain={["auto", "auto"]} />
+                      <Tooltip contentStyle={{ background: "var(--popover)", borderColor: "var(--border)", fontSize: 12 }} />
+                      <Area type="monotone" dataKey="best_fitness" name={t("optimizer.bestFitness")} stroke="var(--chart-1, #f59e0b)" fill="var(--chart-1, #f59e0b)" fillOpacity={0.15} strokeWidth={2} />
+                      <Area type="monotone" dataKey="mean_fitness" name={t("optimizer.meanFitness")} stroke="var(--chart-2, #3b82f6)" fill="var(--chart-2, #3b82f6)" fillOpacity={0.08} strokeWidth={1.5} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                  {(geneticResult.history as { survivors?: number }[]).some((h) => (h.survivors ?? 0) > 0) && (
+                    <p className="text-[11px] text-muted-foreground mt-2">
+                      {t("optimizer.survivorsPrefix")}
+                      {(geneticResult.history as { survivors?: number }[]).map((h) => h.survivors ?? 0).join(" → ")}
+                      {t("optimizer.survivorsSuffix")}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* best / leader 参数 */}
+              {geneticResult.best_params != null && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">{t("optimizer.bestParameters")}</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(geneticResult.best_params as Record<string, number>).map(([k, v]) => (
+                      <Badge key={k} variant="outline" className="text-sm py-1.5 px-4 rounded-full font-semibold">
+                        {k}: <strong className="ml-1">{v}</strong>
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {geneticResult.leader_params != null && (
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+                  <h3 className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-3">{t("optimizer.leaderParams")}</h3>
+                  <p className="text-[11px] text-muted-foreground mb-3">{t("optimizer.leaderParamsHint")}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(geneticResult.leader_params as Record<string, number>).map(([k, v]) => (
+                      <Badge key={k} variant="outline" className="text-sm py-1.5 px-4 rounded-full font-semibold border-emerald-500/30 text-emerald-300">
+                        {k}: <strong className="ml-1">{v}</strong>
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {optMode === "grid" && !optResult && !optimizing && (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <div className="size-12 rounded-xl bg-muted flex items-center justify-center mb-3">
                 <Zap className="size-6 text-muted-foreground" />
@@ -562,10 +782,27 @@ export default function BacktestPage() {
             </div>
           )}
 
+          {optMode === "genetic" && !geneticResult && !geneticRunning && (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="size-12 rounded-xl bg-muted flex items-center justify-center mb-3">
+                <Dna className="size-6 text-muted-foreground" />
+              </div>
+              <p className="text-sm font-semibold">{t("optimizer.geneticEmptyTitle")}</p>
+              <p className="text-xs text-muted-foreground mt-1 max-w-xs">{t("optimizer.geneticEmptyDescription")}</p>
+            </div>
+          )}
+
           {optResult && "error" in optResult && (
             <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3 flex items-center gap-2">
               <AlertTriangle className="size-4 text-red-400 shrink-0" />
               <p className="text-sm text-red-400">{String(optResult.error)}</p>
+            </div>
+          )}
+
+          {geneticResult && "error" in (geneticResult as Record<string, unknown>) && (
+            <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3 flex items-center gap-2">
+              <AlertTriangle className="size-4 text-red-400 shrink-0" />
+              <p className="text-sm text-red-400">{String((geneticResult as Record<string, unknown>).error)}</p>
             </div>
           )}
         </TabsContent>
