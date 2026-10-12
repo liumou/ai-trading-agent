@@ -7,7 +7,6 @@
 - 确定性金样（同输入两次输出全等）
 """
 
-from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import numpy as np
@@ -39,7 +38,7 @@ def _tick_time(df, offset_s=60):
 def _ctx(entry=2000.0, sl=1985.0, tp=2050.0, lot=0.1, equity=10000.0, balance=10000.0,
          m15=None, account_daily_pnl=None, profile=None, positions=None, sentiment=None):
     return SimpleNamespace(
-        symbol="GOLD", entry_ref=entry, sl=sl, tp=tp, lot=lot, spread=0.5,
+        symbol="GOLD", broker_symbol="GOLD_", entry_ref=entry, sl=sl, tp=tp, lot=lot, spread=0.5,
         account={"balance": balance, "equity": equity},
         account_daily_pnl=account_daily_pnl,
         profile=profile or {}, positions=positions or [],
@@ -58,6 +57,7 @@ def _snapshot(direction="BUY", rule_flags=None, sentiment=None):
 
 def _market_data(m15=None, h1=None, spec=SPEC, deals=None, raise_error=False):
     md = SimpleNamespace()
+    md.spec_requests = []
 
     async def get_ohlcv(symbol, tf, count):
         if raise_error:
@@ -65,6 +65,7 @@ def _market_data(m15=None, h1=None, spec=SPEC, deals=None, raise_error=False):
         return m15 if tf == "M15" else h1
 
     async def get_symbol_spec(symbol):
+        md.spec_requests.append(symbol)
         if spec is None:
             return {"success": False}
         return {"success": True, "data": spec}
@@ -255,6 +256,20 @@ async def test_missing_spec_warn_only():
     d = await _engine(m15=m15, spec=None).evaluate(_snapshot(), _ctx(m15=m15))
     assert d.verdict == "CAUTION"
     assert "敞口上限：警告" in d.risk_flags
+
+
+@pytest.mark.asyncio
+async def test_spec_fetch_uses_broker_symbol():
+    """回归：spec 必须用 broker_symbol（券商侧名）拉取，而不是 canonical 引擎键。
+
+    get_symbol_spec 刻意不做 to_broker_alias 映射（connector.py docstring），
+    canonical 名（如 GOLD）在券商侧不存在时会拉空 → exposure 降级 warn-only。
+    PreflightContext.broker_symbol 已是 to_broker_alias 结果，应透传。"""
+    m15 = _df()
+    eng = _engine(m15=m15)  # spec=SPEC 默认提供 tick_value/tick_size
+    d = await eng.evaluate(_snapshot(), _ctx(m15=m15))
+    # 暴露 spy：引擎确实用 broker_symbol 而非 symbol 请求 spec
+    assert eng.market_data.spec_requests == ["GOLD_"]
 
 
 @pytest.mark.asyncio

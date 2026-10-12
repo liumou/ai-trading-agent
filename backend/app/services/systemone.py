@@ -243,7 +243,7 @@ class LocalRuleEngine:
                 asyncio.gather(
                     self.market_data.get_ohlcv(ctx.symbol, "M15", OHLCV_COUNT),
                     self.market_data.get_ohlcv(ctx.symbol, "H1", OHLCV_COUNT),
-                    self._fetch_spec(ctx.symbol),
+                    self._fetch_spec(ctx.broker_symbol if hasattr(ctx, "broker_symbol") else ctx.symbol),
                     self._fetch_full_history(),
                 ),
                 timeout=settings.manual_review_fetch_timeout_s,
@@ -260,6 +260,15 @@ class LocalRuleEngine:
         return m15_df, h1_df, spec, deals if isinstance(deals, list) else None
 
     async def _fetch_spec(self, symbol: str) -> dict | None:
+        """拉券商侧 symbol spec（tick_value/tick_size/contract_size）。
+
+        ``symbol`` 必须是**券商侧名称**（broker_symbol）——connector 的
+        get_symbol_spec 刻意不做 to_broker_alias 映射（防操作员新别名被
+        旧行覆盖），canonical 名在券商侧可能不存在导致拉空 → exposure
+        规则只能 warn-only「无法核实风险占比」。调用方（_fetch_inputs）
+        负责传 ctx.broker_symbol（PreflightContext 已按 to_broker_alias 换算）。
+        失败容忍 → None，对应规则降级 warn-only（spec 缺失 ≠ 基础设施故障）。
+        """
         try:
             res = await self.market_data.connector.get_symbol_spec(symbol)
             if res.get("success"):
