@@ -621,17 +621,22 @@ class ManualOrderGate:
         new_sl = current_sl if sl is None else float(sl)
         new_tp = current_tp if tp is None else float(tp)
 
-        # 方向合法性（SL/TP 必须在持仓的正确一侧）
+        # 方向合法性（SL/TP 必须在持仓的正确一侧）—— 基准 = 现价（当前市场价），
+        # 而非开仓价 entry：盈利仓收紧 SL 锁盈时 SL 会越过开仓价（SELL 设 SL 低于
+        # 开仓价、BUY 设 SL 高于开仓价），用 entry 基准会把合法操作误拒
+        # （2026-10-12：SL 4175.0 must be above entry 4178.08 for SELL）。
+        # current_price 缺失（旧 bridge/历史数据）时回退 entry 基准，不静默放行。
+        price = float(pos.get("current_price") or 0) or entry
         if is_buy:
-            if new_sl and new_sl >= entry:
-                return {"modified": False, "error": f"SL {new_sl} must be below entry {entry} for BUY"}
-            if new_tp and new_tp <= entry:
-                return {"modified": False, "error": f"TP {new_tp} must be above entry {entry} for BUY"}
+            if new_sl and new_sl >= price:
+                return {"modified": False, "error": f"SL {new_sl} must be below current price {price} for BUY"}
+            if new_tp and new_tp <= price:
+                return {"modified": False, "error": f"TP {new_tp} must be above current price {price} for BUY"}
         else:
-            if new_sl and new_sl <= entry:
-                return {"modified": False, "error": f"SL {new_sl} must be above entry {entry} for SELL"}
-            if new_tp and new_tp >= entry:
-                return {"modified": False, "error": f"TP {new_tp} must be below entry {entry} for SELL"}
+            if new_sl and new_sl <= price:
+                return {"modified": False, "error": f"SL {new_sl} must be above current price {price} for SELL"}
+            if new_tp and new_tp >= price:
+                return {"modified": False, "error": f"TP {new_tp} must be below current price {price} for SELL"}
 
         # 删除已有止损 = 无限拉宽（评审 C-3）：风险只减不增，已有 SL 时
         # new_sl=0 必须硬拦截 —— 任何有限倍数都无法约束「无限距离」。

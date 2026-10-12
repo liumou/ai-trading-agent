@@ -425,9 +425,9 @@ async def test_sltp_direction_validated(gate, session_patched):
         "data": [{"ticket": 42, "symbol": "GOLD_", "type": "BUY", "volume": 0.1,
                   "open_price": 2000.0, "sl": 0, "tp": 0, "profit": 0}],
     }
-    res = await gate.modify_position_sltp(42, sl=2010.0, tp=None)  # BUY SL ≥ entry
+    res = await gate.modify_position_sltp(42, sl=2010.0, tp=None)  # BUY SL ≥ 基准价
     assert res["modified"] is False
-    assert "below entry" in res["error"]
+    assert "below" in res["error"]
 
 
 @pytest.mark.asyncio
@@ -444,6 +444,73 @@ async def test_sltp_remove_existing_stop_rejected(gate, session_patched):
     assert "Removing an existing stop-loss" in res["reason"]
     # 连接器不应被调用
     gate.connector.modify_position.assert_not_awaited()
+
+
+# ─── 改 SL/TP 方向校验基准（评审回归：entry → current_price）──────────────
+
+
+@pytest.mark.asyncio
+async def test_sltp_sell_profit_tighten_allowed(gate, session_patched):
+    """回归：SELL 盈利仓（现价 < 开仓价）收紧 SL 锁盈必须放行。
+
+    旧实现以 open_price(entry) 为基准要求 SL > entry，把 SL 设到
+    盈利区（SL < entry）直接误拒。方向合法性的正确基准是「现价」：
+    SELL 的 SL 应 > 现价（≈bid），TP 应 < 现价。
+    """
+    gate.connector.get_positions.return_value = {
+        "success": True,
+        "data": [{"ticket": 42, "symbol": "GOLD_", "type": "SELL", "volume": 0.1,
+                  "open_price": 4178.08, "current_price": 4168.0,
+                  "sl": 0, "tp": 0, "profit": 101.0}],
+    }
+    gate.connector.modify_position.return_value = {"success": True, "data": {}}
+    res = await gate.modify_position_sltp(42, sl=4175.0, tp=None)  # SL 低于 entry 但 > 现价
+    assert res["modified"] is True
+    assert res["sl"] == 4175.0
+    gate.connector.modify_position.assert_awaited_once_with(42, sl=4175.0, tp=0.0)
+
+
+@pytest.mark.asyncio
+async def test_sltp_sell_sl_below_price_rejected(gate, session_patched):
+    """SELL SL 必须 > 现价：SL 低于现价 = 无止损保护（现价跌破才触发）→ 拒绝。"""
+    gate.connector.get_positions.return_value = {
+        "success": True,
+        "data": [{"ticket": 42, "symbol": "GOLD_", "type": "SELL", "volume": 0.1,
+                  "open_price": 4178.08, "current_price": 4175.0,
+                  "sl": 0, "tp": 0, "profit": 31.0}],
+    }
+    res = await gate.modify_position_sltp(42, sl=4170.0, tp=None)  # < 现价，无保护
+    assert res["modified"] is False
+    assert "must be above" in res["error"]
+    assert "entry" not in res["error"]  # 错误提示应引用现价语义
+
+
+@pytest.mark.asyncio
+async def test_sltp_buy_profit_tighten_allowed(gate, session_patched):
+    """回归：BUY 盈利仓（现价 > 开仓价）收紧 SL 锁盈必须放行。"""
+    gate.connector.get_positions.return_value = {
+        "success": True,
+        "data": [{"ticket": 42, "symbol": "GOLD_", "type": "BUY", "volume": 0.1,
+                  "open_price": 2000.0, "current_price": 2005.0,
+                  "sl": 0, "tp": 0, "profit": 50.0}],
+    }
+    gate.connector.modify_position.return_value = {"success": True, "data": {}}
+    res = await gate.modify_position_sltp(42, sl=2002.0, tp=None)  # SL > entry 但 < 现价
+    assert res["modified"] is True
+    assert res["sl"] == 2002.0
+
+
+@pytest.mark.asyncio
+async def test_sltp_no_current_price_falls_back_to_entry(gate, session_patched):
+    """current_price 缺失（旧 bridge/历史数据）时回退 entry 基准，不静默放行。"""
+    gate.connector.get_positions.return_value = {
+        "success": True,
+        "data": [{"ticket": 42, "symbol": "GOLD_", "type": "SELL", "volume": 0.1,
+                  "open_price": 4178.08, "sl": 0, "tp": 0, "profit": 31.0}],
+    }
+    res = await gate.modify_position_sltp(42, sl=4170.0, tp=None)  # entry 基准:SL 须 > entry
+    assert res["modified"] is False
+    assert "must be above" in res["error"]
 
 
 @pytest.mark.asyncio

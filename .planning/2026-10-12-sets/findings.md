@@ -145,3 +145,35 @@ passesGate(m) = m.ret > 0.01 && m.maxDD < 0.1 && m.trades >= 3 && m.winRate >= 0
 - 结果表仅来自一个 30 天 OOS 窗口，不是持久优势证据，同期 buy&hold 收益更高 → 作者自己承认无稳定 alpha
 - 无任何实盘连接，纯历史纸面
 - 复选框未验证物理设备多点触控
+## 2026-10-12 新增：修改止损报错调查
+
+### 报错
+```
+SL 4175.0 must be above entry 4178.08 for SELL
+```
+
+### 来源
+`backend/app/services/manual_order_gate.py:631-634`（`modify_position_sltp` 方向合法性校验），
+不是 broker 返回。该错误由我方后端拦截产生。
+
+### 根因
+方向校验用 **entry（开仓价）** 作基准，而非 **现价（current_price）**：
+- SELL: `new_sl <= entry` → 拒绝（要求 SL > 开仓价）
+- 但用户持仓 = 4178.08 做空 SELL，现价已跌至 ~4175（大幅盈利）
+- 用户想设 SL=4175 锁盈。对 SELL，SL 本就该在现价上方、且可能低于开仓价（盈利锁定时）
+- 用开仓价做基准，导致盈利仓永远无法把 SL 收进盈利区（SL < 开仓价）→ 误伤
+
+### 正确基准（MT5 语义）
+SL/TP 合法性判定应对**现价**而非开仓价：
+- SELL（做空，price_current = bid）：SL 必须 > 现价，TP 必须 < 现价
+- BUY（做多，price_current = ask）：SL 必须 < 现价，TP 必须 > 现价
+- 开仓价只影响「距离」计算（漂移锚点/风控），不影响方向合法性
+
+### 影响范围
+- 所有盈利仓（价格越过开仓价后）收紧/移动 SL 都会被误拒，除非 SL 仍停在开仓价同侧
+- 现有测试 `test_sltp_direction_validated`（BUY SL≥entry 拒绝）用例输入恰好仍符合旧语义，
+  因为 BUY 用例 entry=2000、sl=2010（现价未给，测试只 mock 了 entry）；SELL 侧无覆盖
+
+### 待确认
+- `get_positions` 返回含 `current_price` 字段（mt5_bridge/main.py:489），改持仓时可用现价做方向基准
+- 前端持仓表用 `o.price_open?.toFixed(2)` 显示（frontend/app/trading/page.tsx:756），但这是显示
