@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_auth
 from app.backtest.engine import BacktestEngine
+from app.backtest.genetic_search import genetic_search
 from app.backtest.monte_carlo import monte_carlo_analysis
 from app.backtest.optimizer import grid_search
 from app.backtest.risk_factory import risk_manager_for_symbol
@@ -61,6 +62,18 @@ class BacktestRequest(_BacktestBase):
 class OptimizeRequest(_BacktestBase):
     strategy: str = "ema_crossover"
     param_grid: dict[str, list]
+    min_trades: int = Field(10, ge=1, le=1000)
+
+
+class GeneticOptimizeRequest(_BacktestBase):
+    """遗传算法参数优化请求。param_ranges 形如 {"fast_period": (5, 50), ...}，
+    亦接受 [min, max] 列表。"""
+
+    strategy: str = "ema_crossover"
+    param_ranges: dict[str, list | tuple]
+    pop_size: int = Field(48, ge=4, le=500)
+    generations: int = Field(15, ge=1, le=200)
+    seed: int = Field(0, ge=0, le=1_000_000)
     min_trades: int = Field(10, ge=1, le=1000)
 
 
@@ -127,6 +140,34 @@ async def run_optimization(req: OptimizeRequest):
         strategy_name=req.strategy,
         df=df,
         param_grid=req.param_grid,
+        initial_balance=req.initial_balance,
+        risk_per_trade=req.risk_per_trade,
+        max_lot=req.max_lot,
+        min_trades=req.min_trades,
+        risk_manager_factory=lambda: risk_manager_for_symbol(
+            req.symbol, risk_per_trade=req.risk_per_trade, max_lot=req.max_lot
+        ),
+    )
+    return result.to_dict()
+
+
+@router.post("/genetic-optimize", dependencies=[Depends(require_auth)])
+async def run_genetic_optimization(req: GeneticOptimizeRequest):
+    """遗传算法参数优化 —— 替代/补充笛卡尔积穷举，适合高维参数空间。"""
+    df = await _load_data(req.symbol, req.source, req.timeframe, req.count, req.from_date, req.to_date)
+    if df.empty:
+        return {"error": "No OHLCV data available"}
+
+    import asyncio
+
+    result = await asyncio.to_thread(
+        genetic_search,
+        strategy_name=req.strategy,
+        df=df,
+        param_ranges=req.param_ranges,
+        pop_size=req.pop_size,
+        generations=req.generations,
+        seed=req.seed,
         initial_balance=req.initial_balance,
         risk_per_trade=req.risk_per_trade,
         max_lot=req.max_lot,

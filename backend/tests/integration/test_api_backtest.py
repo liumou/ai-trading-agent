@@ -73,3 +73,35 @@ class TestBacktestRoutes:
             },
         )
         assert resp.status_code == 422
+
+    async def test_genetic_optimize(self, client):
+        resp = await client.post(
+            "/api/backtest/genetic-optimize",
+            json={
+                "strategy": "ema_crossover",
+                "symbol": "GOLD",
+                "source": "mt5",
+                "count": 500,
+                "param_ranges": {"fast_period": [5, 50], "slow_period": [20, 200]},
+                "pop_size": 8,
+                "generations": 3,
+                "seed": 0,
+                "min_trades": 5,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "best_params" in data
+        assert "history" in data and len(data["history"]) == 3
+        assert data["tested_individuals"] > 0
+
+    async def test_genetic_optimize_validation_rejects_small_pop(self, client):
+        resp = await client.post(
+            "/api/backtest/genetic-optimize",
+            json={
+                "strategy": "ema_crossover",
+                "param_ranges": {"fast_period": [5, 50]},
+                "pop_size": 1,  # < 4 → invalid
+            },
+        )
+        assert resp.status_code == 422
