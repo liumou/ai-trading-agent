@@ -30,16 +30,12 @@ from loguru import logger
 from app.config import get_canonical_symbol, settings
 from app.strategy.indicators import adx as calc_adx
 from app.strategy.indicators import atr as calc_atr
-from app.strategy.indicators import ema as calc_ema
 from app.strategy.mtf_filter import get_mtf_consensus, get_trend, get_trend_strength
 from app.strategy.regime import detect_regime
 
 OHLCV_COUNT = 120  # 请求 120 根：校验线 min_bars=60 的缓冲（broker 少回几根不误触发）
 BAR_SECONDS = {"M15": 900, "H1": 3600}
-SPIKE_EMA_PERIOD = 20
 ATR_PERIOD = 14
-SPIKE_HIST_MIN = 100  # z 分位历史不足 100 根：只允许 warn，不允许 block
-CONSEC_DIRECTIONAL_BARS = 4  # spike block 需要的连续同向 K 线
 MEDIAN_SAMPLE_MIN = 3  # 中位手数样本下限（<3 笔样本无意义，跳过）
 
 # 各检查的「通过」选项；不在此列 → CAUTION（risk/execution 的 block → REJECTED）
@@ -381,40 +377,20 @@ class LocalRuleEngine:
 
     def _rule_spike_chase(self, inp, m15, direction) -> _Flag | None:
         """z=|entry−EMA20|/ATR14 对近 200 根滚动分位。历史<100 根只 warn；
-        block 需 >block 分位 且 连续≥4 根同向 K 线（防单根脉冲误杀）。"""
-        if m15 is None:
-            return None
-        close = m15["close"]
-        ema20 = calc_ema(close, SPIKE_EMA_PERIOD)
-        atr14 = calc_atr(m15["high"], m15["low"], close, ATR_PERIOD)
-        if pd.isna(ema20.iloc[-1]) or pd.isna(atr14.iloc[-1]) or atr14.iloc[-1] <= 0:
-            return None
-        z_now = abs(inp.entry - float(ema20.iloc[-1])) / float(atr14.iloc[-1])
-        z_hist = ((close - ema20).abs() / atr14).dropna()
-        pct = float((z_hist < z_now).mean()) if len(z_hist) else 0.0
-        warn_p = settings.manual_review_spike_pct_warn
-        block_p = settings.manual_review_spike_pct_block
-        detail = f"入场偏离 z={z_now:.2f}（近 {len(z_hist)} 根分位 p{pct * 100:.0f}）"
-        if (
-            len(z_hist) >= SPIKE_HIST_MIN
-            and pct > block_p
-            and self._consecutive_directional_bars(m15, direction) >= CONSEC_DIRECTIONAL_BARS
-        ):
-            return _Flag("spike_chase", "block",
-                         f"{detail}，且连续 {CONSEC_DIRECTIONAL_BARS} 根同向K线", pct)
-        if pct > warn_p:
-            return _Flag("spike_chase", "warn", detail, pct)
-        return None
+        block 需 >block 分位 且 连续≥4 根同向 K 线（防单根脉冲误杀）。
 
-    def _consecutive_directional_bars(self, m15: pd.DataFrame, direction: int) -> int:
-        body_dir = (m15["close"] > m15["open"]).astype(int).replace(0, -1)
-        n = 0
-        for v in reversed(body_dir.tolist()):
-            if int(v) == direction:
-                n += 1
-            else:
-                break
-        return n
+        委托 deviation_guard.detect_spike_chase（三通道共用同一口径）；阈值
+        用 settings.manual_review_spike_*（手动通道档位）。"""
+        from app.services.deviation_guard import detect_spike_chase
+
+        res = detect_spike_chase(
+            m15, inp.entry, direction,
+            spike_pct_warn=settings.manual_review_spike_pct_warn,
+            spike_pct_block=settings.manual_review_spike_pct_block,
+        )
+        if res is None:
+            return None
+        return _Flag("spike_chase", res.severity, res.detail, res.pct)
 
     def _rule_exposure(self, inp) -> list[_Flag]:
         """risk_pct = |entry−SL|/tick_size × tick_value × lot / equity。

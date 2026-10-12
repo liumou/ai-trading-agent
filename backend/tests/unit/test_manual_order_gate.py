@@ -527,6 +527,60 @@ async def test_shadow_paper_rollout_blocks_execution(gate, connector, session_pa
     connector.place_order.assert_not_awaited()
 
 
+# ─── spike_chase 追涨杀跌前置（硬闸门相位）─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_spike_chase_block_rejects_inline(gate, monkeypatch, connector, session_patched):
+    """spike_chase block 级在硬闸门相位直接拒单 —— 不进入 PENDING_REVIEW，
+    不烧审查 token（provider 是 local/typesafe 都要执行的前置规则）。"""
+    async def fake_spike(ctx):
+        return [{"flag": "spike_chase", "severity": "block",
+                 "detail": "入场偏离 z=5.20（近 200 根分位 p100）,且连续 4 根同向K线"}]
+    monkeypatch.setattr(gate, "_spike_chase_flags", fake_spike)
+    # entry 参考价来自 connector tick(bid/ask ≈2000);SELL: SL 须高于 entry、TP 低于 entry
+    result = await gate.submit_order(symbol="GOLD", order_kind="market", order_type="SELL",
+                                     lot=0.1, sl=2010.0, tp=1950.0)
+    assert result["status"] == "REJECTED"
+    assert result["kind"] == "emotion"
+    assert "spike_chase" in result["reason"]
+    gate.ai_client.complete_json_async.assert_not_called()
+    connector.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_spike_chase_block_stops_pending_modify(gate, monkeypatch, connector, session_patched):
+    """挂单改单同样走前置 spike_chase —— 改价逼近市价追单也必须被拦。"""
+    async def fake_spike(ctx):
+        return [{"flag": "spike_chase", "severity": "block",
+                 "detail": "入场偏离 z=4.80（近 200 根分位 p100）,且连续 4 根同向K线"}]
+    monkeypatch.setattr(gate, "_spike_chase_flags", fake_spike)
+    result = await gate.submit_order(symbol="GOLD", order_kind="pending", order_type="SELL",
+                                     lot=0.1, sl=2010.0, tp=1950.0, price=2000.0)
+    assert result["status"] == "REJECTED"
+    assert result["kind"] == "emotion"
+
+
+@pytest.mark.asyncio
+async def test_spike_chase_warn_passes_to_review(gate, monkeypatch, connector, session_patched):
+    """spike_chase warn 级不直接拒,进水审查链 —— rule_flags 携带警告。"""
+    async def fake_spike(ctx):
+        return [{"flag": "spike_chase", "severity": "warn",
+                 "detail": "入场偏离 z=2.10（近 200 根分位 p95）"}]
+    monkeypatch.setattr(gate, "_spike_chase_flags", fake_spike)
+    gate.ai_client.complete_json_async.return_value = {
+        "verdict": "CAUTION", "confidence": 0.6,
+        "risk_flags": ["spike_chase"], "emotional_indicators": [], "reasoning": "追高注意",
+    }
+    result = await gate.submit_order(symbol="GOLD", order_kind="market", order_type="BUY",
+                                     lot=0.1, sl=1900.0, tp=2100.0)
+    assert result["status"] == "PENDING_REVIEW"
+    assert any(f["flag"] == "spike_chase" and f["severity"] == "warn" for f in result["rule_flags"])
+    await _drain_tasks(gate)
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "PENDING_CONFIRM"  # CAUTION → 人工二次确认
+
+
 @pytest.mark.asyncio
 async def test_llm_reject_preserves_review_evidence(gate, session_patched):
     """I2 回归：执行前拒绝（switching/state-drift）不得覆盖先前已持久化的

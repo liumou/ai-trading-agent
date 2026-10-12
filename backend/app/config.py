@@ -345,6 +345,14 @@ class Settings(BaseSettings):
     ai_confidence_threshold: float = 0.7
     paper_trade: bool = False
 
+    # ─── 追涨杀跌（spike_chase）自动通道风控 ────────────────────────────
+    # 引擎/AI 通道走 order_preflight 统一硬闸门；手动通道已在 ManualOrderGate
+    # 前置（manual_review_spike_*）。无人值守 → 档位比手动更保守：
+    #   - warn 级（>90 分位）即拒单，不设 CAUTION 人工确认流
+    #   - M15 拉取失败/数据不足 → 跳过（不误杀，其余闸门照常）
+    preflight_spike_pct_warn: float = Field(0.90, ge=0.5, le=1.0)
+    preflight_spike_pct_block: float = Field(0.99, ge=0.5, le=1.0)
+
     # ─── 交易纪律门禁（discipline gate）—— docs/optimization/trading-discipline-enhancement.md ───
     # 用户已冻结口径（2026-10-10）：纪律时区 Asia/Shanghai（休息日/展示）、日界 22:00 UTC 外汇日、
     # 保证金分母 equity。参数经 Redis 运行时配置可改（env 为默认值，见 guardrails._runtime_setting）。

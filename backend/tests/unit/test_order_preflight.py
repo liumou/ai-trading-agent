@@ -266,3 +266,72 @@ async def test_default_account_login_aligns_with_bootstrap(ok_connector, redis_c
     # 读到无前缀的日亏(-300),而非 circuit:acc:0: 的空 key(0)
     assert captured["daily_pnl"] == -300
     assert pf.ctx.daily_pnl == -300
+
+
+# ─── 追涨杀跌 spike_chase 自动通道（engine/ai_agent）───────────────────────
+
+
+def _spike_connector(exterminate: bool = True):
+    """构造 M15 最后一根远离 EMA20 的行情 —— 触发 spike_chase warn/block。"""
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(42)
+    rows = 120
+    close = 2000.0 + rng.normal(0, 0.8, rows)
+    close[-1] = 2012.0  # 末根大幅高于均线（ATR≈1 时 z≈8）
+    high = close + np.abs(rng.normal(0, 0.4, rows)) + 0.4
+    low = close - np.abs(rng.normal(0, 0.4, rows)) - 0.4
+    open_ = close + rng.normal(0, 0.3, rows)
+    # 末 5 根同向上涨实体（连续 >4 根）
+    for i in range(1, 6):
+        idx = rows - i
+        open_[idx] = close[idx] - 0.5
+        high[idx] = max(high[idx], open_[idx] + 0.2)
+    idx = pd.date_range("2026-01-05 09:00", periods=rows, freq="15min")
+    df = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close}, index=idx)
+
+    c = AsyncMock()
+    c.get_account.return_value = {"success": True, "data": {"balance": 10000.0, "profit": 0.0}}
+    c.get_positions.return_value = {"success": True, "data": []}
+    c.get_tick.return_value = {"success": True, "data": {"bid": 2011.5, "ask": 2012.0}}
+    if exterminate:
+        c.get_ohlcv.return_value = {"success": True, "data": df.reset_index().to_dict("records")}
+    else:
+        c.get_ohlcv.return_value = {"success": False, "error": "bridge down"}
+    return c
+
+
+@pytest.mark.asyncio
+async def test_engine_channel_spike_chase_rejects(monkeypatch, redis_client, ok_guardrails):
+    """引擎通道(AI)入场偏离 EMA20 到峰值 → spike_chase 拒单(无人值守 warn 即拒)。"""
+    conn = _spike_connector(exterminate=True)
+    _allow_manager(monkeypatch)
+    pf = await preflight_order(conn, redis_client, ok_guardrails,
+                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="engine")
+    assert pf.ok is False and pf.kind == "spike_chase"
+    assert "spike_chase" in pf.reason
+
+
+@pytest.mark.asyncio
+async def test_manual_channel_skips_spike_chase(ok_connector, redis_client, ok_guardrails, monkeypatch):
+    """手动通道不在 preflight 做 spike_chase(已在 ManualOrderGate 前置)——
+    即便行情极端偏离也由后续 guardrail/审查链决策。"""
+    _allow_manager(monkeypatch)
+    c = _spike_connector(exterminate=True)
+    c.get_history.return_value = {"success": True, "data": []}
+    pf = await preflight_order(c, redis_client, ok_guardrails,
+                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="manual")
+    assert pf.ok is True
+    # 手动通道不该调 get_ohlcv(不重复拉取)
+    c.get_ohlcv.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_engine_channel_spike_chase_data_unavailable_skips(monkeypatch, redis_client, ok_guardrails):
+    """M15 拉取失败 → spike_chase 静默跳过(不误杀),其余闸门照常。"""
+    _allow_manager(monkeypatch)
+    conn = _spike_connector(exterminate=False)
+    pf = await preflight_order(conn, redis_client, ok_guardrails,
+                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="engine")
+    assert pf.ok is True

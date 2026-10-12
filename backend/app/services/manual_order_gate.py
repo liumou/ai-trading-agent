@@ -768,6 +768,12 @@ class ManualOrderGate:
         sentiment = await self._latest_sentiment(ctx.symbol)
         if rule_flags is None:
             rule_flags = await self._emotion_flags(deals, ctx)
+            # 追涨杀跌确定性规则前置：无论 provider 是 typesafe_jev 还是
+            # local_jev 都必须执行（不能被外部 AI 短路）。block 级在这里
+            # 直接拒单，warn 级随 rule_flags 进审查链收紧 —— 修复
+            # MANUAL_REVIEW_PROVIDER=typesafe_jev 短路 spike_chase 的问题。
+            spike_flags = await self._spike_chase_flags(ctx)
+            rule_flags = rule_flags + spike_flags
         return {
             "order": {
                 "review_id": audit_id, "symbol": ctx.symbol, "type": ctx.order_type,
@@ -875,6 +881,54 @@ class ManualOrderGate:
             pass
 
         return flags
+
+    async def _spike_chase_flags(self, ctx: PreflightContext) -> list[dict]:
+        """追涨杀跌（spike_chase）确定性规则 —— 硬闸门相位执行。
+
+        独立于审查 provider 链：无论 MANUAL_REVIEW_PROVIDER 是 typesafe_jev
+        还是 local_jev，本地确定性 z 分位检测都必须先跑（修复外部 JEV 短路
+        问题 —— JEV 对 SELL 杀跌单系统性宽容，只给 execution_quality=caution，
+        不拦截真·追高杀跌）。
+
+        - block 级（>99 分位 + 连续 ≥4 根同向 K 线）：随 rule_flags 返回，
+          由 submit_order 硬闸门 block_flag 检查直接拒单
+        - warn 级：随 rule_flags 进审查链，供 loss_chase_combo / mtf_upgrade
+          强化，也供 JEV/LLM 判读
+        - M15 拉取失败/数据不足：静默跳过（不误杀，审查链仍正常）
+        """
+        direction = 1 if str(ctx.order_type or "").upper().startswith("BUY") else -1
+        try:
+            engine = self._local_engine()
+            md = getattr(engine, "market_data", None)
+            if md is None or not ctx.entry_ref:
+                return []
+            from app.services.systemone import OHLCV_COUNT
+
+            m15 = await asyncio.wait_for(
+                md.get_ohlcv(ctx.symbol, "M15", OHLCV_COUNT),
+                timeout=settings.manual_review_fetch_timeout_s,
+            )
+            if m15 is None or m15.empty:
+                return []
+            from app.services.deviation_guard import detect_spike_chase
+
+            res = detect_spike_chase(
+                m15, ctx.entry_ref, direction,
+                spike_pct_warn=settings.manual_review_spike_pct_warn,
+                spike_pct_block=settings.manual_review_spike_pct_block,
+            )
+            if res is None:
+                return []
+            return [{
+                "flag": "spike_chase", "severity": res.severity,
+                "detail": res.detail,
+            }]
+        except TimeoutError:
+            logger.debug(f"ManualGate spike_chase M15 fetch timeout [{ctx.symbol}] — skip")
+            return []
+        except Exception:  # noqa: BLE001
+            logger.debug(f"ManualGate spike_chase unavailable [{ctx.symbol}] — skip", exc_info=True)
+            return []
 
     # ─── 审计与事件 ───────────────────────────────────────────────────────
 

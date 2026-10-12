@@ -117,6 +117,48 @@ async def _rolling_avg_spread(redis, symbol: str, spread: float) -> float:
     return spread
 
 
+async def _preflight_spike_chase(
+    connector,
+    symbol: str,
+    entry_ref: float,
+    order_type: str,
+    *,
+    spike_pct_warn: float = 0.90,
+    spike_pct_block: float = 0.99,
+) -> str:
+    """自动通道（引擎/AI）追涨杀跌硬闸门。
+
+    复用 deviation_guard.detect_spike_chase：|entry−EMA20|/ATR14 滚动分位。
+    warn 级（>90 分位）即拒 —— 无人值守无 CAUTION 人工确认流，宁可错过不能
+    追在山顶/杀在地板。返回拒绝原因（非空=拒），空字符串=通过/数据不可用。
+
+    M15 拉取失败/数据不足 → 静默跳过（不误杀，其余闸门照常）。
+    """
+    direction = 1 if str(order_type or "").upper().startswith("BUY") else -1
+    try:
+        res = await connector.get_ohlcv(symbol, "M15", 120)
+        if not res.get("success") or not res.get("data"):
+            return ""
+        import pandas as pd
+
+        df = pd.DataFrame(res["data"])
+        if df.empty or "close" not in df:
+            return ""
+        from app.services.deviation_guard import detect_spike_chase
+
+        r = detect_spike_chase(
+            df, entry_ref, direction,
+            spike_pct_warn=spike_pct_warn,
+            spike_pct_block=spike_pct_block,
+        )
+        if r is None:
+            return ""
+        return f"spike_chase {r.severity}: {r.detail}（自动通道无人值守，warn 即拒）"
+    except Exception:  # noqa: BLE001
+        logger.debug(f"preflight spike_chase unavailable [{symbol}] — skip", exc_info=True)
+        return ""
+
+
 async def preflight_order(
     connector,
     redis,
@@ -228,6 +270,20 @@ async def preflight_order(
         entry_ref = entry_price
     else:
         entry_ref = (tick.get("ask", 0) + tick.get("bid", 0)) / 2 if tick.get("ask") and tick.get("bid") else 0
+
+    # 5b. 追涨杀跌（spike_chase）自动通道风控 —— 引擎/AI 通道强制执行。
+    #     手动通道已在 ManualOrderGate._spike_chase_flags 前置（不重复）。
+    #     warn 级（>90 分位）即拒：无人值守无 CAUTION 人工确认流，宁可错过
+    #     不能追在山顶/杀在地板。M15 拉取失败/数据不足 → 跳过（不误杀，
+    #     其余闸门照常）。仅当 entry_ref 有效时才判定。
+    if channel != "manual" and entry_ref > 0 and settings.preflight_spike_pct_warn > 0:
+        spike_reason = await _preflight_spike_chase(
+            connector, symbol, entry_ref, direction or order_type,
+            spike_pct_warn=settings.preflight_spike_pct_warn,
+            spike_pct_block=settings.preflight_spike_pct_block,
+        )
+        if spike_reason:
+            return _reject(spike_reason, "spike_chase")
 
     # 6. GUARDRAIL CHECK（不可绕过）
     #    持仓 symbol 必须先归一化为 canonical 引擎键 —— bridge 返回的是
