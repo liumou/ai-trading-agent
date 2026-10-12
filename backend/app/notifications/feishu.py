@@ -20,11 +20,30 @@ _TEMPLATE_BY_CONDITION = {"above": "red", "below": "green"}
 # 方向的中文标签（卡片正文展示用）。
 _CONDITION_LABEL = {"above": "高于", "below": "低于"}
 
+# 飞书 webhook 请求 UA。实测本机 Clash 类代理对 python-httpx 默认 UA 返回
+# 502 HTML，带 curl 风格 UA 则放行（2026-10-12 排障确认）。生产无代理不
+# 受影响；统一用该 UA 兼作"非爬虫"信号，规避分流误判。
+_WEBHOOK_USER_AGENT = "curl/8.0"
+
 
 def _symbol_display_name(symbol: str) -> str:
     """返回品种的展示名（优先 SYMBOL_PROFILES.display_name，回退原始名）。"""
     profile = SYMBOL_PROFILES.get(symbol) or {}
     return profile.get("display_name") or symbol
+
+
+def _mask_host(url: str) -> str:
+    """脱敏 webhook URL：仅保留 host，丢掉路径（含 hook token，属机密）。
+
+    日志里禁止出现完整 webhook URL —— token 泄露即可冒充机器人发消息。
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url.strip())
+        return parsed.hostname or "<invalid url>"
+    except Exception:
+        return "<invalid url>"
 
 
 def _price_decimals(symbol: str) -> int:
@@ -57,21 +76,50 @@ class FeishuNotifier:
             logger.info(f"Feishu notifier reloaded (enabled={self.enabled})")
 
     async def _post(self, payload: dict) -> bool:
-        """POST 到飞书 webhook。成功返回 True，失败记录日志返回 False（绝不抛出）。"""
+        """POST 到飞书 webhook。成功返回 True，失败记录日志返回 False（绝不抛出）。
+
+        失败日志必须带诊断上下文（HTTP 状态码 / content-type / 响应体片段），
+        否则像 ``Extra data: line 1 column 5 (char 4)`` 这种「webhook 返回了
+        非标准 JSON（如健康检查页的 ``true\\n``）」会吞成一行无上下文 error，
+        运维无法判断是 URL 配错还是网关拦截。host 脱敏（URL 含 token 属机密）。
+        """
         if not self.enabled:
             logger.debug("Feishu notifier disabled (no webhook url), skip send")
             return False
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(
+                timeout=10, headers={"User-Agent": _WEBHOOK_USER_AGENT}
+            ) as client:
                 resp = await client.post(self.webhook_url, json=payload)
-                body = resp.json()
-                if resp.status_code == 200 and body.get("code") == 0:
-                    return True
-                logger.error(f"Feishu send failed: {resp.status_code} {body.get('msg')}")
-                return False
         except Exception as e:
-            logger.error(f"Feishu send exception: {e}")
+            # 传输层异常（超时 / 连接被拒 / DNS）：记异常类型即可，无响应体可参考
+            logger.error(f"Feishu send failed (transport): host={_mask_host(self.webhook_url)} err={type(e).__name__}: {e}")
             return False
+
+        body_text = resp.text
+        try:
+            body = resp.json()
+        except Exception as e:
+            # 响应体非标准 JSON（如 ``true\\n`` / 网关错误页）：这是最常见的
+            # "Extra data" 来源，必须带响应体片段才能定位
+            logger.error(
+                f"Feishu send failed (bad json body): status={resp.status_code} "
+                f"content-type={resp.headers.get('content-type')} "
+                f"body={body_text[:120]!r} err={type(e).__name__}: {e}"
+            )
+            return False
+        if not isinstance(body, dict):
+            # 标量/数组体（如 ``true``）解析成功但不能用 .get —— 防御性拒绝
+            logger.error(
+                f"Feishu send failed (unexpected body type): status={resp.status_code} "
+                f"content-type={resp.headers.get('content-type')} "
+                f"body={body_text[:120]!r}"
+            )
+            return False
+        if resp.status_code == 200 and body.get("code") == 0:
+            return True
+        logger.error(f"Feishu send failed: status={resp.status_code} code={body.get('code')} msg={body.get('msg')}")
+        return False
 
     def _build_price_alert_card(self, alert, current_price: float) -> dict:
         """构造行情提醒卡片（精美版：头部图标+主色、大号当前价、条件明细、时间注脚）。
