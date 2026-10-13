@@ -110,7 +110,7 @@ export default function HistoryPage() {
   const [performance, setPerformance] = useState<Record<string, unknown> | null>(null);
   const [days, setDays] = useState(30);
   const [symbolFilter, setSymbolFilter] = useState<string>("all");
-  const [symbols, setSymbols] = useState<{symbol: string; display_name: string}[]>([]);
+  const [symbols, setSymbols] = useState<{symbol: string; display_name: string; price_decimals: number}[]>([]);
   const [loading, setLoading] = useState(true);
   const [archiving, setArchiving] = useState(false);
   // 分页：page 当前页（0-based），pageSize 每页条数。分页只影响表格视图，
@@ -121,6 +121,8 @@ export default function HistoryPage() {
   // 越界保护：归档/数据刷新后条数变少，page 可能超过最后一页 → 钳制到末页
   const safePage = Math.min(page, totalPages - 1);
   const pagedTrades = trades.slice(safePage * pageSize, (safePage + 1) * pageSize);
+  // 价格小数位映射（汇率类品种 ≥4 位）：按 symbol 从 symbols 列表取 price_decimals
+  const symbolPriceDecimals = Object.fromEntries(symbols.map((s) => [s.symbol, s.price_decimals ?? 2]));
 
   useEffect(() => {
     getSymbols().then((res) => {
@@ -417,10 +419,10 @@ export default function HistoryPage() {
                                   {/* 占位行没有真实手数/开仓价，显示 "—" 而非 0.00——
                                       0.00 看起来像有效价格，会被误读为成交价 */}
                                   <TableCell className="text-right text-xs font-mono">{t.source === "review_only" ? "—" : t.lot}</TableCell>
-                                  <TableCell className="text-right text-xs font-mono">{t.source === "review_only" ? "—" : t.open_price.toFixed(2)}</TableCell>
-                                  <TableCell className="text-right text-xs font-mono">{t.close_price?.toFixed(2) ?? "—"}</TableCell>
-                                  <TableCell className="text-right text-xs font-mono">{t.sl > 0 ? t.sl.toFixed(2) : "—"}</TableCell>
-                                  <TableCell className="text-right text-xs font-mono">{t.tp > 0 ? t.tp.toFixed(2) : "—"}</TableCell>
+                                  <TableCell className="text-right text-xs font-mono">{t.source === "review_only" ? "—" : t.open_price.toFixed(symbolPriceDecimals[t.symbol] ?? 2)}</TableCell>
+                                  <TableCell className="text-right text-xs font-mono">{t.close_price?.toFixed(symbolPriceDecimals[t.symbol] ?? 2) ?? "—"}</TableCell>
+                                  <TableCell className="text-right text-xs font-mono">{t.sl > 0 ? t.sl.toFixed(symbolPriceDecimals[t.symbol] ?? 2) : "—"}</TableCell>
+                                  <TableCell className="text-right text-xs font-mono">{t.tp > 0 ? t.tp.toFixed(symbolPriceDecimals[t.symbol] ?? 2) : "—"}</TableCell>
                                   {/* profit 三态配色：有值按盈亏着色；null 显示 "—" 且
                                       用中性色（占位行为 null，不能被 (null??0)>=0 判成盈利绿） */}
                                   <TableCell className={`text-right text-xs font-mono font-semibold ${t.profit === null ? "text-muted-foreground" : t.profit >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}>

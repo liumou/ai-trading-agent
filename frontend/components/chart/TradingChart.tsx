@@ -107,6 +107,8 @@ type Props = {
   symbol: string;
   timeframe: string;
   tick?: { bid: number; ask: number; time?: string } | null;
+  /** 价格小数位（汇率类品种 ≥4 位），用于 Y 轴刻度与数值条均价，默认 2。 */
+  priceDecimals?: number;
   height?: number;
   /** 各指标显隐开关（受控，父级持有 state）。 */
   indicatorVisibility: Record<IndicatorKey, boolean>;
@@ -160,6 +162,7 @@ export default function TradingChart({
   symbol,
   timeframe,
   tick,
+  priceDecimals = 2,
   height = 460,
   indicatorVisibility,
   onIndicatorVisibilityChange,
@@ -252,6 +255,8 @@ export default function TradingChart({
     });
 
     // ─── pane 0：主图（蜡烛 + 均线 + Ichimoku）───
+    // 价格小数位：汇率类品种 ≥4 位，lightweight-charts 默认 2 位会截断刻度
+    const priceFormat = { type: "price" as const, precision: priceDecimals, minMove: 1 / 10 ** priceDecimals };
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: c.candleUp,
       downColor: c.candleDown,
@@ -259,6 +264,7 @@ export default function TradingChart({
       borderUpColor: c.candleUp,
       wickDownColor: c.candleDown,
       wickUpColor: c.candleUp,
+      priceFormat,
     });
     candleSeriesRef.current = candleSeries;
 
@@ -268,6 +274,7 @@ export default function TradingChart({
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
+        priceFormat,
       });
     };
     // 均线
@@ -288,6 +295,7 @@ export default function TradingChart({
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
+      priceFormat,
     });
 
     chartRef.current = chart;
@@ -332,7 +340,7 @@ export default function TradingChart({
       // 供 rebuildSubPanes 在主题切换后立即重放子图数据（评审重要-3）。
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDark]);
+  }, [isDark, priceDecimals]);
 
   // 主图 series 显隐（均线 + Ichimoku 线 + 云）——只 applyOptions visible，不重建。
   // 子图（RSI/MACD）在 rebuildSubPanes 里按当前 visibility 销毁/重建。
@@ -610,9 +618,11 @@ export default function TradingChart({
     const displayRow = hoverRow ?? rowsRef.current[rowsRef.current.length - 1] ?? null;
     if (!displayRow) return [];
     const v = indicatorVisibility;
-    const fmt = (n: number | null | undefined, digits = 2) =>
+    const fmt = (n: number | null | undefined, digits = priceDecimals) =>
       n == null || Number.isNaN(n) ? "—" : n.toFixed(digits);
     const items: { key: string; value: string }[] = [];
+    // 价格类指标（SMA/EMA）用 priceDecimals（汇率品种 ≥4 位）；RSI/MACD 是
+    // 无单位指标，固定 2 位不随品种变化。
     if (v.sma55) items.push({ key: "sma55", value: fmt(displayRow.sma55) });
     if (v.ema20) items.push({ key: "ema20", value: fmt(displayRow.ema20) });
     if (v.ema50) items.push({ key: "ema50", value: fmt(displayRow.ema50) });
@@ -623,7 +633,7 @@ export default function TradingChart({
       items.push({ key: "macdHist", value: fmt(displayRow.macd_histogram) });
     }
     return items;
-  }, [hoverRow, indicatorVisibility]);
+  }, [hoverRow, indicatorVisibility, priceDecimals]);
 
   return (
     // flex 列布局：数值条自然高度，图表容器 flex-1 填满剩余空间

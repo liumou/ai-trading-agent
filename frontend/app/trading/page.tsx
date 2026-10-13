@@ -557,6 +557,7 @@ export default function TradingPage() {
             symbol={symbol}
             timeframe={timeframe}
             tick={liveTick}
+            priceDecimals={priceDecimals}
             height={460}
             indicatorVisibility={indicatorVisibility}
             onIndicatorVisibilityChange={(key, on) =>
@@ -739,7 +740,9 @@ export default function TradingPage() {
                 </tr>
               </thead>
               <tbody>
-                {pendingOrders.map((o) => (
+                {pendingOrders.map((o) => {
+                  const opd = symbols.find((s) => s.symbol === o.symbol)?.price_decimals ?? 2;
+                  return (
                   <tr key={o.ticket} className="border-b border-border/40 last:border-b-0">
                     <td className="px-4 py-3 font-mono text-xs">{o.ticket}</td>
                     <td className="px-4 py-3 text-xs font-medium">{o.type}</td>
@@ -748,16 +751,16 @@ export default function TradingPage() {
                     <td className="px-4 py-3 text-right font-mono">
                       {modifyTicket === o.ticket ? (
                         <input
-                          type="number" step="0.01" autoFocus value={modifyPrice}
+                          type="number" step={1 / 10 ** opd} autoFocus value={modifyPrice}
                           onChange={(e) => setModifyPrice(e.target.value)}
                           className="w-24 rounded border border-border bg-background px-2 py-1 text-right font-mono text-xs"
                         />
                       ) : (
-                        o.price_open?.toFixed(2)
+                        o.price_open?.toFixed(opd)
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono text-muted-foreground">{o.sl?.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right font-mono text-muted-foreground">{o.tp?.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-muted-foreground">{o.sl?.toFixed(opd)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-muted-foreground">{o.tp?.toFixed(opd)}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
                         {modifyTicket === o.ticket ? (
@@ -797,7 +800,8 @@ export default function TradingPage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -812,6 +816,7 @@ export default function TradingPage() {
           onClose={handleClose}
           onEditSlTp={handleEditSlTp}
           busyTicket={busyTicket}
+          priceDecimalsBySymbol={Object.fromEntries(symbols.map((s) => [s.symbol, s.price_decimals ?? 2]))}
         />
       </div>
     </div>

@@ -561,6 +561,7 @@ export default function DashboardPage() {
                           symbol={s.symbol}
                           timeframe={chartTimeframe}
                           tick={ticks[s.symbol] || null}
+                          priceDecimals={s.price_decimals ?? 2}
                         />
                       </div>
                     </div>
@@ -587,6 +588,7 @@ export default function DashboardPage() {
                   symbol={activeSymbol}
                   timeframe={chartTimeframe}
                   tick={activeTick}
+                  priceDecimals={priceDecimals}
                 />
               </CardContent>
             </Card>
@@ -613,7 +615,9 @@ export default function DashboardPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {positions.map((p) => (
+                      {positions.map((p) => {
+                        const pd = symbols.find((s) => s.symbol === p.symbol)?.price_decimals ?? 2;
+                        return (
                         <TableRow key={p.ticket} className="hover:bg-muted/30 transition-colors">
                           <TableCell className="font-medium text-xs">{p.symbol}</TableCell>
                           <TableCell
@@ -622,12 +626,12 @@ export default function DashboardPage() {
                             {p.type}
                           </TableCell>
                           <TableCell className="text-right font-mono">{p.lot}</TableCell>
-                          <TableCell className="text-right font-mono">{p.open_price.toFixed(2)}</TableCell>
+                          <TableCell className="text-right font-mono">{p.open_price.toFixed(pd)}</TableCell>
                           <TableCell className="text-right font-mono text-muted-foreground">
-                            {p.sl.toFixed(2)}
+                            {p.sl.toFixed(pd)}
                           </TableCell>
                           <TableCell className="text-right font-mono text-muted-foreground">
-                            {p.tp.toFixed(2)}
+                            {p.tp.toFixed(pd)}
                           </TableCell>
                           <TableCell
                             className={`text-right font-mono font-semibold ${p.profit >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}
@@ -636,7 +640,8 @@ export default function DashboardPage() {
                             {p.profit.toFixed(2)}
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>

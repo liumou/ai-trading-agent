@@ -207,6 +207,8 @@ export default function PriceAlertsPage() {
   };
 
   const availableSymbols = symbols.length > 0 ? symbols : [];
+  // 价格小数位映射（汇率类品种 ≥4 位）：按 symbol 从 symbols 列表取 price_decimals
+  const symbolPriceDecimals = Object.fromEntries(symbols.map((s) => [s.symbol, s.price_decimals ?? 2]));
 
   // 状态分类计数 —— 与 notifications 页筛选条一致的中间内容层
   const counts = alerts.reduce(
@@ -323,7 +325,7 @@ export default function PriceAlertsPage() {
                             {a.condition === "above" ? t("conditionAbove") : t("conditionBelow")}
                           </Badge>
                         </td>
-                        <td className="px-4 py-3 tabular-nums">{a.trigger_price.toFixed(2)}</td>
+                        <td className="px-4 py-3 tabular-nums">{a.trigger_price.toFixed(symbolPriceDecimals[a.symbol] ?? 2)}</td>
                         <td className="px-4 py-3 text-muted-foreground">
                           {a.duration_seconds} {t("seconds")}
                         </td>

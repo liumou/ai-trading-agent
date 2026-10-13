@@ -15,18 +15,25 @@ export interface TradingPosition {
   open_time: string;
 }
 
+/** 按 symbol 查价格小数位（汇率类品种 ≥4 位），未配置回退 2。 */
+function priceDecimalsFor(symbol: string, bySymbol: Record<string, number> | undefined): number {
+  return bySymbol?.[symbol] ?? 2;
+}
+
 export function PositionsTable({
   positions,
   onClose,
   onEditSlTp,
   busyTicket,
   showActions = true,
+  priceDecimalsBySymbol,
 }: {
   positions: TradingPosition[];
   onClose?: (ticket: number) => void;
   onEditSlTp?: (ticket: number, sl: number, tp: number) => void;
   busyTicket?: number | null;
   showActions?: boolean;
+  priceDecimalsBySymbol?: Record<string, number>;
 }) {
   const t = useTranslations("trading");
   if (positions.length === 0) {
@@ -54,7 +61,9 @@ export function PositionsTable({
           </tr>
         </thead>
         <tbody>
-          {positions.map((p) => (
+          {positions.map((p) => {
+            const pd = priceDecimalsFor(p.symbol, priceDecimalsBySymbol);
+            return (
             <tr key={p.ticket} className="border-b border-border/40 last:border-b-0">
               <td className="px-4 py-3 font-mono text-xs">{p.ticket}</td>
               <td className="px-4 py-3 font-medium text-xs">{p.symbol}</td>
@@ -62,10 +71,10 @@ export function PositionsTable({
                 {p.type}
               </td>
               <td className="px-4 py-3 text-right font-mono">{p.lot}</td>
-              <td className="px-4 py-3 text-right font-mono">{p.open_price?.toFixed(2)}</td>
-              <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.current_price?.toFixed(2)}</td>
-              <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.sl?.toFixed(2)}</td>
-              <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.tp?.toFixed(2)}</td>
+              <td className="px-4 py-3 text-right font-mono">{p.open_price?.toFixed(pd)}</td>
+              <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.current_price?.toFixed(pd)}</td>
+              <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.sl?.toFixed(pd)}</td>
+              <td className="px-4 py-3 text-right font-mono text-muted-foreground">{p.tp?.toFixed(pd)}</td>
               <td className={`px-4 py-3 text-right font-mono font-semibold ${p.profit >= 0 ? "text-success dark:text-green-400" : "text-destructive"}`}>
                 {p.profit >= 0 ? "+" : ""}{p.profit?.toFixed(2)}
               </td>
@@ -101,7 +110,8 @@ export function PositionsTable({
                 </td>
               )}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

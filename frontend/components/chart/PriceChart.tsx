@@ -13,6 +13,8 @@ type Props = {
   tick?: { bid: number; ask: number; time?: string } | null;
   emaFast?: number;
   emaSlow?: number;
+  /** 价格小数位（汇率类品种 ≥4 位），用于 Y 轴刻度与价格线标签，默认 2。 */
+  priceDecimals?: number;
 };
 
 function calcEMA(data: { time: number; close: number }[], period: number) {
@@ -25,13 +27,14 @@ function calcEMA(data: { time: number; close: number }[], period: number) {
       continue;
     }
     const ema = data[i].close * k + prev * (1 - k);
-    result.push({ time: data[i].time, value: Math.round(ema * 100) / 100 });
+    // 保留完整浮点精度（不硬编码舍入到 2 位——汇率类品种需要 ≥4 位）
+    result.push({ time: data[i].time, value: ema });
     prev = ema;
   }
   return result;
 }
 
-export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaSlow = 50 }: Props) {
+export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaSlow = 50, priceDecimals = 2 }: Props) {
   const t = useTranslations("charts");
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -85,6 +88,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
       container.querySelectorAll('a[href*="tradingview"]').forEach((el) => el.remove());
     }
 
+    const priceFormat = { type: "price" as const, precision: priceDecimals, minMove: 1 / 10 ** priceDecimals };
     const series = chart.addSeries(CandlestickSeries, {
       upColor: isDark ? "#4ade80" : "#054d28",
       downColor: "#d03238",
@@ -92,6 +96,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
       borderUpColor: isDark ? "#4ade80" : "#054d28",
       wickDownColor: "#d03238",
       wickUpColor: isDark ? "#4ade80" : "#054d28",
+      priceFormat,
     });
 
     const emaFastSeries = chart.addSeries(LineSeries, {
@@ -99,12 +104,14 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
+      priceFormat,
     });
     const emaSlowSeries = chart.addSeries(LineSeries, {
       color: isDark ? "#fbbf24" : "#f59e0b",
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
+      priceFormat,
     });
 
     chartRef.current = chart;
@@ -131,7 +138,7 @@ export default function PriceChart({ symbol, timeframe, tick, emaFast = 20, emaS
       emaSlowRef.current = null;
       markersRef.current = null;
     };
-  }, [isDark]);
+  }, [isDark, priceDecimals]);
 
   useEffect(() => {
     let cancelled = false;
