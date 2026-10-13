@@ -63,8 +63,9 @@ def _deny_manager(monkeypatch):
 @pytest.mark.asyncio
 async def test_strict_rejects_when_no_manager(ok_connector, redis_client, ok_guardrails, monkeypatch):
     _deny_manager(monkeypatch)
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is False and pf.kind == "symbol"
     ok_connector.get_account.assert_not_awaited()
 
@@ -75,8 +76,9 @@ async def test_strict_rejects_unresolvable_symbol(ok_connector, redis_client, ok
     mgr.resolve_symbol.return_value = None
     mgr.engines = {}
     monkeypatch.setattr(manager_mod, "get_global_manager", lambda: mgr)
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "JUNK", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "JUNK", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is False and pf.kind == "symbol"
 
 
@@ -85,8 +87,9 @@ async def test_strict_rejects_missing_volume_config(ok_connector, redis_client, 
     """无 volume 配置 = 防线不存在 = 拒绝(手动 fail-closed)。"""
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0}  # 无 volume_min
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is False and pf.kind == "lot"
 
 
@@ -97,8 +100,9 @@ async def test_strict_rejects_missing_volume_config(ok_connector, redis_client, 
 async def test_non_strict_continues_without_manager(ok_connector, redis_client, ok_guardrails, monkeypatch):
     _deny_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.01}
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=False)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=False
+    )
     assert pf.ok is True
 
 
@@ -107,8 +111,9 @@ async def test_non_strict_skips_volume_guard_without_config(ok_connector, redis_
     """存量行为:无 volume 配置不阻断下单(引擎补齐前的兼容)。"""
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0}
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.03, 1900.0, 2100.0, strict_symbol=False)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.03, 1900.0, 2100.0, strict_symbol=False
+    )
     assert pf.ok is True and pf.ctx.lot == pytest.approx(0.03)
 
 
@@ -120,8 +125,9 @@ async def test_data_fetch_failure_rejects(ok_connector, redis_client, ok_guardra
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.01}
     ok_connector.get_tick.return_value = {"success": False, "error": "bridge down"}
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is False and pf.kind == "data_fetch"
     ok_guardrails.validate_order.assert_not_awaited()
 
@@ -131,8 +137,9 @@ async def test_guardrail_rejection_passthrough(ok_connector, redis_client, ok_gu
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.01}
     ok_guardrails.validate_order.return_value = SimpleNamespace(allowed=False, reason="daily loss limit")
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is False and pf.kind == "guardrail"
     assert pf.reason == "daily loss limit"
 
@@ -141,8 +148,9 @@ async def test_guardrail_rejection_passthrough(ok_connector, redis_client, ok_gu
 async def test_lot_floored_to_grid(ok_connector, redis_client, ok_guardrails, monkeypatch):
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.1}
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.55, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.55, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is True
     assert pf.ctx.lot == pytest.approx(0.5)
     assert pf.ctx.base_lot == pytest.approx(0.5)
@@ -153,8 +161,9 @@ async def test_micro_mode_caps_lot(ok_connector, redis_client, ok_guardrails, mo
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.01}
     ok_guardrails.get_persisted_rollout_mode = AsyncMock(return_value="micro")
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.5, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.5, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is True
     assert pf.ctx.lot == pytest.approx(0.01)  # MICRO_MAX_LOT
     assert pf.ctx.base_lot == pytest.approx(0.5)
@@ -165,8 +174,9 @@ async def test_live_requires_llm_allow_live(ok_connector, redis_client, ok_guard
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.01}
     monkeypatch.setattr(settings, "llm_allow_live", False)
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is False and pf.kind == "live_auth"
 
 
@@ -175,8 +185,9 @@ async def test_spread_history_key_per_symbol(ok_connector, redis_client, ok_guar
     """评审 M-2:spread history 必须按 symbol 分 key(全局 key 跨品种污染)。"""
     _allow_manager(monkeypatch)
     SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.01}
-    await preflight_order(ok_connector, redis_client, ok_guardrails,
-                          "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True)
+    await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True
+    )
     assert await redis_client.llen("guardrails:spread_history:GOLD") == 1
     assert await redis_client.exists("guardrails:spread_history") == 0
 
@@ -202,8 +213,9 @@ async def test_guardrail_positions_normalized_to_canonical(ok_connector, redis_c
         return SimpleNamespace(allowed=True, reason="ok")
 
     ok_guardrails.validate_order = _capture
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True)
+    pf = await preflight_order(
+        ok_connector, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True
+    )
     assert pf.ok is True
     # 断言传给 validate_order 的持仓 symbol 已归一化为 GOLD(非 GOLD_)
     assert captured["positions"][0]["symbol"] == "GOLD"
@@ -233,9 +245,18 @@ async def test_account_scoped_daily_pnl_key(ok_connector, redis_client, ok_guard
         return SimpleNamespace(allowed=True, reason="ok")
 
     ok_guardrails.validate_order = _capture
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True,
-                               account_login="123")
+    pf = await preflight_order(
+        ok_connector,
+        redis_client,
+        ok_guardrails,
+        "GOLD",
+        "BUY",
+        0.1,
+        1900.0,
+        2100.0,
+        strict_symbol=True,
+        account_login="123",
+    )
     assert pf.ok is True
     # 读到带账号前缀的日亏(-500),而非旧前缀的空 key(0)
     assert captured["daily_pnl"] == -500
@@ -259,9 +280,18 @@ async def test_default_account_login_aligns_with_bootstrap(ok_connector, redis_c
         return SimpleNamespace(allowed=True, reason="ok")
 
     ok_guardrails.validate_order = _capture
-    pf = await preflight_order(ok_connector, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, strict_symbol=True,
-                               account_login="0")
+    pf = await preflight_order(
+        ok_connector,
+        redis_client,
+        ok_guardrails,
+        "GOLD",
+        "BUY",
+        0.1,
+        1900.0,
+        2100.0,
+        strict_symbol=True,
+        account_login="0",
+    )
     assert pf.ok is True
     # 读到无前缀的日亏(-300),而非 circuit:acc:0: 的空 key(0)
     assert captured["daily_pnl"] == -300
@@ -271,8 +301,12 @@ async def test_default_account_login_aligns_with_bootstrap(ok_connector, redis_c
 # ─── 追涨杀跌 spike_chase 自动通道（engine/ai_agent）───────────────────────
 
 
-def _spike_connector(exterminate: bool = True):
-    """构造 M15 最后一根远离 EMA20 的行情 —— 触发 spike_chase warn/block。"""
+def _spike_connector(exterminate: bool = True, consec_bars: int = 5):
+    """构造 M15 最后一根远离 EMA20 的行情 —— 触发 spike_chase warn/block。
+
+    consec_bars: 末 N 根同向上涨实体数。≥4 才满足 block（连续同向条件）；
+    1~3 只触发 warn（无连续同向，block 不满足）。
+    """
     import numpy as np
     import pandas as pd
 
@@ -283,8 +317,8 @@ def _spike_connector(exterminate: bool = True):
     high = close + np.abs(rng.normal(0, 0.4, rows)) + 0.4
     low = close - np.abs(rng.normal(0, 0.4, rows)) - 0.4
     open_ = close + rng.normal(0, 0.3, rows)
-    # 末 5 根同向上涨实体（连续 >4 根）
-    for i in range(1, 6):
+    # 末 consec_bars 根同向上涨实体（≥4 才满足 block）
+    for i in range(1, consec_bars + 1):
         idx = rows - i
         open_[idx] = close[idx] - 0.5
         high[idx] = max(high[idx], open_[idx] + 0.2)
@@ -303,12 +337,32 @@ def _spike_connector(exterminate: bool = True):
 
 
 @pytest.mark.asyncio
-async def test_engine_channel_spike_chase_rejects(monkeypatch, redis_client, ok_guardrails):
-    """引擎通道(AI)入场偏离 EMA20 到峰值 → spike_chase 拒单(无人值守 warn 即拒)。"""
-    conn = _spike_connector(exterminate=True)
+async def test_engine_channel_spike_chase_block_rejects(monkeypatch, redis_client, ok_guardrails):
+    """引擎通道 spike_chase block 级（>99 分位 + 连续≥4 根同向）仍拒单 ——
+    极端追涨杀跌无人值守也拦。"""
+    conn = _spike_connector(exterminate=True, consec_bars=5)
     _allow_manager(monkeypatch)
-    pf = await preflight_order(conn, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="engine")
+    pf = await preflight_order(conn, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="engine")
+    assert pf.ok is False and pf.kind == "spike_chase"
+    assert "spike_chase" in pf.reason
+
+
+@pytest.mark.asyncio
+async def test_engine_channel_spike_chase_warn_allows(monkeypatch, redis_client, ok_guardrails):
+    """引擎通道 spike_chase warn 级不拒 —— 健康突破（pct>90 但连续同向<4 根）
+    放行，不废掉 OIL/BTC 默认的 breakout 策略。"""
+    _allow_manager(monkeypatch)
+    conn = _spike_connector(exterminate=True, consec_bars=1)
+    pf = await preflight_order(conn, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="engine")
+    assert pf.ok is True  # warn 级引擎放行
+
+
+@pytest.mark.asyncio
+async def test_ai_channel_spike_chase_warn_still_rejects(monkeypatch, redis_client, ok_guardrails):
+    """AI/MCP 通道 warn 级仍拒（现状不变）—— 无人值守无 CAUTION 流，warn 即拒。"""
+    _allow_manager(monkeypatch)
+    conn = _spike_connector(exterminate=True, consec_bars=1)
+    pf = await preflight_order(conn, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="ai")
     assert pf.ok is False and pf.kind == "spike_chase"
     assert "spike_chase" in pf.reason
 
@@ -320,8 +374,7 @@ async def test_manual_channel_skips_spike_chase(ok_connector, redis_client, ok_g
     _allow_manager(monkeypatch)
     c = _spike_connector(exterminate=True)
     c.get_history.return_value = {"success": True, "data": []}
-    pf = await preflight_order(c, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="manual")
+    pf = await preflight_order(c, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="manual")
     assert pf.ok is True
     # 手动通道不该调 get_ohlcv(不重复拉取)
     c.get_ohlcv.assert_not_awaited()
@@ -332,6 +385,5 @@ async def test_engine_channel_spike_chase_data_unavailable_skips(monkeypatch, re
     """M15 拉取失败 → spike_chase 静默跳过(不误杀),其余闸门照常。"""
     _allow_manager(monkeypatch)
     conn = _spike_connector(exterminate=False)
-    pf = await preflight_order(conn, redis_client, ok_guardrails,
-                               "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="engine")
+    pf = await preflight_order(conn, redis_client, ok_guardrails, "GOLD", "BUY", 0.1, 1900.0, 2100.0, channel="engine")
     assert pf.ok is True

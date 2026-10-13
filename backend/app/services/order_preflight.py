@@ -125,12 +125,18 @@ async def _preflight_spike_chase(
     *,
     spike_pct_warn: float = 0.90,
     spike_pct_block: float = 0.99,
+    warn_rejects: bool = True,
 ) -> str:
     """自动通道（引擎/AI）追涨杀跌硬闸门。
 
     复用 deviation_guard.detect_spike_chase：|entry−EMA20|/ATR14 滚动分位。
-    warn 级（>90 分位）即拒 —— 无人值守无 CAUTION 人工确认流，宁可错过不能
-    追在山顶/杀在地板。返回拒绝原因（非空=拒），空字符串=通过/数据不可用。
+    warn_rejects=True（AI 通道，默认）：warn 级（>90 分位）即拒 —— 无人值守
+    无 CAUTION 人工确认流，宁可错过不能追在山顶/杀在地板。
+    warn_rejects=False（引擎通道）：warn 级放行、block 级仍拒 —— 引擎默认
+    策略（OIL/BTC 的 breakout）本来就是「突破才进场」，突破瞬间 z 分位天然
+    偏高，warn 即拒会系统性误杀健康突破信号（reviewer 蒙特卡洛模拟 pct 普遍
+    ≥90%）。block 级（>99 分位 + 连续≥4 根同向）仍拦截极端追涨杀跌。
+    返回拒绝原因（非空=拒），空字符串=通过/数据不可用。
 
     M15 拉取失败/数据不足 → 静默跳过（不误杀，其余闸门照常）。
     """
@@ -147,13 +153,20 @@ async def _preflight_spike_chase(
         from app.services.deviation_guard import detect_spike_chase
 
         r = detect_spike_chase(
-            df, entry_ref, direction,
+            df,
+            entry_ref,
+            direction,
             spike_pct_warn=spike_pct_warn,
             spike_pct_block=spike_pct_block,
         )
         if r is None:
             return ""
-        return f"spike_chase {r.severity}: {r.detail}（自动通道无人值守，warn 即拒）"
+        if r.severity == "block":
+            return f"spike_chase block: {r.detail}（自动通道，block 级拒单）"
+        # warn 级
+        if warn_rejects:
+            return f"spike_chase warn: {r.detail}（自动通道无人值守，warn 即拒）"
+        return ""  # 引擎通道 warn 放行（健康突破不误杀）
     except Exception:  # noqa: BLE001
         logger.debug(f"preflight spike_chase unavailable [{symbol}] — skip", exc_info=True)
         return ""
@@ -258,9 +271,7 @@ async def preflight_order(
 
             _mgr = _ggm()
             active_symbols = await CircuitBreaker.get_active_symbols(_mgr)
-            account_daily_pnl = await CircuitBreaker.get_global_daily_pnl(
-                redis, active_symbols, account_login
-            )
+            account_daily_pnl = await CircuitBreaker.get_global_daily_pnl(redis, active_symbols, account_login)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"Account-level daily PnL aggregation failed: {e!r}")
 
@@ -273,14 +284,20 @@ async def preflight_order(
 
     # 5b. 追涨杀跌（spike_chase）自动通道风控 —— 引擎/AI 通道强制执行。
     #     手动通道已在 ManualOrderGate._spike_chase_flags 前置（不重复）。
-    #     warn 级（>90 分位）即拒：无人值守无 CAUTION 人工确认流，宁可错过
-    #     不能追在山顶/杀在地板。M15 拉取失败/数据不足 → 跳过（不误杀，
-    #     其余闸门照常）。仅当 entry_ref 有效时才判定。
+    #     AI 通道 warn 级（>90 分位）即拒：无人值守无 CAUTION 人工确认流。
+    #     引擎通道 warn 放行、仅 block 级拒（warn_rejects=False）—— 引擎默认
+    #     策略（OIL/BTC breakout）本来就是突破才进场，warn 即拒会误杀健康突破。
+    #     M15 拉取失败/数据不足 → 跳过（不误杀，其余闸门照常）。
+    #     仅当 entry_ref 有效时才判定。
     if channel != "manual" and entry_ref > 0 and settings.preflight_spike_pct_warn > 0:
         spike_reason = await _preflight_spike_chase(
-            connector, symbol, entry_ref, direction or order_type,
+            connector,
+            symbol,
+            entry_ref,
+            direction or order_type,
             spike_pct_warn=settings.preflight_spike_pct_warn,
             spike_pct_block=settings.preflight_spike_pct_block,
+            warn_rejects=(channel != "engine"),  # 引擎通道仅 block 级拦截
         )
         if spike_reason:
             return _reject(spike_reason, "spike_chase")
@@ -290,8 +307,7 @@ async def preflight_order(
     #    券商别名（如 "GOLD_"），而 guardrails 按 canonical 过滤并发计数
     #    （MAX_CONCURRENT_PER_SYMBOL）；否则比较永不匹配，该闸门静默失效。
     normalized_positions = [
-        {**p, "symbol": get_canonical_symbol(str(p.get("symbol") or "")) or p.get("symbol")}
-        for p in positions
+        {**p, "symbol": get_canonical_symbol(str(p.get("symbol") or "")) or p.get("symbol")} for p in positions
     ]
     result = await guardrails.validate_order(
         symbol=symbol,
@@ -386,8 +402,7 @@ async def preflight_order(
             f"{profile.get('volume_min')} — bridge would upsize beyond risk budget"
         )
         return _reject(
-            f"lot {lot} below broker minimum {profile.get('volume_min')} — "
-            f"raise lot or fix symbol volume config",
+            f"lot {lot} below broker minimum {profile.get('volume_min')} — raise lot or fix symbol volume config",
             "lot",
         )
     if guarded_lot != lot:
@@ -408,9 +423,7 @@ async def preflight_order(
     #    check_live_auth=False 用于引擎自营通道：该通道由用户显式启动，不因
     #    LLM 授权开关而静默停摆（llm_allow_live 语义面向 AI/agent 通道）。
     if check_live_auth and rollout_mode in ("micro", "live") and not settings.llm_allow_live:
-        logger.warning(
-            f"preflight_order [{symbol}] rejected: rollout={rollout_mode} requires LLM_ALLOW_LIVE=true"
-        )
+        logger.warning(f"preflight_order [{symbol}] rejected: rollout={rollout_mode} requires LLM_ALLOW_LIVE=true")
         return _reject(
             f"rollout={rollout_mode}: 需要显式设置 LLM_ALLOW_LIVE=true 才放开真实下单",
             "live_auth",
