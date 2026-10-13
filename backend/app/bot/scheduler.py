@@ -108,11 +108,11 @@ class BotScheduler:
             coalesce=True,
         )
 
-        # Sync positions every 30 seconds
+        # Sync positions every 10 seconds（调短：前端持仓需更快反映手动开平仓）
         self.scheduler.add_job(
             self._sync_job,
             "interval",
-            seconds=30,
+            seconds=10,
             id="sync_positions",
             max_instances=1,
             coalesce=True,

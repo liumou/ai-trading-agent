@@ -157,3 +157,69 @@ def test_mask_host_redacts_path_and_scheme():
     assert _mask_host("https://open.feishu.cn/open-apis/bot/v2/hook/abc123") == "open.feishu.cn"
     assert _mask_host("") == "<invalid url>"
     assert _mask_host("not-a-valid-url") in ("not-a-valid-url", "<invalid url>")
+
+
+# ─── webhook 格式校验 / 坏值回退（2026-10-13 加固） ─────────────────────
+
+
+def test_is_valid_webhook_url_accepts_standard():
+    """标准飞书自定义机器人路径 → 合法。"""
+    from app.notifications.feishu import _is_valid_webhook_url
+
+    good = "https://open.feishu.cn/open-apis/bot/v2/hook/abcd-1234-efgh-5678-ijklmnopqrst"
+    assert _is_valid_webhook_url(good) is True
+
+
+def test_is_valid_webhook_url_rejects_bad_path_and_host():
+    """非标准路径（Vault 坏值形态）或错误 host → 非法，防止盖掉有效值。"""
+    from app.notifications.feishu import _is_valid_webhook_url
+
+    bad_path = "https://open.feishu.cn/xx/yyy"
+    bad_host = "https://evil.example.com/open-apis/bot/v2/hook/abc"
+    empty = ""
+    assert _is_valid_webhook_url(bad_path) is False
+    assert _is_valid_webhook_url(bad_host) is False
+    assert _is_valid_webhook_url(empty) is False
+
+
+def test_pick_webhook_falls_back_from_bad_vault_to_env(monkeypatch):
+    """Vault 传入坏值 + env 有有效值 → 回退 env，不再被坏值盖住。"""
+    from app.notifications.feishu import _pick_webhook_url
+
+    bad_vault = "https://open.feishu.cn/xx/yyy"
+    good_env = "https://open.feishu.cn/open-apis/bot/v2/hook/abcd-1234-efgh-5678-ijklmnopqrst"
+    assert _pick_webhook_url(bad_vault, good_env) == good_env
+
+
+def test_pick_webhook_all_invalid_disables(monkeypatch):
+    """Vault/env 全非法 → 返回空串，通知器禁用（不再带坏 URL 空转）。"""
+    from app.notifications.feishu import _pick_webhook_url
+
+    bad_vault = "https://open.feishu.cn/xx/yyy"
+    bad_host = "https://evil.example.com/open-apis/bot/v2/hook/abc"
+    assert _pick_webhook_url(bad_vault, bad_host) == ""
+
+
+def test_reload_empty_still_disables(monkeypatch):
+    """reload_from('') 仍显式清空禁用（不回退旧值）——保存配置为空的意图。"""
+    from app.notifications.feishu import settings as _settings
+
+    monkeypatch.setattr(_settings, "feishu_webhook_url", "")
+    n = FeishuNotifier(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/abc123")
+    assert n.enabled is True
+    n.reload_from("")
+    assert n.enabled is False
+    assert n.webhook_url == ""
+
+
+def test_reload_bad_value_keeps_old_good(monkeypatch):
+    """reload_from 传入格式非法值 → 保留当前有效值，不打断运行中的 webhook。"""
+    from app.notifications.feishu import settings as _settings
+
+    monkeypatch.setattr(_settings, "feishu_webhook_url", "")
+    good = "https://open.feishu.cn/open-apis/bot/v2/hook/abcd-1234-efgh-5678-ijklmnopqrst"
+    n = FeishuNotifier(webhook_url=good)
+    assert n.enabled is True
+    n.reload_from("https://open.feishu.cn/xx/yyy")
+    assert n.enabled is True
+    assert n.webhook_url == good

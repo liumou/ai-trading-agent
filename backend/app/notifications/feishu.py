@@ -3,6 +3,9 @@
 
 - Webhook 配置优先走 Secrets Vault（`FEISHU_WEBHOOK_URL`，AES 加密），未配置时回退 env。
   集成页可编辑保存；`reload_from()` 让运行期实例立即生效（不需重启）。
+- **格式兜底**：Vault/env 读到的值若不符合飞书 webhook 标准路径格式，回退 env 有效值
+  （仍非法则禁用）。防止集成页误存坏值（如只存了 `xx/yyy` 的占位）后永久盖住 `.env`
+  里的有效值 —— 那是曾导致「飞书持续 404 page not found」的根因（2026-10-13）。
 - 卡片用 `msg_type="interactive"` 内联格式（custom bot 直接支持，无需预建卡片模板）。
 - 发送失败只记录日志，绝不抛出异常影响调用方（对齐 TelegramNotifier._send 模式）。
 """
@@ -52,6 +55,53 @@ def _price_decimals(symbol: str) -> int:
     return int(profile.get("price_decimals", 2))
 
 
+# 飞书自定义机器人 webhook 标准路径前缀（含标准端口）。
+# token 段通常为形如 ``xxxx-xxxx-...`` 的 36 字符 UUID。路径必须以该前缀
+# 开头且其后跟非空 token，才视为合法 webhook。
+_STANDARD_PATH_PREFIX = "/open-apis/bot/v2/hook/"
+
+
+def _is_valid_webhook_url(url: str) -> bool:
+    """判断 webhook URL 是否为标准飞书自定义机器人格式（仅结构，不联网）。
+
+    校验 host 是 open.feishu.cn 且路径以标准前缀开头并带非空 token 段。
+    防止 Vault/env 里被误存坏值（如只存了 ``xx/yyy`` 的占位/测试值）——
+    坏值会让飞书对不存在的路径返回 ``404 page not found``，而有效值
+    会被永久盖住用不上（2026-10-13 根因）。
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:
+        return False
+    if parsed.scheme not in ("https", "http"):
+        return False
+    if parsed.hostname != "open.feishu.cn":
+        return False
+    if not parsed.path.startswith(_STANDARD_PATH_PREFIX):
+        return False
+    token = parsed.path[len(_STANDARD_PATH_PREFIX) :]
+    return bool(token)
+
+
+def _pick_webhook_url(*candidates: str | None) -> str:
+    """从候选 webhook 中选第一个格式合法的；全不合法返回空串。
+
+    ``candidates`` 优先级由调用方决定（通常 Vault → env）。选中的值即生效；
+    无任何合法值时返回 ``""``，通知器禁用并打日志，避免带着坏 URL 空转。
+    """
+    for c in candidates:
+        if c and _is_valid_webhook_url(c):
+            return c.strip()
+    if any(candidates):
+        logger.warning(
+            "Feishu webhook 配置格式非法（非标准飞书路径），已禁用通知。"
+            "请到集成页重新保存正确的 webhook 或在 env 配置 FEISHU_WEBHOOK_URL。"
+        )
+    return ""
+
+
 class FeishuNotifier:
     """飞书群自定义机器人通知器。"""
 
@@ -59,20 +109,29 @@ class FeishuNotifier:
         """初始化通知器。
 
         ``webhook_url`` 传入时优先使用（集成页 Vault 配置），否则回退 env
-        ``FEISHU_WEBHOOK_URL``。运行期可调 ``reload_from`` 让新配置即时生效。
+        ``FEISHU_WEBHOOK_URL``。**两处值都会做格式校验**：传入值非法时回退
+        env 有效值（仍非法则禁用并告警）。运行期可调 ``reload_from`` 让新配置即时生效。
         """
-        self.webhook_url = (webhook_url or settings.feishu_webhook_url or "").strip()
+        self.webhook_url = _pick_webhook_url(
+            webhook_url, settings.feishu_webhook_url
+        )
         self.enabled = bool(self.webhook_url)
 
     def reload_from(self, webhook_url: str | None) -> None:
         """运行时用新 webhook 刷新实例状态（保存配置后调用，免重启）。
 
-        调用方负责读取 Vault 中的最新值；此处只同步状态。空值视为清空禁用。
+        语义：
+        - 传入空值 = 显式清空禁用（不回退旧值）。
+        - 传入非空但格式非法的值 = 回退当前有效值（无有效旧值则禁用），
+          避免用户在集成页误存坏值后把运行中可用的 webhook 也一起打断。
         """
         new_url = (webhook_url or "").strip()
-        if new_url != self.webhook_url or bool(new_url) != self.enabled:
-            self.webhook_url = new_url
-            self.enabled = bool(new_url)
+        # 只有非空的新值才有资格回退到旧值；空值必须清除（否则没法禁用）
+        candidates = [new_url] + ([self.webhook_url] if new_url else [])
+        final_url = _pick_webhook_url(*candidates)
+        if final_url != self.webhook_url or bool(final_url) != self.enabled:
+            self.webhook_url = final_url
+            self.enabled = bool(final_url)
             logger.info(f"Feishu notifier reloaded (enabled={self.enabled})")
 
     async def _post(self, payload: dict) -> bool:
