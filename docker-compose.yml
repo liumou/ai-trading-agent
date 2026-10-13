@@ -1,17 +1,22 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:15
     container_name: goldbot-postgres
     environment:
-      POSTGRES_DB: goldbot
+      POSTGRES_DB: ${POSTGRES_DB:-goldbot}
       POSTGRES_USER: ${POSTGRES_USER:-goldbot}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-    ports:
-      - "5434:5432"
+    # 宿主机已有 postgres 占用 5434 时注释掉端口映射（backend 走容器内部网络访问，无需暴露）
+    # ports:
+    #   - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-goldbot} -d ${POSTGRES_DB:-goldbot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:7
@@ -21,6 +26,52 @@ services:
       - "6380:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: goldbot-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 容器内监听 8002（与前端浏览器端自动推导的后端端口一致）
+      PORT: "8002"
+      # 覆盖 backend/.env 里的远端地址，指向 compose 内部 postgres/redis
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-goldbot}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-goldbot}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-goldbot}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-goldbot}
+      REDIS_URL: redis://redis:6379/0
+    # 挂载 backend/.env 供容器内 pydantic-settings 直接读取（与本地运行同一解析路径：
+    # 正确剥离行内注释、保留 bcrypt 哈希中的 $ 字符）。environment 中的变量优先覆盖。
+    volumes:
+      - ./backend/.env:/app/.env:ro
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: goldbot-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
 
 volumes:
   postgres_data:
