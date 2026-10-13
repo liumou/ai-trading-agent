@@ -52,7 +52,7 @@ class TestValidateOrderLotSize:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "exceeds max" in result.reason
+        assert "超过最大限制" in result.reason
 
     @pytest.mark.asyncio
     async def test_zero_lot(self, guardrails):
@@ -67,7 +67,7 @@ class TestValidateOrderLotSize:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "Invalid" in result.reason
+        assert "手数无效" in result.reason
 
 
 class TestValidateOrderPositionLimits:
@@ -85,7 +85,7 @@ class TestValidateOrderPositionLimits:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "positions" in result.reason
+        assert "个持仓" in result.reason
 
     @pytest.mark.asyncio
     async def test_different_symbol_ok(self, guardrails):
@@ -116,7 +116,7 @@ class TestValidateOrderPositionLimits:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "Total" in result.reason
+        assert "总持仓" in result.reason
 
 
 class TestValidateOrderDailyLoss:
@@ -147,7 +147,7 @@ class TestValidateOrderDailyLoss:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "Daily loss" in result.reason
+        assert "当日亏损" in result.reason
 
 
 class TestValidateOrderAccountDailyLoss:
@@ -183,7 +183,7 @@ class TestValidateOrderAccountDailyLoss:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "Account daily loss" in result.reason
+        assert "账户当日亏损" in result.reason
 
     @pytest.mark.asyncio
     async def test_account_level_ignored_when_none(self, guardrails):
@@ -231,7 +231,7 @@ class TestValidateOrderAccountDailyLoss:
         keys = [k for k in await redis_client.keys("guardrails:rejections:*")]
         assert keys
         entries = await redis_client.lrange(keys[0], 0, -1)
-        assert any(b"Daily loss" in e for e in entries)
+        assert any("当日亏损" in e.decode() for e in entries)
 
 
 class TestValidateOrderConsecutiveLosses:
@@ -252,7 +252,7 @@ class TestValidateOrderConsecutiveLosses:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "consecutive losses" in result.reason
+        assert "连续亏损" in result.reason
 
     @pytest.mark.asyncio
     async def test_win_resets_streak(self, guardrails, redis_client):
@@ -282,7 +282,7 @@ class TestValidateOrderTradeFrequency:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "trades this hour" in result.reason
+        assert "本小时已交易" in result.reason
 
     @pytest.mark.asyncio
     async def test_min_time_between_trades(self, guardrails):
@@ -299,7 +299,7 @@ class TestValidateOrderTradeFrequency:
             avg_spread=1.5,
         )
         assert result.allowed is False
-        assert "wait" in result.reason.lower()
+        assert "请等待" in result.reason
 
 
 class TestValidateOrderSpread:
@@ -350,7 +350,7 @@ class TestValidateAgentCall:
 
         result = await guardrails.validate_agent_call()
         assert result.allowed is False
-        assert "limit reached" in result.reason
+        assert "调用次数已达上限" in result.reason
 
 
 class TestRecordAndState:

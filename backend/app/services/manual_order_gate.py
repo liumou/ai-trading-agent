@@ -117,10 +117,10 @@ class ManualOrderGate:
     async def _switching_blocked(self) -> str | None:
         try:
             if await self.redis.get("switching:in_progress"):
-                return "Account switch in progress — retry after switch completes"
+                return "账号切换进行中 — 切换完成后请重试"
         except Exception as e:  # noqa: BLE001
             logger.error(f"ManualGate switching gate unavailable: {e!r}")
-            return "Risk gate temporarily unavailable (redis error) — order blocked"
+            return "风控闸门暂时不可用（Redis 异常）— 已拦截下单"
         return None
 
     # ─── submit（下单 / 新挂单 / 改挂单，统一入口）────────────────────────
@@ -149,7 +149,7 @@ class ManualOrderGate:
         if order_kind == "pending" and modify_ticket is not None:
             owned = await self._verify_order_ticket(modify_ticket)
             if not owned:
-                return {"status": "REJECTED", "reason": f"Pending order {modify_ticket} not found on current account"}
+                return {"status": "REJECTED", "reason": f"挂单 {modify_ticket} 在当前账号不存在"}
 
         direction = "BUY" if order_type.startswith("BUY") else "SELL"
         audit_id = await self._create_audit(
@@ -182,7 +182,7 @@ class ManualOrderGate:
             block_flag = next((f for f in snapshot["rule_flags"] if f.get("severity") == "block"), None)
             if block_flag:
                 return await self._reject_inline(
-                    audit_id, f"Emotional-trading rule triggered: {block_flag['flag']}", kind="emotion",
+                    audit_id, f"情绪化交易规则触发: {block_flag['flag']}", kind="emotion",
                     rule_flags=snapshot["rule_flags"],
                 )
 
@@ -209,10 +209,10 @@ class ManualOrderGate:
         except Exception as e:  # noqa: BLE001
             logger.exception(f"ManualGate review task [{audit_id}] crashed")
             await self._reject_inline(
-                audit_id, f"AI review failed: {e!s} — order blocked (fail-closed)",
+                audit_id, f"AI 审查失败: {e!s} — 已拦截下单（fail-closed）",
                 kind="llm_unavailable", retryable=True,
             )
-            await self._ai_error_event(audit_id, f"review crashed: {e!s:.200}")
+            await self._ai_error_event(audit_id, f"审查任务崩溃: {e!s:.200}")
 
     async def _decide_review(self, audit_id: int, snapshot: dict, ctx):
         """SystemOne 链：primary provider 在前，其余在后，LLM 永远兜底。
@@ -289,7 +289,6 @@ class ManualOrderGate:
     def _local_engine(self):
         if self._local is None:
             from app.mt5.market_data import MarketDataService
-
             from app.services.systemone import LocalRuleEngine
 
             self._local = LocalRuleEngine(self._market_data or MarketDataService(self.connector))
@@ -298,7 +297,6 @@ class ManualOrderGate:
     def _typesafe_provider(self):
         if self._typesafe is None:
             from app.mt5.market_data import MarketDataService
-
             from app.services.typesafe_jev import TypesafeJevProvider
 
             self._typesafe = TypesafeJevProvider(
@@ -345,23 +343,23 @@ class ManualOrderGate:
                 ),
                 timeout=LLM_REVIEW_TIMEOUT_S,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"ManualGate [{audit_id}] LLM review timed out after {LLM_REVIEW_TIMEOUT_S}s")
             await self._reject_inline(
-                audit_id, f"AI review timed out after {LLM_REVIEW_TIMEOUT_S}s — order blocked (fail-closed)",
+                audit_id, f"AI 审查超时（{LLM_REVIEW_TIMEOUT_S} 秒）— 已拦截下单（fail-closed）",
                 kind="llm_unavailable", retryable=True,
             )
-            await self._ai_error_event(audit_id, "LLM review timeout")
+            await self._ai_error_event(audit_id, "LLM 审查超时")
             return None
         verdict_data = self._normalize_verdict(raw)
         if verdict_data is None:
             logger.warning(
                 f"ManualGate [{audit_id}] LLM verdict missing/malformed — raw head: {str(raw)[:160]}")
             await self._reject_inline(
-                audit_id, "AI review unavailable (LLM failure or malformed output) — order blocked (fail-closed)",
+                audit_id, "AI 审查不可用（LLM 失败或输出格式异常）— 已拦截下单（fail-closed）",
                 kind="llm_unavailable", retryable=True,
             )
-            await self._ai_error_event(audit_id, "LLM verdict missing/malformed")
+            await self._ai_error_event(audit_id, "LLM 判决缺失或格式异常")
             return None
         return verdict_data
 
@@ -382,7 +380,7 @@ class ManualOrderGate:
             # 规则拒绝是正常拒绝（TRADE_BLOCKED，retryable=False），绝不发
             # AI_AGENT_ERROR —— 基础设施故障才走 llm_unavailable + AI_AGENT_ERROR。
             kind = "systemone_rejected" if systemone_block else "ai_rejected"
-            reason = verdict_data.get("reasoning") or "AI review rejected the order"
+            reason = verdict_data.get("reasoning") or "AI 审查已拒绝该订单"
             await self._reject_inline(audit_id, reason, kind=kind,
                                       rule_flags=stored.get("rule_flags"), llm=verdict_data)
             return
@@ -423,16 +421,16 @@ class ManualOrderGate:
     async def confirm_and_execute(self, review_id: int, account_login: str = "0") -> dict:
         audit = await self._load_audit(review_id)
         if audit is None:
-            return {"status": "REJECTED", "reason": "Review not found"}
+            return {"status": "REJECTED", "reason": "审查记录不存在"}
         if audit.status != "PENDING_CONFIRM":
-            return {"status": audit.status, "reason": f"Review is not awaiting confirmation (status={audit.status})"}
+            return {"status": audit.status, "reason": f"该审查不在待确认状态（当前 status={audit.status}）"}
         review = dict(audit.review or {})
         expires_at = review.get("confirm_expires_at")
         if expires_at:
             try:
                 if _utcnow() > datetime.fromisoformat(expires_at):
                     await self._update_audit(review_id, status="EXPIRED")
-                    return {"status": "EXPIRED", "reason": "Confirmation window (120s) elapsed — resubmit the order"}
+                    return {"status": "EXPIRED", "reason": "确认窗口（120 秒）已过期 — 请重新提交订单"}
             except ValueError:
                 pass
 
@@ -452,8 +450,8 @@ class ManualOrderGate:
                 channel="manual",
             )
             if not pf.ok:
-                return await self._reject_inline(review_id, f"State changed since review: {pf.reason}", kind=pf.kind)
-            snapshot = await self._build_snapshot(pf.ctx, review_id, rule_flags=review.get("rule_flags"))
+                return await self._reject_inline(review_id, f"审查后状态已变化: {pf.reason}", kind=pf.kind)
+            await self._build_snapshot(pf.ctx, review_id, rule_flags=review.get("rule_flags"))
             await self._execute_approved(review_id, review, ctx=pf.ctx)
 
         return {"status": "EXECUTED", "review_id": review_id}
@@ -474,7 +472,7 @@ class ManualOrderGate:
                 channel="manual",
             )
             if not pf.ok:
-                await self._reject_inline(audit_id, f"State changed since review: {pf.reason}", kind=pf.kind)
+                await self._reject_inline(audit_id, f"审查后状态已变化: {pf.reason}", kind=pf.kind)
                 return
             ctx = pf.ctx
 
@@ -489,7 +487,7 @@ class ManualOrderGate:
         if ctx.rollout_mode in ("shadow", "paper"):
             await self._reject_inline(
                 audit_id,
-                f"Rollout mode '{ctx.rollout_mode}' blocks manual real orders — enable live or paper first",
+                f"上线模式 '{ctx.rollout_mode}' 禁止手动真实单 — 请先启用 live 或 paper",
                 kind="rollout",
             )
             return
@@ -505,7 +503,7 @@ class ManualOrderGate:
             if not await self._verify_order_ticket(int(modify_ticket)):
                 await self._reject_inline(
                     audit_id,
-                    f"Pending order {modify_ticket} no longer exists on current account — resubmit",
+                    f"挂单 {modify_ticket} 已不存在于当前账号 — 请重新提交",
                     kind="ticket_ownership",
                 )
                 return
@@ -530,7 +528,7 @@ class ManualOrderGate:
         latency_ms = int((time.monotonic() - start) * 1000)
 
         if not result.get("success"):
-            error = result.get("error", "Order execution failed")
+            error = result.get("error", "下单执行失败")
             await self._update_audit(audit_id, status="FAILED", error_message=error, latency_ms=latency_ms)
             await self._log_event(BotEventType.ORDER_FAILED, f"[Manual] order failed [{ctx.symbol}]: {error}")
             await self._push({"type": "manual_review", "review_id": audit_id, "status": "FAILED", "reason": error})
@@ -582,10 +580,10 @@ class ManualOrderGate:
         if blocked:
             return {"cancelled": False, "rejected": True, "reason": blocked}
         if not await self._verify_order_ticket(ticket):
-            return {"cancelled": False, "error": f"Pending order {ticket} not found on current account"}
+            return {"cancelled": False, "error": f"挂单 {ticket} 在当前账号不存在"}
         result = await self.connector.cancel_order(ticket)
         if not result.get("success"):
-            return {"cancelled": False, "error": result.get("error", "Cancel failed")}
+            return {"cancelled": False, "error": result.get("error", "撤单失败")}
         await self._log_event(BotEventType.SETTINGS_CHANGED, f"[Manual] pending order #{ticket} cancelled")
         await self._push({"type": "manual_order", "action": "cancel", "ticket": ticket})
         return {"cancelled": True, "ticket": ticket}
@@ -608,10 +606,10 @@ class ManualOrderGate:
 
         positions_res = await self.connector.get_positions()
         if not positions_res.get("success"):
-            return {"modified": False, "error": positions_res.get("error", "Failed to fetch positions")}
+            return {"modified": False, "error": positions_res.get("error", "获取持仓失败")}
         pos = next((p for p in positions_res.get("data", []) if p.get("ticket") == ticket), None)
         if pos is None:
-            return {"modified": False, "error": f"Position {ticket} not found on current account"}
+            return {"modified": False, "error": f"持仓 {ticket} 在当前账号不存在"}
 
         ptype = str(pos.get("type", "")).upper()
         is_buy = ptype.startswith("BUY")
@@ -629,14 +627,14 @@ class ManualOrderGate:
         price = float(pos.get("current_price") or 0) or entry
         if is_buy:
             if new_sl and new_sl >= price:
-                return {"modified": False, "error": f"SL {new_sl} must be below current price {price} for BUY"}
+                return {"modified": False, "error": f"BUY 止损 SL {new_sl} 必须低于现价 {price}"}
             if new_tp and new_tp <= price:
-                return {"modified": False, "error": f"TP {new_tp} must be above current price {price} for BUY"}
+                return {"modified": False, "error": f"BUY 止盈 TP {new_tp} 必须高于现价 {price}"}
         else:
             if new_sl and new_sl <= price:
-                return {"modified": False, "error": f"SL {new_sl} must be above current price {price} for SELL"}
+                return {"modified": False, "error": f"SELL 止损 SL {new_sl} 必须高于现价 {price}"}
             if new_tp and new_tp >= price:
-                return {"modified": False, "error": f"TP {new_tp} must be below current price {price} for SELL"}
+                return {"modified": False, "error": f"SELL 止盈 TP {new_tp} 必须低于现价 {price}"}
 
         # 删除已有止损 = 无限拉宽（评审 C-3）：风险只减不增，已有 SL 时
         # new_sl=0 必须硬拦截 —— 任何有限倍数都无法约束「无限距离」。
@@ -644,7 +642,7 @@ class ManualOrderGate:
             return {
                 "modified": False,
                 "rejected": True,
-                "reason": "Removing an existing stop-loss is not allowed — set a new SL instead",
+                "reason": "不允许删除已有止损 — 请设置新的 SL 代替（删除止损 = 无限拉宽风险）",
             }
 
         widening = False
@@ -665,8 +663,8 @@ class ManualOrderGate:
                         "modified": False,
                         "rejected": True,
                         "reason": (
-                            f"SL distance {new_dist:.5f} exceeds {MANUAL_SL_MAX_ENTRY_DIST_MULT}x "
-                            f"anchored risk distance {anchor:.5f} (drift budget)"
+                            f"SL 距离 {new_dist:.5f} 超过锚定风险距离 {anchor:.5f} 的 "
+                            f"{MANUAL_SL_MAX_ENTRY_DIST_MULT} 倍（漂移预算超限）"
                         ),
                     }
                 if new_dist > abs(entry - current_sl):
@@ -675,13 +673,13 @@ class ManualOrderGate:
                         return {
                             "modified": False,
                             "rejected": True,
-                            "reason": f"Daily SL-widen budget exhausted ({MANUAL_SL_WIDEN_DAILY_LIMIT}/day)",
+                            "reason": f"今日 SL 拉宽次数已达上限（{MANUAL_SL_WIDEN_DAILY_LIMIT}/天）",
                         }
                     widening = True
 
         result = await self.connector.modify_position(ticket, sl=new_sl, tp=new_tp)
         if not result.get("success"):
-            return {"modified": False, "error": result.get("error", "Modification failed")}
+            return {"modified": False, "error": result.get("error", "持仓修改失败")}
         if widening:
             day_key = f"manual:sl_widens:{_utcnow().date().isoformat()}:{ticket}"
             await self.redis.incr(day_key)
@@ -823,7 +821,7 @@ class ManualOrderGate:
 
         if not ctx.sl:
             flags.append({"flag": "no_stop_loss", "severity": "warn",
-                          "detail": "Order has no stop loss"})
+                          "detail": "订单未设置止损（SL）"})
 
         if deals:
             last = deals[0]
@@ -842,16 +840,16 @@ class ManualOrderGate:
                     flags.append({
                         "flag": "martingale_after_loss", "severity": "block",
                         "detail": (
-                            f"Lot {ctx.lot} ≥ {MARTINGALE_LOT_MULT}x the lot of a loss "
-                            f"({last_lot}) closed {minutes_since:.0f}min ago — revenge/martingale pattern"
+                            f"手数 {ctx.lot} ≥ 亏损单手数 {MARTINGALE_LOT_MULT} 倍（{last_lot}）"
+                            f"，{minutes_since:.0f} 分钟前平仓 — 疑似复仇/马丁格尔加仓"
                         ),
                     })
                 else:
                     flags.append({
                         "flag": "revenge_trade_window", "severity": "warn",
                         "detail": (
-                            f"Re-entering {minutes_since:.0f}min after a "
-                            f"{last_profit:.2f} loss on {last.get('symbol')}"
+                            f"在 {last.get('symbol')} 亏损 {last_profit:.2f} 后 {minutes_since:.0f} 分钟内再次进场 "
+                            f"— 疑似复仇交易"
                         ),
                     })
 
@@ -866,7 +864,7 @@ class ManualOrderGate:
                     break
             if streak >= 3:
                 flags.append({"flag": "loss_streak", "severity": "warn",
-                              "detail": f"{streak} consecutive losses today"})
+                              "detail": f"今日已连续亏损 {streak} 笔"})
         except Exception:  # noqa: BLE001
             pass
 
@@ -876,7 +874,7 @@ class ManualOrderGate:
             ) or 0)
             if trades_this_hour >= 4:
                 flags.append({"flag": "near_frequency_limit", "severity": "warn",
-                              "detail": f"{trades_this_hour} trades in the last hour (limit 5)"})
+                              "detail": f"最近一小时已交易 {trades_this_hour} 次（上限 5）"})
         except Exception:  # noqa: BLE001
             pass
 

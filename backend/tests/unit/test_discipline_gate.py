@@ -9,8 +9,8 @@
 
 from datetime import datetime, timedelta
 
-import pytest
 import fakeredis.aioredis
+import pytest
 
 from app.config import settings
 
@@ -28,6 +28,7 @@ def enable_discipline(monkeypatch, dredis):
     monkeypatch.setattr(settings, "discipline_max_lots_per_day", 100.0)  # 防拆单上限放宽，避免干扰
     # 固定纪律时区本地时间为工作日（周三），避免 WEEKEND_CLOSE/REST_DAY 干扰
     from datetime import timezone
+
     from app.services import discipline as _d
 
     _wed = datetime(2026, 10, 7, 12, 0, tzinfo=timezone(timedelta(hours=8)))
@@ -79,7 +80,9 @@ class TestDisciplineGate:
             await dg.record_order_opened_discipline(
                 dredis, account_login="1", symbol="GOLD", channel="manual", direction="BUY"
             )
-        await dredis.set(f"discipline:flip:1:GOLD", f"BUY|{time.time() - 31 * 60}|1")
+        # flip key 按 channel 隔离（缺陷修复 1）；预置 manual 通道 flip 状态
+        # 为 31 分钟前（避免 FLIP_COOLDOWN 干扰次数断言）
+        await dredis.set("discipline:flip:1:GOLD:manual", f"BUY|{time.time() - 31 * 60}|1")
         res = await dg.check_discipline_gate(
             dredis, account_login="1", symbol="GOLD", channel="manual"
         )
@@ -103,13 +106,13 @@ class TestDisciplineGate:
             d, "discipline_local_now", lambda: datetime(2026, 10, 7, 12, 0, tzinfo=timezone(timedelta(hours=8)))
         )
         # 写入 BUY flip 时间戳 = now（30 分钟内反手 SELL 被拒）
-        await dredis.set(f"discipline:flip:1:GOLD", f"BUY|{time.time()}|1")
+        await dredis.set("discipline:flip:1:GOLD", f"BUY|{time.time()}|1")
         res = await dg.check_discipline_gate(
             dredis, account_login="1", symbol="GOLD", channel="manual"
         )
         assert not res.ok and res.code == "FLIP_COOLDOWN"
         # 31 分钟前的 flip → 放行
-        await dredis.set(f"discipline:flip:1:GOLD", f"BUY|{time.time() - 31 * 60}|1")
+        await dredis.set("discipline:flip:1:GOLD", f"BUY|{time.time() - 31 * 60}|1")
         res = await dg.check_discipline_gate(
             dredis, account_login="1", symbol="GOLD", channel="manual"
         )
@@ -156,9 +159,9 @@ class TestCircuitBreakerPeriod:
 
     @pytest.mark.asyncio
     async def test_period_halt_until(self, dredis, enable_discipline, monkeypatch):
-        from app.risk.circuit_breaker import CircuitBreaker
         import app.services.discipline as d
         import app.services.discipline_gate as dg
+        from app.risk.circuit_breaker import CircuitBreaker
         await _enable_gate_in_redis(dredis)
         from datetime import timezone
 
@@ -186,7 +189,6 @@ class TestImpulseCooldown:
         import app.services.discipline as d
         import app.services.discipline_gate as dg
         await _enable_gate_in_redis(dredis)
-        from datetime import timedelta, timezone
 
         monkeypatch.setattr(d, "discipline_now", lambda: datetime(2026, 10, 10, 10, 0, 0))
         # 第 1 次拦截：无冷却（count=1 不触发）
@@ -242,7 +244,7 @@ class TestAntiSplit:
         await dg.record_order_opened_discipline(
             dredis, account_login="1", symbol="GOLD", channel="manual", direction="BUY", lot=0.6
         )
-        await dredis.set(f"discipline:flip:1:GOLD", f"BUY|{time.time() - 31 * 60}|1")
+        await dredis.set("discipline:flip:1:GOLD:manual", f"BUY|{time.time() - 31 * 60}|1")
         # 再尝试 0.5 手 → 0.6+0.5 > 1.0 拒
         res = await dg.check_discipline_gate(
             dredis, account_login="1", symbol="GOLD", channel="manual",

@@ -43,20 +43,20 @@ class TestRolloutModeGuardrails:
 
     @pytest.mark.asyncio
     async def test_set_invalid_mode_raises(self, guardrails):
-        with pytest.raises(ValueError, match="Invalid rollout mode"):
+        with pytest.raises(ValueError, match="无效的 rollout 模式"):
             await guardrails.set_rollout_mode("invalid")
 
     def test_check_shadow_mode(self, guardrails):
         with patch.dict(os.environ, {"ROLLOUT_MODE": "shadow"}):
             result = guardrails.check_rollout_mode(0.5)
             assert result.allowed is False
-            assert "SHADOW" in result.reason
+            assert "影子模式" in result.reason
 
     def test_check_paper_mode(self, guardrails):
         with patch.dict(os.environ, {"ROLLOUT_MODE": "paper"}):
             result = guardrails.check_rollout_mode(0.5)
             assert result.allowed is False
-            assert "PAPER" in result.reason
+            assert "模拟模式" in result.reason
 
     def test_check_micro_mode_normal_lot(self, guardrails):
         with patch.dict(os.environ, {"ROLLOUT_MODE": "micro"}):
@@ -67,7 +67,7 @@ class TestRolloutModeGuardrails:
         with patch.dict(os.environ, {"ROLLOUT_MODE": "micro"}):
             result = guardrails.check_rollout_mode(0.5)
             assert result.allowed is True
-            assert "capped" in result.reason
+            assert "封顶" in result.reason
 
     def test_check_live_mode(self, guardrails):
         with patch.dict(os.environ, {"ROLLOUT_MODE": "live"}):

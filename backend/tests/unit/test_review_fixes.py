@@ -10,10 +10,9 @@
 """
 
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
-import pytest
 import fakeredis.aioredis
+import pytest
 
 from app.config import settings
 
@@ -31,6 +30,7 @@ def enable_discipline(monkeypatch):
     monkeypatch.setattr(settings, "discipline_max_trades_per_day_manual", 100)
     monkeypatch.setattr(settings, "discipline_max_lots_per_day", 1000.0)
     from datetime import timezone
+
     from app.services import discipline as _d
 
     _wed = datetime(2026, 10, 7, 12, 0, tzinfo=timezone(timedelta(hours=8)))
@@ -172,7 +172,11 @@ class TestConsecutiveLossWeekHalt:
 
 
 class TestFlipRejectSecondSwitch:
-    """当日第 2 次反手硬拒（评审 HIGH：只做时间冷却、不消费 flip_count）。"""
+    """当日第 2 次反手硬拒（评审 HIGH：只做时间冷却、不消费 flip_count）。
+
+    缺陷修复 1：flip key 按 channel 隔离 —— 跨通道方向翻转不互相惩罚；
+    旧格式无 channel 后缀 key 回退读取（迁移期兼容）。
+    """
 
     @pytest.mark.asyncio
     async def test_second_flip_today_rejected(self, dredis, enable_discipline, monkeypatch):
@@ -181,10 +185,10 @@ class TestFlipRejectSecondSwitch:
         import app.services.discipline_gate as dg
 
         _pin_discipline_clock(monkeypatch)
-        # 模拟：已 BUY 后反手 SELL（flip key 记录 last_dir=SELL，flip_today=1，
+        # 模拟：手动通道已 BUY 后反手 SELL（flip key 记录 last_dir=SELL，flip_today=1，
         # 时间 31 分钟前避开时间冷却）。本次再 BUY = 第 2 次反手 → 硬拒。
         await dredis.set(
-            f"discipline:flip:1:GOLD", f"SELL|{time.time() - 31 * 60}|1|1|2026-10-07"
+            "discipline:flip:1:GOLD:manual", f"SELL|{time.time() - 31 * 60}|1|1|2026-10-07"
         )
         res = await dg.check_discipline_gate(
             dredis, account_login="1", symbol="GOLD", channel="manual", direction="BUY"
@@ -199,7 +203,69 @@ class TestFlipRejectSecondSwitch:
 
         _pin_discipline_clock(monkeypatch)
         # flip key 记的是昨日（2026-10-06），flip_today=1 → 跨日视为 0，放行
-        await dredis.set(f"discipline:flip:1:GOLD", f"BUY|{time.time() - 31 * 60}|1|1|2026-10-06")
+        await dredis.set("discipline:flip:1:GOLD:manual", f"BUY|{time.time() - 31 * 60}|1|1|2026-10-06")
+        res = await dg.check_discipline_gate(
+            dredis, account_login="1", symbol="GOLD", channel="manual", direction="SELL"
+        )
+        assert res.ok
+
+    @pytest.mark.asyncio
+    async def test_old_format_flip_key_fallback(self, dredis, enable_discipline, monkeypatch):
+        """迁移期兼容：旧格式无 channel key 存在时回退读取，FLIP_REJECT 仍生效。"""
+        import time
+
+        import app.services.discipline_gate as dg
+
+        _pin_discipline_clock(monkeypatch)
+        # 旧格式 key（无 channel 后缀），flip_today=1 且跨日
+        await dredis.set(
+            "discipline:flip:1:GOLD", f"SELL|{time.time() - 31 * 60}|1|1|2026-10-07"
+        )
+        res = await dg.check_discipline_gate(
+            dredis, account_login="1", symbol="GOLD", channel="manual", direction="BUY"
+        )
+        assert not res.ok and res.code == "FLIP_REJECT"
+
+    @pytest.mark.asyncio
+    async def test_channel_isolation(self, dredis, enable_discipline, monkeypatch):
+        """缺陷修复 1 核心：引擎反手不惩罚手动通道。"""
+        import time
+
+        import app.services.discipline_gate as dg
+
+        _pin_discipline_clock(monkeypatch)
+        # 引擎通道 flip 已反手 1 次（flip_today=1）
+        await dredis.set(
+            "discipline:flip:1:GOLD:engine", f"SELL|{time.time() - 31 * 60}|1|1|2026-10-07"
+        )
+        # 手动通道无任何 flip 记录 → 手动 BUY 应放行（不因引擎反手被罚）
+        res = await dg.check_discipline_gate(
+            dredis, account_login="1", symbol="GOLD", channel="manual", direction="BUY"
+        )
+        assert res.ok
+
+    @pytest.mark.asyncio
+    async def test_pending_same_direction_not_penalized(self, dredis, enable_discipline, monkeypatch):
+        """缺陷修复 2：同通道市价 BUY 后挂单 BUY_LIMIT（同向）不虚增 flip_today。"""
+        import time
+
+        import app.services.discipline_gate as dg
+
+        _pin_discipline_clock(monkeypatch)
+        # 手动通道：市价 BUY → 挂单 BUY_LIMIT（同方向），flip_today 应保持 0
+        await dg.record_order_opened_discipline(
+            dredis, account_login="1", symbol="GOLD", channel="manual", direction="BUY", lot=0.1
+        )
+        await dg.record_order_opened_discipline(
+            dredis, account_login="1", symbol="GOLD", channel="manual", direction="BUY_LIMIT", lot=0.1
+        )
+        raw = await dredis.get("discipline:flip:1:GOLD:manual")
+        parts = raw.decode().split("|")
+        assert parts[3] == "0", f"同向挂单不应虚增 flip_today，实际={parts[3]}"
+        assert parts[0] == "BUY", f"归一化方向应为 BUY，实际={parts[0]}"
+        # 时间戳设为 31 分钟前避开时间冷却，然后 SELL = 第 1 次反手 → 放行
+        parts[1] = str(time.time() - 31 * 60)
+        await dredis.set("discipline:flip:1:GOLD:manual", "|".join(parts))
         res = await dg.check_discipline_gate(
             dredis, account_login="1", symbol="GOLD", channel="manual", direction="SELL"
         )

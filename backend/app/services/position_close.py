@@ -54,22 +54,22 @@ async def close_position_gated(
     # 1. Switching gate — fail-closed for manual channel (H4).
     try:
         if await redis.get(SWITCHING_KEY):
-            return _fail("Account switch in progress")
+            return _fail("账号切换进行中 — 请稍后重试")
     except Exception as e:  # noqa: BLE001
         logger.error(f"Manual close [{ticket}] switching gate unavailable: {e!r}")
-        return _fail("Risk gate temporarily unavailable, please retry")
+        return _fail("风控闸门暂时不可用，请重试")
 
     # 2. Ticket ownership: resolve against the CURRENT account's positions
     #    (tickets are only unique per account — H4 composite key).
     positions_res = await connector.get_positions()
     if not positions_res.get("success"):
-        return {"closed": False, "error": positions_res.get("error", "Failed to fetch positions")}
+        return {"closed": False, "error": positions_res.get("error", "获取持仓失败")}
     pos_info = next(
         (p for p in positions_res.get("data", []) if p.get("ticket") == ticket),
         None,
     )
     if pos_info is None:
-        return {"closed": False, "error": "Position not found on current account"}
+        return {"closed": False, "error": "当前账号下未找到该持仓"}
 
     # 3. Rollout gate — same semantics as the AI channel: shadow/paper must not
     #    touch a real account.
@@ -78,12 +78,12 @@ async def close_position_gated(
     guardrails = TradingGuardrails(redis)
     rollout_mode = await guardrails.get_persisted_rollout_mode()
     if rollout_mode in ("shadow", "paper"):
-        return _fail(f"Rollout mode '{rollout_mode}' blocks manual close", rollout=rollout_mode)
+        return _fail(f"当前处于 {rollout_mode} 模式，禁止手动平仓", rollout=rollout_mode)
 
     # 4. Execute
     result = await connector.close_position(ticket)
     if not result.get("success"):
-        return {"closed": False, "error": result.get("error", "Close failed")}
+        return {"closed": False, "error": result.get("error", "平仓失败")}
 
     # 5. Accounting + events. Engine-tracked symbols are recorded by the
     #    engine's sync loop — recording here too would double-count daily PnL.

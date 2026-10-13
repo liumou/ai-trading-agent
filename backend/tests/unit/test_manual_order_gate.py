@@ -12,9 +12,7 @@
 """
 
 import asyncio
-import json
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -23,7 +21,7 @@ import pytest_asyncio
 import app.bot.manager as manager_mod
 import app.db.session as db_session_module
 from app.config import SYMBOL_PROFILES, settings
-from app.services.manual_order_gate import CONFIRM_TTL_S, LLM_REVIEW_TIMEOUT_S, ManualOrderGate
+from app.services.manual_order_gate import CONFIRM_TTL_S, ManualOrderGate
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +111,7 @@ async def _drain_tasks(gate):
 def _loss_deal(minutes_ago=5, lot=0.1, symbol="GOLD", profit=-50.0):
     # M1 起 bridge 输出 UTC 带偏移（+00:00）；naive 会被按旧 bridge EET 转换。
     # 用带偏移格式模拟新 bridge，确保 martingale/情绪规则按真实时刻计算。
-    t = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+    t = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
     return {"ticket": 1, "symbol": symbol, "type": "SELL", "lot": lot,
             "price": 2000.0, "profit": profit, "time": t}
 
@@ -198,7 +196,7 @@ async def test_approved_executes_with_manual_magic(gate, session_patched):
     # 频率计数被更新（否则手动通道对频率限制免疫）——key 走 22:00 UTC 外汇日界
     from app.services.discipline import discipline_day_key
 
-    hour_key = f"guardrails:trades:{discipline_day_key()}T{(datetime.now(timezone.utc) - timedelta(hours=22)).hour:02d}"
+    hour_key = f"guardrails:trades:{discipline_day_key()}T{(datetime.now(UTC) - timedelta(hours=22)).hour:02d}"
     assert int(await gate.redis.get(hour_key) or 0) == 1
 
 
@@ -250,9 +248,10 @@ async def test_confirm_expired(gate, session_patched, monkeypatch):
                                      lot=0.1, sl=1900.0, tp=2100.0)
     await _drain_tasks(gate)
     # 把 TTL 拨回过去
-    from app.db.session import async_session as _mk
     from sqlalchemy import select as _sel
+
     from app.db.models import OrderAudit as OA
+    from app.db.session import async_session as _mk
     async with _mk() as s:
         row = (await s.execute(_sel(OA).where(OA.id == result["review_id"]))).scalar_one()
         row.review = {**row.review, "confirm_expires_at": (datetime.utcnow() - timedelta(seconds=CONFIRM_TTL_S * 2)).isoformat()}
@@ -288,7 +287,9 @@ async def test_llm_malformed_verdict_blocks(gate, redis_client, session_patched)
     assert review["review"]["retryable"] is True
     # 基础设施故障 → AI_AGENT_ERROR 事件（不伪装成分析结论）
     from sqlalchemy import select as _sel
-    from app.db.models import BotEvent as BE, BotEventType
+
+    from app.db.models import BotEvent as BE
+    from app.db.models import BotEventType
     from app.db.session import async_session as _mk
     async with _mk() as s:
         evts = (await s.execute(_sel(BE).where(BE.event_type == BotEventType.AI_AGENT_ERROR))).scalars().all()
@@ -427,7 +428,7 @@ async def test_sltp_direction_validated(gate, session_patched):
     }
     res = await gate.modify_position_sltp(42, sl=2010.0, tp=None)  # BUY SL ≥ 基准价
     assert res["modified"] is False
-    assert "below" in res["error"]
+    assert "必须低于现价" in res["error"]
 
 
 @pytest.mark.asyncio
@@ -441,7 +442,7 @@ async def test_sltp_remove_existing_stop_rejected(gate, session_patched):
     res = await gate.modify_position_sltp(42, sl=0.0, tp=None)  # 尝试删除 SL
     assert res["modified"] is False
     assert res.get("rejected") is True
-    assert "Removing an existing stop-loss" in res["reason"]
+    assert "不允许删除已有止损" in res["reason"]
     # 连接器不应被调用
     gate.connector.modify_position.assert_not_awaited()
 
@@ -481,7 +482,7 @@ async def test_sltp_sell_sl_below_price_rejected(gate, session_patched):
     }
     res = await gate.modify_position_sltp(42, sl=4170.0, tp=None)  # < 现价，无保护
     assert res["modified"] is False
-    assert "must be above" in res["error"]
+    assert "必须高于现价" in res["error"]
     assert "entry" not in res["error"]  # 错误提示应引用现价语义
 
 
@@ -510,7 +511,7 @@ async def test_sltp_no_current_price_falls_back_to_entry(gate, session_patched):
     }
     res = await gate.modify_position_sltp(42, sl=4170.0, tp=None)  # entry 基准:SL 须 > entry
     assert res["modified"] is False
-    assert "must be above" in res["error"]
+    assert "必须高于现价" in res["error"]
 
 
 @pytest.mark.asyncio

@@ -70,7 +70,7 @@ def _resolve_symbol(symbol: str, *, strict: bool) -> tuple[str | None, str]:
         mgr = get_global_manager()
         if mgr is None:
             if strict:
-                return None, "No active trading engine — cannot validate symbol"
+                return None, "无活跃交易引擎 — 无法校验品种"
             logger.warning(f"Symbol resolution skipped — no active BotManager for '{symbol}'")
             return symbol, ""
         key = mgr.resolve_symbol(symbol)
@@ -79,12 +79,12 @@ def _resolve_symbol(symbol: str, *, strict: bool) -> tuple[str | None, str]:
                 logger.info(f"Symbol resolved: {symbol} → {key}")
             return key, ""
         if strict:
-            return None, f"Symbol '{symbol}' not found in active engines"
+            return None, f"品种 '{symbol}' 未在活跃引擎中找到"
         logger.warning(f"Symbol '{symbol}' not found in engines: {list(mgr.engines.keys())}")
         return symbol, ""
     except Exception as e:  # noqa: BLE001
         if strict:
-            return None, f"Symbol resolution failed: {e}"
+            return None, f"品种解析失败: {e}"
         logger.warning(f"Symbol resolution failed for '{symbol}': {e}")
         return symbol, ""
 
@@ -162,10 +162,10 @@ async def _preflight_spike_chase(
         if r is None:
             return ""
         if r.severity == "block":
-            return f"spike_chase block: {r.detail}（自动通道，block 级拒单）"
+            return f"追涨杀跌拦截（spike_chase）: {r.detail}（自动通道，block 级拒单）"
         # warn 级
         if warn_rejects:
-            return f"spike_chase warn: {r.detail}（自动通道无人值守，warn 即拒）"
+            return f"追涨杀跌警告（spike_chase）: {r.detail}（自动通道无人值守，warn 即拒）"
         return ""  # 引擎通道 warn 放行（健康突破不误杀）
     except Exception:  # noqa: BLE001
         logger.debug(f"preflight spike_chase unavailable [{symbol}] — skip", exc_info=True)
@@ -242,7 +242,7 @@ async def preflight_order(
             if not r.get("success")
         )
         logger.error(f"preflight_order pre-check failed: {detail}")
-        return _reject(f"Failed to fetch data for guardrail validation: {detail}", "data_fetch")
+        return _reject(f"风控校验数据获取失败: {detail}", "data_fetch")
 
     account = account_res["data"]
     positions = positions_res.get("data", [])
@@ -354,7 +354,7 @@ async def preflight_order(
                 await trigger_impulse_cooldown(redis, account_login=account_login or "0")
             except Exception:  # noqa: BLE001
                 pass
-        return _reject(f"Discipline gate: {dg.reason}", dg.code)
+        return _reject(f"纪律门禁: {dg.reason}", dg.code)
 
     # 6b. equity 日内回撤闸门（余额 + 浮动盈亏）。只看已实现会让持仓
     #     浮亏 8% 完全隐形；参考值=当日峰值 equity，跨日自动失效。
@@ -373,7 +373,7 @@ async def preflight_order(
             )
             if eq_halted:
                 return _reject(
-                    f"Equity intraday drawdown: equity={equity:.2f}, ref={eq_ref:.2f} — trading halted",
+                    f"账户日内回撤触发熔断: equity={equity:.2f}, ref={eq_ref:.2f} — 停止交易",
                     "guardrail",
                 )
         except Exception as e:  # noqa: BLE001
@@ -387,7 +387,7 @@ async def preflight_order(
         # 手动通道：无 volume 配置 = 防线不存在 = 拒绝（fail-closed；
         # normalize_lot_to_volume_grid 对缺失配置原样放行，检查必须前置）
         return _reject(
-            f"No volume config for '{symbol}' — cannot validate lot against broker grid",
+            f"品种 '{symbol}' 无手数配置 — 无法按券商档位校验手数",
             "lot",
         )
     guarded_lot = normalize_lot_to_volume_grid(
@@ -402,7 +402,7 @@ async def preflight_order(
             f"{profile.get('volume_min')} — bridge would upsize beyond risk budget"
         )
         return _reject(
-            f"lot {lot} below broker minimum {profile.get('volume_min')} — raise lot or fix symbol volume config",
+            f"手数 {lot} 低于券商最小 {profile.get('volume_min')} — 请提高手数或修复品种手数配置",
             "lot",
         )
     if guarded_lot != lot:

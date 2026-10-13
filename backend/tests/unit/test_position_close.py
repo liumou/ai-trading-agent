@@ -34,7 +34,7 @@ def no_engine(monkeypatch):
 @pytest.fixture
 def db_session_patched(db_engine, monkeypatch):
     """把 position_close 内部使用的 async_session 指到测试引擎。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     maker = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(db_session_module, "async_session", maker)
@@ -56,7 +56,7 @@ async def live_mode(redis_client):
 async def test_switching_in_progress_rejects(connector, redis_client, no_engine, db_session_patched):
     await redis_client.set("switching:in_progress", "1")
     result = await close_position_gated(connector, redis_client, 111)
-    assert result == {"closed": False, "rejected": True, "reason": "Account switch in progress"}
+    assert result == {"closed": False, "rejected": True, "reason": "账号切换进行中 — 请稍后重试"}
     connector.close_position.assert_not_awaited()
 
 
@@ -76,7 +76,7 @@ async def test_ticket_not_on_current_account_rejected(connector, redis_client, n
     """跨账号 ticket 可重复：只允许平当前账号的持仓。"""
     result = await close_position_gated(connector, redis_client, 999)
     assert result["closed"] is False
-    assert "not found" in result["error"].lower()
+    assert "未找到该持仓" in result["error"]
     connector.close_position.assert_not_awaited()
 
 

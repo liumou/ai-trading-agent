@@ -119,7 +119,7 @@ class TradingGuardrails:
     async def set_rollout_mode(self, mode: str) -> None:
         """Persist rollout mode to Redis (survives restarts)."""
         if mode not in ROLLOUT_MODES:
-            raise ValueError(f"Invalid rollout mode: {mode}. Must be one of {ROLLOUT_MODES}")
+            raise ValueError(f"无效的 rollout 模式: {mode} — 必须是 {ROLLOUT_MODES} 之一")
         await self.redis.set(f"{_KEY_PREFIX}:rollout_mode", mode)
         os.environ["ROLLOUT_MODE"] = mode
 
@@ -154,16 +154,16 @@ class TradingGuardrails:
 
     def _evaluate_rollout(self, mode: str, lot: float) -> GuardrailResult:
         if mode == "shadow":
-            return GuardrailResult(False, "SHADOW MODE: order logged but not executed")
+            return GuardrailResult(False, "影子模式（shadow）：订单已记录但未执行")
 
         if mode == "paper":
-            return GuardrailResult(False, "PAPER MODE: order simulated, not sent to broker")
+            return GuardrailResult(False, "模拟模式（paper）：订单已模拟，未发送到券商")
 
         if mode == "micro":
             if lot > MICRO_MAX_LOT:
                 return GuardrailResult(
                     True,  # allowed, but lot will be capped
-                    f"MICRO MODE: lot capped from {lot} to {MICRO_MAX_LOT}",
+                    f"微仓模式（micro）：手数已从 {lot} 上限封顶至 {MICRO_MAX_LOT}",
                 )
             return GuardrailResult(True)
 
@@ -254,10 +254,10 @@ class TradingGuardrails:
         # 1. Max lot per trade
         max_lot = _env_limit("guardrails_max_lot_per_trade", MAX_LOT_PER_TRADE)
         if lot > max_lot:
-            return GuardrailResult(False, f"Lot {lot} exceeds max {max_lot}")
+            return GuardrailResult(False, f"手数 {lot} 超过最大限制 {max_lot}")
 
         if lot <= 0:
-            return GuardrailResult(False, f"Invalid lot size: {lot}")
+            return GuardrailResult(False, f"手数无效: {lot}")
 
         # 2. Max concurrent positions per symbol
         symbol_positions = [p for p in current_positions if p.get("symbol") == symbol]
@@ -265,7 +265,7 @@ class TradingGuardrails:
         if len(symbol_positions) >= max_sym:
             return GuardrailResult(
                 False,
-                f"{symbol}: {len(symbol_positions)} positions (max {max_sym})",
+                f"{symbol}: {len(symbol_positions)} 个持仓（最大 {max_sym}）",
             )
 
         # 3. Max concurrent positions total
@@ -273,7 +273,7 @@ class TradingGuardrails:
         if len(current_positions) >= max_total:
             return GuardrailResult(
                 False,
-                f"Total positions {len(current_positions)} (max {max_total})",
+                f"总持仓 {len(current_positions)} 个（最大 {max_total}）",
             )
 
         # 3b. SL/TP sanity validation — AI can place garbage orders (no SL,
@@ -282,22 +282,22 @@ class TradingGuardrails:
         if entry_price is not None and entry_price > 0:
             if order_type == "BUY":
                 if sl is not None and sl <= 0:
-                    return GuardrailResult(False, f"Invalid SL {sl} for BUY — must be > 0")
+                    return GuardrailResult(False, f"BUY 止损 SL {sl} 无效 — 必须 > 0")
                 if tp is not None and tp <= 0:
-                    return GuardrailResult(False, f"Invalid TP {tp} for BUY — must be > 0")
+                    return GuardrailResult(False, f"BUY 止盈 TP {tp} 无效 — 必须 > 0")
                 if sl is not None and sl >= entry_price:
-                    return GuardrailResult(False, f"BUY SL {sl} >= entry {entry_price} — would lose immediately")
+                    return GuardrailResult(False, f"BUY 止损 SL {sl} >= 入场 {entry_price} — 会立即亏损")
                 if tp is not None and tp <= entry_price:
-                    return GuardrailResult(False, f"BUY TP {tp} <= entry {entry_price} — invalid")
+                    return GuardrailResult(False, f"BUY 止盈 TP {tp} <= 入场 {entry_price} — 无效")
             elif order_type == "SELL":
                 if sl is not None and sl <= 0:
-                    return GuardrailResult(False, f"Invalid SL {sl} for SELL — must be > 0")
+                    return GuardrailResult(False, f"SELL 止损 SL {sl} 无效 — 必须 > 0")
                 if tp is not None and tp <= 0:
-                    return GuardrailResult(False, f"Invalid TP {tp} for SELL — must be > 0")
+                    return GuardrailResult(False, f"SELL 止盈 TP {tp} 无效 — 必须 > 0")
                 if sl is not None and sl <= entry_price:
-                    return GuardrailResult(False, f"SELL SL {sl} <= entry {entry_price} — would lose immediately")
+                    return GuardrailResult(False, f"SELL 止损 SL {sl} <= 入场 {entry_price} — 会立即亏损")
                 if tp is not None and tp >= entry_price:
-                    return GuardrailResult(False, f"SELL TP {tp} >= entry {entry_price} — invalid")
+                    return GuardrailResult(False, f"SELL 止盈 TP {tp} >= 入场 {entry_price} — 无效")
 
         # 4. Daily loss limit
         daily_loss_limit = _env_limit("guardrails_max_daily_loss", MAX_DAILY_LOSS_PCT)
@@ -306,7 +306,7 @@ class TradingGuardrails:
             if loss_pct >= daily_loss_limit:
                 return GuardrailResult(
                     False,
-                    f"Daily loss {loss_pct:.1%} exceeds limit {daily_loss_limit:.0%}",
+                    f"当日亏损 {loss_pct:.1%} 超过上限 {daily_loss_limit:.0%}",
                 )
 
         # 4b. Account-level daily loss（多品种分散亏损也能触发）
@@ -315,8 +315,7 @@ class TradingGuardrails:
             if acct_loss_pct >= daily_loss_limit:
                 return GuardrailResult(
                     False,
-                    f"Account daily loss {acct_loss_pct:.1%} exceeds limit "
-                    f"{daily_loss_limit:.0%} (all symbols)",
+                    f"账户当日亏损 {acct_loss_pct:.1%} 超过上限 {daily_loss_limit:.0%}（全品种）",
                 )
 
         # 5. Consecutive loss halt
@@ -325,7 +324,7 @@ class TradingGuardrails:
         if consecutive_losses >= halt:
             return GuardrailResult(
                 False,
-                f"{consecutive_losses} consecutive losses (halt at {halt})",
+                f"连续亏损 {consecutive_losses} 笔（熔断阈值 {halt}）",
             )
 
         # 6. Trades per hour
@@ -334,7 +333,7 @@ class TradingGuardrails:
         if trades_this_hour >= trades_per_hour:
             return GuardrailResult(
                 False,
-                f"{trades_this_hour} trades this hour (max {trades_per_hour})",
+                f"本小时已交易 {trades_this_hour} 次（上限 {trades_per_hour}）",
             )
 
         # 7. Min time between trades
@@ -346,14 +345,14 @@ class TradingGuardrails:
                 remaining = int(min_interval - elapsed)
                 return GuardrailResult(
                     False,
-                    f"Too soon — wait {remaining}s (min {min_interval}s between trades)",
+                    f"下单过于频繁 — 请等待 {remaining} 秒（最小间隔 {min_interval} 秒）",
                 )
 
         # 8. Spread check
         if avg_spread > 0 and spread > avg_spread * MAX_SPREAD_MULTIPLIER:
             return GuardrailResult(
                 False,
-                f"Spread {spread:.1f} > {MAX_SPREAD_MULTIPLIER}x avg ({avg_spread:.1f})",
+                f"点差 {spread:.1f} > 平均 {MAX_SPREAD_MULTIPLIER} 倍（{avg_spread:.1f}）",
             )
 
         return GuardrailResult(True)
@@ -364,7 +363,7 @@ class TradingGuardrails:
         if calls_today >= MAX_DAILY_AGENT_CALLS:
             return GuardrailResult(
                 False,
-                f"Daily agent call limit reached: {calls_today}/{MAX_DAILY_AGENT_CALLS}",
+                f"当日 AI 调用次数已达上限: {calls_today}/{MAX_DAILY_AGENT_CALLS}",
             )
         return GuardrailResult(True)
 

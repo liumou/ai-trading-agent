@@ -94,7 +94,7 @@ class TestMcpVolumeGuard:
             symbol="GOLD", order_type="BUY", lot=0.5, sl=1900.0, tp=2100.0
         )
         assert result["rejected"] is True
-        assert "below broker minimum" in result["reason"]
+        assert "低于券商最小" in result["reason"]
         connector.place_order.assert_not_awaited()
 
     @pytest.mark.asyncio
