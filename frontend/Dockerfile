@@ -25,4 +25,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000
+# 关键修复：Docker 会自动注入 HOSTNAME=<容器ID>，Next.js standalone server.js
+# 会把它当作监听地址导致 getaddrinfo EAI_AGAIN 启动失败。必须显式覆盖为 0.0.0.0。
+ENV HOSTNAME=0.0.0.0
 CMD ["node", "server.js"]
