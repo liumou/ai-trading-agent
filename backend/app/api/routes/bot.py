@@ -160,6 +160,11 @@ async def get_account():
             "free_margin": balance + unrealized,
             "profit": unrealized,
             "accounts": [],
+            "period_drawdowns": {
+                "daily": {"peak": 0, "pct": 0},
+                "weekly": {"peak": 0, "pct": 0},
+                "monthly": {"peak": 0, "pct": 0},
+            },
         }
 
     # Collect balances from each unique connector
@@ -193,6 +198,11 @@ async def get_account():
     # Peak balance + drawdown from peak
     peak_balance = 0.0
     drawdown_pct = 0.0
+    period_drawdowns = {
+        "daily": {"peak": 0, "pct": 0},
+        "weekly": {"peak": 0, "pct": 0},
+        "monthly": {"peak": 0, "pct": 0},
+    }
     try:
         from app.risk.circuit_breaker import CircuitBreaker
 
@@ -202,6 +212,10 @@ async def get_account():
         )
         if peak_balance > 0:
             drawdown_pct = (peak_balance - balance) / peak_balance
+        # 当日/当周/当月周期峰值回撤（与整体 drawdown_pct 同口径）
+        period_drawdowns = await CircuitBreaker.get_period_drawdowns(
+            first_engine.redis, balance, account_login=first_engine.account_login
+        )
     except Exception:
         pass
 
@@ -210,6 +224,7 @@ async def get_account():
         "accounts": accounts,
         "peak_balance": round(peak_balance, 2),
         "drawdown_pct": round(drawdown_pct, 4),
+        "period_drawdowns": period_drawdowns,
     }
 
 
@@ -340,16 +355,42 @@ async def update_settings(data: SettingsUpdate, request: Request, db: AsyncSessi
     return {"status": "updated"}
 
 
+class ResetPeakRequest(BaseModel):
+    """重置周期峰值请求。period ∈ daily/weekly/monthly/all，缺省 all（向后兼容）。"""
+
+    period: Literal["daily", "weekly", "monthly", "all"] = "all"
+
+
 @router.post("/reset-peak")
-async def reset_peak_balance():
-    """Reset peak balance to current balance (fixes drawdown after account switch)."""
+async def reset_peak_balance(data: ResetPeakRequest | None = None):
+    """Reset peak balance to current balance (fixes drawdown after account switch).
+
+    支持按周期重置：period=daily/weekly/monthly 重置对应周期峰值；
+    period=all（缺省）重置全部（含全局 peak_balance）——向后兼容旧前端。
+    """
     engine = _get_engine()
     account = await engine.connector.get_account()
     if not account.get("success"):
         raise HTTPException(status_code=503, detail="Cannot get account info")
     balance = account["data"]["balance"]
-    await engine.redis.set("circuit:peak_balance", str(balance))
-    return {"peak_balance": balance, "message": f"Peak reset to ${balance:.2f}"}
+    data = data or ResetPeakRequest()
+
+    from app.risk.circuit_breaker import CircuitBreaker
+
+    periods = ["daily", "weekly", "monthly"] if data.period == "all" else [data.period]
+    if data.period == "all":
+        # 全局峰值（旧语义，按账号隔离）
+        key = CircuitBreaker._acc_key(engine.account_login, "peak_balance")
+        await engine.redis.set(key, str(balance))
+    for period in periods:
+        await CircuitBreaker.reset_period_peak(
+            engine.redis, period, account_login=engine.account_login, new_peak=balance
+        )
+    return {
+        "peak_balance": balance,
+        "period": data.period,
+        "message": f"Peak reset to ${balance:.2f}",
+    }
 
 
 @router.get("/events")

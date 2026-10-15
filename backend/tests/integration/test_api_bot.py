@@ -53,6 +53,7 @@ def mock_engine():
     engine.risk_manager.max_concurrent_trades = 3
     engine.risk_manager.max_lot = 1.0
     engine.sentiment_analyzer = None
+    engine.account_login = "0"
     engine.redis = AsyncMock()
     engine.connector = AsyncMock()
     engine.connector.get_account.return_value = {
@@ -175,6 +176,32 @@ class TestBotRoutes:
                 "ai_confidence_threshold": -0.1,  # < 0 → invalid
             },
         )
+        assert resp.status_code == 422
+
+    async def test_reset_peak_no_body(self, client, mock_engine):
+        """空 body → 缺省 all，重置全局峰值 + 三个周期峰值（向后兼容旧前端）。"""
+        resp = await client.post("/api/bot/reset-peak")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["period"] == "all"
+        assert data["peak_balance"] == 10000.0
+        # 全局峰值 key 被写（account_login="0" → 归一化无前缀）
+        mock_engine.redis.set.assert_any_call("circuit:peak_balance", "10000")
+        # 三个周期峰值也被写（周期号含日期，只校验前缀）
+        period_keys = [c.args[0] for c in mock_engine.redis.set.call_args_list]
+        for p in ("daily", "weekly", "monthly"):
+            assert any(k.startswith(f"circuit:peak:{p}:") for k in period_keys)
+
+    async def test_reset_peak_specific_period(self, client, mock_engine):
+        """period=daily → 只重置当日周期峰值。"""
+        resp = await client.post("/api/bot/reset-peak", json={"period": "daily"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["period"] == "daily"
+        assert data["peak_balance"] == 10000.0
+
+    async def test_reset_peak_invalid_period(self, client):
+        resp = await client.post("/api/bot/reset-peak", json={"period": "yearly"})
         assert resp.status_code == 422
 
 

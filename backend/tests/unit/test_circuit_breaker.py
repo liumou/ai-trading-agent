@@ -350,6 +350,59 @@ class TestBackfillToday:
         assert await cb.get_daily_pnl() == pytest.approx(-84.0)
 
 
+class TestPeriodPeakDrawdown:
+    """当日/当周/当月周期峰值回撤（首页回撤卡数据源）。"""
+
+    async def test_update_peak_raises_on_new_high(self, redis_client):
+        # 首次观察 → 记录峰值；更高余额 → 更新峰值
+        peak1 = await CircuitBreaker.update_period_peak(redis_client, 10000.0, "daily", account_login="T1")
+        assert peak1 == pytest.approx(10000.0)
+        peak2 = await CircuitBreaker.update_period_peak(redis_client, 10100.0, "daily", account_login="T1")
+        assert peak2 == pytest.approx(10100.0)
+        # 回落不降峰值
+        peak3 = await CircuitBreaker.update_period_peak(redis_client, 9950.0, "daily", account_login="T1")
+        assert peak3 == pytest.approx(10100.0)
+
+    async def test_get_period_drawdowns_no_data(self, redis_client):
+        result = await CircuitBreaker.get_period_drawdowns(redis_client, 10000.0, account_login="T2")
+        assert result["daily"] == {"peak": 0, "pct": 0}
+        assert result["weekly"] == {"peak": 0, "pct": 0}
+        assert result["monthly"] == {"peak": 0, "pct": 0}
+
+    async def test_get_period_drawdowns_with_peak(self, redis_client):
+        # 周期峰值 10000，当前余额 9600 → 回撤 4%
+        await CircuitBreaker.update_period_peak(redis_client, 10000.0, "weekly", account_login="T3")
+        result = await CircuitBreaker.get_period_drawdowns(redis_client, 9600.0, account_login="T3")
+        assert result["weekly"]["peak"] == pytest.approx(10000.0)
+        assert result["weekly"]["pct"] == pytest.approx(0.04)
+        # 未跟踪的 daily/monthly 为 0
+        assert result["daily"]["peak"] == 0
+
+    async def test_reset_period_peak_sets_new_peak(self, redis_client):
+        await CircuitBreaker.update_period_peak(redis_client, 10000.0, "daily", account_login="T4")
+        await CircuitBreaker.reset_period_peak(
+            redis_client, "daily", account_login="T4", new_peak=9800.0
+        )
+        result = await CircuitBreaker.get_period_drawdowns(redis_client, 9800.0, account_login="T4")
+        assert result["daily"]["peak"] == pytest.approx(9800.0)
+        assert result["daily"]["pct"] == 0.0
+
+    async def test_account_scoped_keys(self, redis_client):
+        # 不同账号的周期峰值独立，不互相污染
+        await CircuitBreaker.update_period_peak(redis_client, 10000.0, "daily", account_login="TA")
+        result_b = await CircuitBreaker.get_period_drawdowns(redis_client, 9600.0, account_login="TB")
+        assert result_b["daily"]["peak"] == 0
+        result_a = await CircuitBreaker.get_period_drawdowns(redis_client, 9600.0, account_login="TA")
+        assert result_a["daily"]["peak"] == pytest.approx(10000.0)
+
+    async def test_key_contains_period(self, redis_client):
+        from app.services.discipline import discipline_day_key
+
+        key = CircuitBreaker._period_peak_key("T5", "daily")
+        assert f"peak:daily:{discipline_day_key()}" in key
+        assert key.startswith("circuit:acc:T5:")
+
+
 class TestSecondsUntilReset:
     def test_returns_positive(self):
         seconds = CircuitBreaker._seconds_until_reset("GOLD")

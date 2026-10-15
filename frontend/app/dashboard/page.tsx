@@ -82,7 +82,7 @@ export default function DashboardPage() {
   const setTick = useBotStore((s) => s.setTick);
   const addEvent = useBotStore((s) => s.addEvent);
   const [loading, setLoading] = useState(true);
-  const [account, setAccount] = useState<{ balance: number; equity: number; margin: number; free_margin: number; profit: number; peak_balance?: number; drawdown_pct?: number; accounts?: { connector: string; balance: number; equity: number; currency: string }[] } | null>(null);
+  const [account, setAccount] = useState<{ balance: number; equity: number; margin: number; free_margin: number; profit: number; peak_balance?: number; drawdown_pct?: number; accounts?: { connector: string; balance: number; equity: number; currency: string }[]; period_drawdowns?: Record<"daily" | "weekly" | "monthly", { peak: number; pct: number }> } | null>(null);
   const [dailyPnl, setDailyPnl] = useState<{ daily_pnl: number; trade_count: number; wins: number; losses: number } | null>(null);
   const [news, setNews] = useState<
     { headline: string; source: string; sentiment_label: string; sentiment_score: number; created_at: string }[]
@@ -264,8 +264,8 @@ export default function DashboardPage() {
     return (
       <div className="p-4 sm:p-6 xl:p-8 space-y-5 sm:space-y-6">
         <Skeleton className="h-8 w-48" />
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          {Array.from({ length: 4 }).map((_, i) => (
+        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3 sm:gap-4">
+          {Array.from({ length: 8 }).map((_, i) => (
             <SkeletonCard key={i} lines={1} />
           ))}
         </div>
@@ -378,7 +378,7 @@ export default function DashboardPage() {
       )}
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-3 lg:grid-cols-6 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
         <StatCard
           icon={TrendingUp}
           label={t("unrealizedPnl")}
@@ -403,33 +403,41 @@ export default function DashboardPage() {
           value={status?.state || "UNKNOWN"}
           variant={isRunning ? "success" : "warning"}
         />
-        <div
-          className="cursor-pointer"
-          title={t("resetPeakTitle")}
-          onClick={async () => {
-            if (confirm(t("resetPeakConfirm"))) {
-              try {
-                await resetPeakBalance();
-                window.location.reload();
-              } catch (e) {
-                console.error("Reset peak failed:", e);
-              }
-            }
-          }}
-        >
-          <StatCard
-            icon={ShieldAlert}
-            label={t("drawdown")}
-            value={account?.drawdown_pct != null ? `${(account.drawdown_pct * 100).toFixed(1)}%` : "—"}
-            subtitle={account?.peak_balance ? t("peakSubtitle", { peak: account.peak_balance.toFixed(0) }) : undefined}
-            variant={
-              !account?.drawdown_pct ? "default"
-              : account.drawdown_pct < 0.05 ? "success"
-              : account.drawdown_pct < 0.10 ? "warning"
-              : "danger"
-            }
-          />
-        </div>
+        {/* 当日/当周/当月周期回撤卡（各带峰值，点击重置对应周期） */}
+        {(["daily", "weekly", "monthly"] as const).map((period) => {
+          const dd = account?.period_drawdowns?.[period];
+          const pct = dd?.pct ?? 0;
+          return (
+            <div
+              key={period}
+              className="cursor-pointer"
+              title={t("resetPeakTitle")}
+              onClick={async () => {
+                if (confirm(t("resetPeriodPeakConfirm", { period: t(`periodLabel.${period}`) }))) {
+                  try {
+                    await resetPeakBalance(period);
+                    window.location.reload();
+                  } catch (e) {
+                    console.error("Reset period peak failed:", e);
+                  }
+                }
+              }}
+            >
+              <StatCard
+                icon={ShieldAlert}
+                label={t(`periodLabel.${period}`)}
+                value={dd?.peak ? `${(pct * 100).toFixed(1)}%` : "—"}
+                subtitle={dd?.peak ? t("peakSubtitle", { peak: dd.peak.toFixed(0) }) : undefined}
+                variant={
+                  !dd?.peak ? "default"
+                  : pct < 0.05 ? "success"
+                  : pct < 0.10 ? "warning"
+                  : "danger"
+                }
+              />
+            </div>
+          );
+        })}
       </div>
 
       {/* Controls + Price Chart */}

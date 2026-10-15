@@ -74,5 +74,11 @@
   "aiFilterFailed": "Failed to update AI filter",
   "signalOn": "{signal} signal on {symbol}",
   "blockedMsg": "{signal} blocked: {reason}",
-  "orderFailedMsg": "{order} {lot} {symbol} failed: {error}"
+  "orderFailedMsg": "{order} {lot} {symbol} failed: {error}",
+  "periodLabel": {
+    "daily": "Daily Drawdown",
+    "weekly": "Weekly Drawdown",
+    "monthly": "Monthly Drawdown"
+  },
+  "resetPeriodPeakConfirm": "Reset {period} peak to current balance?"
 }

@@ -491,7 +491,8 @@ export const runStressTest = (scenario: string = "all") =>
   api.post("/api/quant/stress-test", null, { params: { scenario }, timeout: 60000 });
 
 // Bot management
-export const resetPeakBalance = () => api.post("/api/bot/reset-peak");
+export const resetPeakBalance = (period?: "daily" | "weekly" | "monthly" | "all") =>
+  api.post("/api/bot/reset-peak", period ? { period } : null);
 
 // Health
 export const getHealth = () => api.get("/health");

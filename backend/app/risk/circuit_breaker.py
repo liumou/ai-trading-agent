@@ -269,6 +269,67 @@ class CircuitBreaker:
             await redis_client.set(key, str(peak))
         return peak
 
+    # ─── 周期峰值（当日/当周/当月回撤）───────────────────────────────────
+    # 复用 discipline 的周期号（22:00 UTC 外汇日界，与纪律门禁/周月 PnL 同口径）。
+    # key 含周期号 → 跨周期不冲突；TTL 兜底清理旧周期残留。
+
+    _PERIOD_TTL = {
+        "daily": 3 * 24 * 3600,
+        "weekly": 17 * 24 * 3600,
+        "monthly": 52 * 24 * 3600,
+    }
+
+    @staticmethod
+    def _period_peak_key(account_login: str | None, period: str) -> str:
+        """生成周期峰值 Redis key：``circuit:{acc}:peak:{period}:{period_key}``。"""
+        from app.services.discipline import discipline_day_key, discipline_month_key, discipline_week_key
+
+        period_key = {
+            "daily": discipline_day_key(),
+            "weekly": discipline_week_key(),
+            "monthly": discipline_month_key(),
+        }[period]
+        return CircuitBreaker._acc_key(account_login, f"peak:{period}:{period_key}")
+
+    @staticmethod
+    async def update_period_peak(redis_client, balance: float, period: str, account_login: str | None = None) -> float:
+        """跟踪指定周期（daily/weekly/monthly）的峰值余额，返回当前周期峰值。
+
+        与 update_peak_balance 同逻辑：balance 超过当前周期峰值则更新。
+        """
+        key = CircuitBreaker._period_peak_key(account_login, period)
+        current = await redis_client.get(key)
+        peak = float(current) if current else 0.0
+        if balance > peak:
+            peak = balance
+            await redis_client.set(key, str(peak), ex=CircuitBreaker._PERIOD_TTL[period])
+        return peak
+
+    @staticmethod
+    async def get_period_drawdowns(redis_client, balance: float, account_login: str | None = None) -> dict:
+        """读取当日/当周/当月三周期的峰值与回撤百分比（返回结构见下）。
+
+        回撤口径与整体 drawdown_pct 一致：``(peak - balance) / peak``。
+        某周期无峰值数据（未跟踪过）时 pct=0、peak=0，前端显示「—」。
+        """
+        result: dict[str, dict] = {}
+        for period in ("daily", "weekly", "monthly"):
+            key = CircuitBreaker._period_peak_key(account_login, period)
+            raw = await redis_client.get(key)
+            peak = float(raw) if raw else 0.0
+            pct = (peak - balance) / peak if peak > 0 else 0.0
+            result[period] = {"peak": round(peak, 2), "pct": round(pct, 4)}
+        return result
+
+    @staticmethod
+    async def reset_period_peak(redis_client, period: str, account_login: str | None = None, new_peak: float | None = None) -> None:
+        """重置指定周期峰值。new_peak 为空时删除 key（下次观察自动重新基准）。"""
+        key = CircuitBreaker._period_peak_key(account_login, period)
+        if new_peak is None:
+            await redis_client.delete(key)
+        else:
+            await redis_client.set(key, str(new_peak), ex=CircuitBreaker._PERIOD_TTL[period])
+
     @staticmethod
     async def is_drawdown_halted(
         redis_client,
