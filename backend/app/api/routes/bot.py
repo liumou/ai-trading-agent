@@ -210,7 +210,8 @@ async def get_account():
         peak_balance = await CircuitBreaker.update_peak_balance(
             first_engine.redis, balance, account_login=first_engine.account_login
         )
-        if peak_balance > 0:
+        # balance<=0（Bridge 断连/取数失败兜底）不计算回撤，避免 (peak-0)/peak 假 100%
+        if peak_balance > 0 and balance > 0:
             drawdown_pct = (peak_balance - balance) / peak_balance
         # 当日/当周/当月周期峰值回撤（与整体 drawdown_pct 同口径）。
         # 读取前先把当前余额计入各周期峰值——否则 peak 只在重置时写入，

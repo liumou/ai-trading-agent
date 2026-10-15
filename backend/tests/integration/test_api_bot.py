@@ -254,6 +254,48 @@ class TestBotRoutes:
             assert data["period_drawdowns"][p]["peak"] == 10200.0
             assert data["period_drawdowns"][p]["pct"] == 0.0
 
+    async def test_bridge_down_no_fake_100pct(self, client, mock_engine):
+        """Bridge 断连（accounts 空，balance 兜底 0）不得产生假 100% 回撤。
+
+        回归：此前 balance=0 会让 get_period_drawdowns 算出 (peak-0)/peak=1.0，
+        且 get_account 的整体 drawdown_pct 也变成 100%——用户页面全红 100%。
+        """
+        store: dict[str, str] = {}
+
+        async def fake_get(key):
+            return store.get(key)
+
+        async def fake_set(key, value, *args, **kwargs):
+            store[key] = value
+            return True
+
+        mock_engine.redis.get = fake_get
+        mock_engine.redis.set = fake_set
+
+        # 先正常记录一次峰值（余额 10000）
+        mock_engine.connector.get_account.return_value = {
+            "success": True,
+            "data": {"balance": 10000, "equity": 10000, "margin": 0, "free_margin": 10000, "profit": 0, "currency": "USD"},
+        }
+        resp = await client.get("/api/bot/account")
+        assert resp.status_code == 200
+        data = resp.json()
+        for p in ("daily", "weekly", "monthly"):
+            assert data["period_drawdowns"][p]["peak"] == 10000.0
+            assert data["period_drawdowns"][p]["pct"] == 0.0
+
+        # Bridge 断连：get_account 返回 success=False → accounts 空 → balance=0 兜底
+        mock_engine.connector.get_account.return_value = {"success": False, "error": "MT5 not connected"}
+        resp = await client.get("/api/bot/account")
+        assert resp.status_code == 200
+        data = resp.json()
+        # 整体回撤不得是 100%
+        assert data["drawdown_pct"] == 0.0
+        # 三张周期卡不得是 100%（应返回占位 0，前端显示「—」）
+        for p in ("daily", "weekly", "monthly"):
+            assert data["period_drawdowns"][p]["pct"] == 0.0
+            assert data["period_drawdowns"][p]["peak"] == 0.0
+
 
 class TestBotNotInitialized:
     async def test_503_when_no_manager(self):

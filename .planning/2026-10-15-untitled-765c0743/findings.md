@@ -46,3 +46,30 @@
 **测试**：
 - `test_circuit_breaker.py`：+6 周期峰值用例（新高/无数据/含峰值/重置/账号隔离/key 结构）
 - `test_api_bot.py`：+3 reset-peak 用例（空 body=all/指定 period/非法 422），mock_engine 补 `account_login="0"`
+
+## 2026-10-16 — 三张周期卡显示 100% 的根因与修复
+
+### 根因（已复现）
+`pct = (peak - balance) / peak` 在 `balance = 0` 时 = `(peak-0)/peak = 1.0` → 100%。
+`get_account`（bot.py）在 MT5 Bridge 断连/取数失败时 `accounts` 为空 →
+`primary = {"balance": 0, ...}` → **把 0 喂进回撤公式**：
+- `update_period_peak(0)` 不覆盖峰值（0 不大于已有 peak，无污染）
+- 但 `get_period_drawdowns(0)` 用 0 当当前余额 → 三张周期卡全部 100%
+- 同理整体 `drawdown_pct = (peak_balance - 0)/peak_balance = 100%`
+
+用户「账户里有余额」但那一刻后端从 Bridge 拿不到余额（抖动/超时），页面全红 100%。
+
+### 验证手段
+- fakeredis 复现：先写 peak=14415.64，再以 balance=0 调 `get_period_drawdowns` → 三周期 pct 全 1.0
+- 生产 Redis 只读 scan：`circuit:*` 共 7 个 key（3 个全局 peak_balance + 周/月 PnL），
+  确认 `float(bytes)` 在 Python 3.12 正常、无恶意 key 形态，排除其他写入方
+
+### 修复（双层防御）
+1. `CircuitBreaker.get_period_drawdowns`：`balance <= 0` 直接返回全 `{peak:0, pct:0}`（前端「—」）
+2. `bot.py:get_account`：`drawdown_pct` 计算加 `balance > 0` 条件（整体卡同样防御）
+3. 测试：`test_balance_zero_does_not_yield_100pct`、`test_zero_balance_does_not_corrupt_peak`（单测）
+   + `test_bridge_down_no_fake_100pct`（集成，Bridge success=False 全链路）
+
+### 恢复说明
+修复部署后无需清洗数据：峰值 key 未被污染，下一次 Bridge 正常的 get_account
+会以真实余额重算 → pct 回到真实值（通常 0%）。

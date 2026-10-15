@@ -402,6 +402,26 @@ class TestPeriodPeakDrawdown:
         assert f"peak:daily:{discipline_day_key()}" in key
         assert key.startswith("circuit:acc:T5:")
 
+    async def test_balance_zero_does_not_yield_100pct(self, redis_client):
+        """balance=0（Bridge 断连兜底）不得算出 (peak-0)/peak=100% 假回撤。"""
+        await CircuitBreaker.update_period_peak(redis_client, 14415.64, "daily", account_login="T6")
+        for bal in (0.0, -1.0):
+            result = await CircuitBreaker.get_period_drawdowns(redis_client, bal, account_login="T6")
+            for p in ("daily", "weekly", "monthly"):
+                assert result[p]["pct"] == 0.0, f"{p} 在 balance={bal} 时产生了假回撤"
+                assert result[p]["peak"] == 0.0
+
+    async def test_zero_balance_does_not_corrupt_peak(self, redis_client):
+        """balance=0 不更新峰值；随后正常余额仍按真实峰值算回撤。"""
+        await CircuitBreaker.update_period_peak(redis_client, 10000.0, "daily", account_login="T7")
+        # 0 不大于峰值 → 不覆盖
+        peak = await CircuitBreaker.update_period_peak(redis_client, 0.0, "daily", account_login="T7")
+        assert peak == pytest.approx(10000.0)
+        # 余额回归正常后回撤按真实峰值计算
+        result = await CircuitBreaker.get_period_drawdowns(redis_client, 9500.0, account_login="T7")
+        assert result["daily"]["peak"] == pytest.approx(10000.0)
+        assert result["daily"]["pct"] == pytest.approx(0.05)
+
 
 class TestSecondsUntilReset:
     def test_returns_positive(self):

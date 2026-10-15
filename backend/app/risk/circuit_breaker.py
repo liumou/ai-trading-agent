@@ -311,7 +311,12 @@ class CircuitBreaker:
 
         回撤口径与整体 drawdown_pct 一致：``(peak - balance) / peak``。
         某周期无峰值数据（未跟踪过）时 pct=0、peak=0，前端显示「—」。
+
+        balance<=0（Bridge 断连/取数失败时 get_account 的 0 兜底）直接返回全 0：
+        否则 (peak-0)/peak = 1.0 会让三张周期卡显示假 100% 回撤。
         """
+        if balance <= 0:
+            return {p: {"peak": 0.0, "pct": 0.0} for p in ("daily", "weekly", "monthly")}
         result: dict[str, dict] = {}
         for period in ("daily", "weekly", "monthly"):
             key = CircuitBreaker._period_peak_key(account_login, period)
