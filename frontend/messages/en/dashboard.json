@@ -80,5 +80,6 @@
     "weekly": "Weekly Drawdown",
     "monthly": "Monthly Drawdown"
   },
-  "resetPeriodPeakConfirm": "Reset {period} peak to current balance?"
+  "resetPeriodPeakConfirm": "Reset {period} peak to current balance?",
+  "resetPeakFailed": "Failed to reset peak"
 }

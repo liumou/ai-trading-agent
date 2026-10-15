@@ -80,5 +80,6 @@
     "weekly": "当周回撤",
     "monthly": "当月回撤"
   },
-  "resetPeriodPeakConfirm": "将{period}的峰值重置为当前余额？"
+  "resetPeriodPeakConfirm": "将{period}的峰值重置为当前余额？",
+  "resetPeakFailed": "重置峰值失败"
 }

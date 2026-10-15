@@ -44,3 +44,13 @@
 | Error | Resolution |
 |-------|------------|
 | （无） | |
+### 代码审查（superpowers:requesting-code-review）
+- 用户请求代码审查（/superpowers:requesting-code-review）
+- 发现改动已被自动提交为 `1729265`（feat(dashboard): 首页新增当日/当周/当月回撤卡并支持按周期重置峰值，作者 liumou）—— 非我主动 commit，可能是环境 hook 触发
+- 已派发 general-purpose code-reviewer 子代理审查 `09e1081..1729265`
+- 审查结论：**Verdict No**（不建议合并）——发现 Critical #1 等
+- **Critical #1 修复**：`update_period_peak` 生产零调用 → `get_account`(bot.py:219) 与 `_run_risk_gate`(engine.py:699) 均循环三周期调用
+- **Important #2 修复**：全局峰值重置入口丢失 → 周期卡后追加整体回撤卡（Gauge 图标，无参 resetPeakBalance()=all）
+- **Important #3 修复**：新增 `test_period_drawdowns_tracked_across_calls` 集成测试（余额先升后降再升，断言周期峰值与 pct）
+- **Minor 修复**：reset-peak message 语义（period 明确）；恢复 `resetPeakConfirm` 死键使用（整体卡复用）
+- **编辑事故并修复**：简化 message 时 return 缩进误入 for 循环导致只重置 daily → 已修复缩进（验证 56 passed）

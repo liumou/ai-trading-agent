@@ -204,6 +204,56 @@ class TestBotRoutes:
         resp = await client.post("/api/bot/reset-peak", json={"period": "yearly"})
         assert resp.status_code == 422
 
+    async def test_period_drawdowns_tracked_across_calls(self, client, mock_engine):
+        """get_account 会把余额计入各周期峰值：余额先升后降 → 周期回撤 pct>0。
+
+        用内存 dict 模拟 redis（get 读 / set 写），验证 update_period_peak 的峰值
+        跟踪在生产调用链（get_account）中真实生效——此前该函数仅测试调用，
+        三张周期回撤卡会永远显示「—」。
+        """
+        store: dict[str, str] = {}
+
+        async def fake_get(key):
+            return store.get(key)
+
+        async def fake_set(key, value, *args, **kwargs):
+            store[key] = value
+            return True
+
+        mock_engine.redis.get = fake_get
+        mock_engine.redis.set = fake_set
+
+        def _set_balance(balance):
+            mock_engine.connector.get_account.return_value = {
+                "success": True,
+                "data": {"balance": balance, "equity": balance, "margin": 0, "free_margin": balance, "profit": 0, "currency": "USD"},
+            }
+
+        # 第一次访问：余额 10000 → 峰值记录 10000，回撤 0
+        _set_balance(10000)
+        resp = await client.get("/api/bot/account")
+        assert resp.status_code == 200
+        data = resp.json()
+        for p in ("daily", "weekly", "monthly"):
+            assert data["period_drawdowns"][p]["peak"] == 10000.0
+            assert data["period_drawdowns"][p]["pct"] == 0.0
+
+        # 第二次访问：余额降到 9500 → 回撤 (10000-9500)/10000 = 5%
+        _set_balance(9500)
+        resp = await client.get("/api/bot/account")
+        data = resp.json()
+        for p in ("daily", "weekly", "monthly"):
+            assert data["period_drawdowns"][p]["peak"] == 10000.0
+            assert data["period_drawdowns"][p]["pct"] == pytest.approx(0.05)
+
+        # 第三次访问：余额回到 10200 → 峰值更新为 10200，回撤归 0
+        _set_balance(10200)
+        resp = await client.get("/api/bot/account")
+        data = resp.json()
+        for p in ("daily", "weekly", "monthly"):
+            assert data["period_drawdowns"][p]["peak"] == 10200.0
+            assert data["period_drawdowns"][p]["pct"] == 0.0
+
 
 class TestBotNotInitialized:
     async def test_503_when_no_manager(self):

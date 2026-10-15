@@ -693,6 +693,12 @@ class BotEngine:
 
             # Track peak balance for absolute drawdown detection (H3: 按账号分键)
             await CircuitBreaker.update_peak_balance(self.redis, balance, account_login=self.account_login)
+            # 同步跟踪当日/当周/当月周期峰值——dashboard 未打开时也能持续记录，
+            # 保证首页三张周期回撤卡的数据不依赖页面轮询
+            for period in ("daily", "weekly", "monthly"):
+                await CircuitBreaker.update_period_peak(
+                    self.redis, balance, period, account_login=self.account_login
+                )
 
             # equity 回撤基准的下限 = 当日初始余额：当前余额 - 账户级当日已实现
             # 盈亏（backfill 已补全）。引擎当日中途重启/迟启动时，若当日已深亏，

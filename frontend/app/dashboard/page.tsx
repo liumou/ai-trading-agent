@@ -13,7 +13,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  TrendingUp, Layers, Activity, Play, Square, ShieldAlert, Wifi, WifiOff, DollarSign, Loader2,
+  TrendingUp, Layers, Activity, Play, Square, ShieldAlert, Wifi, WifiOff, DollarSign, Loader2, Gauge,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -417,8 +417,8 @@ export default function DashboardPage() {
                   try {
                     await resetPeakBalance(period);
                     window.location.reload();
-                  } catch (e) {
-                    console.error("Reset period peak failed:", e);
+                  } catch {
+                    showError(t("resetPeakFailed"));
                   }
                 }
               }}
@@ -438,6 +438,34 @@ export default function DashboardPage() {
             </div>
           );
         })}
+        {/* 整体回撤卡（全局峰值 drawdown_pct 是 15% 绝对回撤熔断基准，需保留可见与重置入口） */}
+        <div
+          className="cursor-pointer"
+          title={t("resetPeakTitle")}
+          onClick={async () => {
+            if (confirm(t("resetPeakConfirm"))) {
+              try {
+                await resetPeakBalance();
+                window.location.reload();
+              } catch {
+                showError(t("resetPeakFailed"));
+              }
+            }
+          }}
+        >
+          <StatCard
+            icon={Gauge}
+            label={t("drawdown")}
+            value={account?.drawdown_pct != null ? `${(account.drawdown_pct * 100).toFixed(1)}%` : "—"}
+            subtitle={account?.peak_balance ? t("peakSubtitle", { peak: account.peak_balance.toFixed(0) }) : undefined}
+            variant={
+              account?.drawdown_pct == null ? "default"
+              : account.drawdown_pct < 0.05 ? "success"
+              : account.drawdown_pct < 0.10 ? "warning"
+              : "danger"
+            }
+          />
+        </div>
       </div>
 
       {/* Controls + Price Chart */}

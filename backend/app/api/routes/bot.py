@@ -212,7 +212,11 @@ async def get_account():
         )
         if peak_balance > 0:
             drawdown_pct = (peak_balance - balance) / peak_balance
-        # 当日/当周/当月周期峰值回撤（与整体 drawdown_pct 同口径）
+        # 当日/当周/当月周期峰值回撤（与整体 drawdown_pct 同口径）。
+        # 读取前先把当前余额计入各周期峰值——否则 peak 只在重置时写入，
+        # 峰值跟踪缺位会导致三张卡永远显示「—」。
+        for period in ("daily", "weekly", "monthly"):
+            await CircuitBreaker.update_period_peak(first_engine.redis, balance, period, account_login=first_engine.account_login)
         period_drawdowns = await CircuitBreaker.get_period_drawdowns(
             first_engine.redis, balance, account_login=first_engine.account_login
         )
@@ -389,7 +393,7 @@ async def reset_peak_balance(data: ResetPeakRequest | None = None):
     return {
         "peak_balance": balance,
         "period": data.period,
-        "message": f"Peak reset to ${balance:.2f}",
+        "message": f"{data.period} peak reset to ${balance:.2f}",
     }
 
 
