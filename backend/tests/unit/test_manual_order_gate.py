@@ -685,3 +685,66 @@ async def test_loss_streak_flag_isolated_by_account(gate, redis_client, connecto
     # A 账号 ctx —— 应产生 loss_streak warn flag
     flags_a = await gate._emotion_flags([], _emotion_ctx(acct_a))
     assert any(f["flag"] == "loss_streak" and f["severity"] == "warn" for f in flags_a)
+
+
+# ─── confirm 失败语义（jev-451 静默失败回归）────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_confirm_shadow_rollout_returns_rejected_not_executed(gate, session_patched):
+    """[jev-451 回归] CAUTION → confirm 时遭遇 shadow 拦截，
+    confirm 必须返回真实拦截状态(REJECTED)，而非无条件 EXECUTED。
+
+    之前 confirm_and_execute 调用 _execute_approved 且无条件返回
+    {"status": "EXECUTED"} —— 生产表现为"提示已执行但 MT5 无单"。
+    """
+    gate.ai_client.complete_json_async.return_value = {
+        "verdict": "CAUTION", "confidence": 0.6, "risk_flags": [],
+        "emotional_indicators": [], "reasoning": "size near limit",
+    }
+    result = await gate.submit_order(symbol="GOLD", order_kind="market", order_type="BUY",
+                                     lot=0.1, sl=1900.0, tp=2100.0)
+    await _drain_tasks(gate)
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "PENDING_CONFIRM"
+
+    # confirm 前把 rollout 降级为 shadow（模拟运营侧 UI 降级）
+    await gate.redis.set("guardrails:rollout_mode", "shadow")
+
+    confirm = await gate.confirm_and_execute(result["review_id"])
+    # 失败必须如实返回，且不得落单
+    assert confirm["status"] in ("REJECTED", "FAILED")
+    gate.connector.place_order.assert_not_awaited()
+    # 审计行应为失败态，而非 EXECUTED
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "REJECTED"
+    assert review["review"]["reject_kind"] == "rollout"
+
+
+@pytest.mark.asyncio
+async def test_confirm_bridge_failure_returns_failed_not_executed(gate, session_patched):
+    """[jev-451 回归] confirm 后 bridge 拒单，confirm 必须返回失败态(FAILED)，
+    而非无条件 EXECUTED —— 让前端能呈现真实失败并给出原因。
+
+    （rollout 拦截走 _reject_inline → REJECTED；bridge 拒单走
+    status="FAILED" —— 两者都应穿透给调用方。）
+    """
+    gate.ai_client.complete_json_async.return_value = {
+        "verdict": "CAUTION", "confidence": 0.6, "risk_flags": [],
+        "emotional_indicators": [], "reasoning": "size near limit",
+    }
+    result = await gate.submit_order(symbol="GOLD", order_kind="market", order_type="BUY",
+                                     lot=0.1, sl=1900.0, tp=2100.0)
+    await _drain_tasks(gate)
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "PENDING_CONFIRM"
+
+    gate.connector.place_order.return_value = {"success": False, "error": "market closed"}
+
+    confirm = await gate.confirm_and_execute(result["review_id"])
+    assert confirm["status"] == "FAILED"
+    assert "market closed" in confirm.get("reason", "")
+    # 审计行如实落为 FAILED，携带 bridge 错误
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "FAILED"
+    assert "market closed" in review["error_message"]

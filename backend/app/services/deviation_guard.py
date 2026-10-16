@@ -82,7 +82,18 @@ def detect_spike_chase(
     ):
         return None
 
-    z_now = abs(float(entry) - float(ema20.iloc[-1])) / float(atr14.iloc[-1])
+    ema_last = float(ema20.iloc[-1])
+    # [jev-451] 方向语义：只对「顺向偏离」判定追涨/杀跌。
+    #   BUY(1)  仅 entry > EMA 才是追涨；entry < EMA 是回调低吸，不标记
+    #   SELL(-1) 仅 entry < EMA 才是杀跌；entry > EMA 是反弹反抽，不标记
+    # 旧实现用 abs() 抹掉方向，把低吸（BUY 挂在均线下）误判成追高 block。
+    deviation = float(entry) - ema_last
+    if direction >= 0 and deviation <= 0:  # BUY 但没买在均线上方
+        return None
+    if direction < 0 and deviation >= 0:  # SELL 但没卖在均线下方
+        return None
+
+    z_now = abs(deviation) / float(atr14.iloc[-1])
     z_hist = ((close - ema20).abs() / atr14).dropna()
     pct = float((z_hist < z_now).mean()) if len(z_hist) else 0.0
     detail = f"入场偏离 z={z_now:.2f}（近 {len(z_hist)} 根分位 p{pct * 100:.0f}）"

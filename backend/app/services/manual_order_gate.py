@@ -457,14 +457,21 @@ class ManualOrderGate:
             if not pf.ok:
                 return await self._reject_inline(review_id, f"审查后状态已变化: {pf.reason}", kind=pf.kind)
             await self._build_snapshot(pf.ctx, review_id, rule_flags=review.get("rule_flags"))
-            await self._execute_approved(review_id, review, ctx=pf.ctx)
+            executed = await self._execute_approved(review_id, review, ctx=pf.ctx)
 
+        # [jev-451] 执行结果必须如实返回：_execute_approved 内部任何失败
+        # （switching / rollout 拦截、bridge 拒单）都要穿透给调用方 ——
+        # 否则 confirm 端点对前端谎报"已执行"，而 MT5 实际未落单。
+        if executed is not None:
+            return executed
         return {"status": "EXECUTED", "review_id": review_id}
 
-    async def _execute_approved(self, audit_id: int, review: dict, ctx: PreflightContext | None = None):
+    async def _execute_approved(self, audit_id: int, review: dict, ctx: PreflightContext | None = None) -> dict | None:
+        """执行审查通过的订单。返回失败结果 dict（供 confirm 透传给调用方），
+        成功返回 None（保持既有 APPROVED 自动执行路径语义）。"""
         audit = await self._load_audit(audit_id)
         if audit is None:
-            return
+            return None
         if ctx is None:
             # _review 路径：执行前重验硬状态（审查期间可能漂移）
             pf = await preflight_order(
@@ -478,24 +485,26 @@ class ManualOrderGate:
             )
             if not pf.ok:
                 await self._reject_inline(audit_id, f"审查后状态已变化: {pf.reason}", kind=pf.kind)
-                return
+                return {"status": "REJECTED", "review_id": audit_id, "reason": pf.reason}
             ctx = pf.ctx
 
         blocked = await self._switching_blocked()
         if blocked:
-            await self._reject_inline(audit_id, blocked, kind="switching")
-            return
+            logger.warning(f"ManualGate [{audit_id}] confirm blocked: {blocked}")
+            return await self._reject_inline(audit_id, blocked, kind="switching")
 
         # ROLLOUT 门禁（评审 C-2）：手动通道与 AI 通道同语义 —— shadow/paper
         # 绝不让真实单碰到真实账号。preflight 本身不拒（AI 通道需要拦截
         # 消息而非拒单），此处是执行前最后一道闸。
         if ctx.rollout_mode in ("shadow", "paper"):
-            await self._reject_inline(
+            logger.warning(
+                f"ManualGate [{audit_id}] execution blocked by rollout mode '{ctx.rollout_mode}'"
+            )
+            return await self._reject_inline(
                 audit_id,
                 f"上线模式 '{ctx.rollout_mode}' 禁止手动真实单 — 请先启用 live 或 paper",
                 kind="rollout",
             )
-            return
 
         raw_type = review.get("raw_order_type") or audit.order_type
         modify_ticket = review.get("modify_ticket")
@@ -506,12 +515,12 @@ class ManualOrderGate:
             # 执行前重验 ticket 归属（评审 I-4）：提交时验证过，但审查期间
             # 该单可能被撤/被改账号 —— 不重验会在他人撤销后改错对象。
             if not await self._verify_order_ticket(int(modify_ticket)):
-                await self._reject_inline(
+                logger.warning(f"ManualGate [{audit_id}] pending #{modify_ticket} vanished before modify")
+                return await self._reject_inline(
                     audit_id,
                     f"挂单 {modify_ticket} 已不存在于当前账号 — 请重新提交",
                     kind="ticket_ownership",
                 )
-                return
             result = await self.connector.modify_order(
                 int(modify_ticket),
                 price=audit.order_price,
@@ -534,10 +543,16 @@ class ManualOrderGate:
 
         if not result.get("success"):
             error = result.get("error", "下单执行失败")
+            # [jev-451] 落单失败必须留痕：此前该分支只写 DB/WS，无 logger，
+            # 生产排查时"提示已执行但 MT5 无单"完全无迹可循。
+            logger.error(
+                f"ManualGate [{audit_id}] execution failed [{ctx.symbol} {raw_type}] "
+                f"after {latency_ms}ms: {error}"
+            )
             await self._update_audit(audit_id, status="FAILED", error_message=error, latency_ms=latency_ms)
             await self._log_event(BotEventType.ORDER_FAILED, f"[Manual] order failed [{ctx.symbol}]: {error}")
             await self._push({"type": "manual_review", "review_id": audit_id, "status": "FAILED", "reason": error})
-            return
+            return {"status": "FAILED", "review_id": audit_id, "reason": error}
 
         data = result.get("data") or {}
         ticket = data.get("ticket")

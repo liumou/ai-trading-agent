@@ -351,6 +351,11 @@ export default function TradingPage() {
         await refreshPositions();
       } else if (r.status === "EXPIRED") {
         setReview({ status: "EXPIRED", reviewId: review.reviewId });
+      } else if (r.status === "FAILED") {
+        // [jev-451] 落单执行失败必须如实呈现（此前 confirm 恒报 EXECUTED，
+        // FAILED 被归入 else → 前端渲染成 REJECTED，真实原因丢失）
+        showError(t("failed"));
+        setReview({ status: "FAILED", reviewId: review.reviewId, reason: r.reason });
       } else {
         setReview({ status: "REJECTED", reviewId: review.reviewId, reason: r.reason });
       }

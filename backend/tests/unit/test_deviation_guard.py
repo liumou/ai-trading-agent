@@ -101,3 +101,71 @@ def test_custom_thresholds_applied():
     df = _spike_df(entry_spread_z=3.0, rows=120)
     res = detect_spike_chase(df, df["close"].iloc[-1], 1, spike_pct_warn=0.5, spike_pct_block=0.6)
     assert res is not None
+
+
+# ─── 方向语义（jev-451：abs() 抹掉方向导致低吸/反抽被误判为追高/杀跌）─────
+
+
+def _trend_df(*, up=True, rows=120, last_bull_bars=4):
+    """构造趋势 df：末 N 根为同向实体 K 线，制造明确的顺向动能。"""
+    rng = np.random.default_rng(11)
+    base = 4000.0
+    slope = np.linspace(0, 90, rows) if up else np.linspace(0, -90, rows)
+    close = base + slope + rng.normal(0, 5, rows)
+    high = close + np.abs(rng.normal(0, 4, rows)) + 3
+    low = close - np.abs(rng.normal(0, 4, rows)) - 3
+    open_ = close + rng.normal(0, 3, rows)
+    for i in range(1, last_bull_bars + 1):
+        idx = -i
+        # up=True 时末几根为阳线（close>open），反之阴线
+        open_[idx] = close[idx] - 4 if up else close[idx] + 4
+        high[idx] = max(high[idx], open_[idx], close[idx])
+        low[idx] = min(low[idx], open_[idx], close[idx])
+    idx_ = pd.date_range("2026-01-05 09:00", periods=rows, freq="15min")
+    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close}, index=idx_)
+
+
+def _ema20(df):
+    return float(df["close"].ewm(span=20, adjust=False).mean().iloc[-1])
+
+
+def test_buy_below_ema_is_not_chase():
+    """[jev-451] BUY 挂单价在 EMA20 下方 = 回调低吸，绝非追高 → 不得标记。
+
+    用户场景：BUY_LIMIT 4160，现价 4190（EMA≈4184），价格需下跌才成交。
+    旧实现用 abs(entry−EMA) 抹掉方向，把 -23.7 的偏离当成 +23.7 的追高 → 误 block。
+    """
+    df = _trend_df(up=True)
+    ema = _ema20(df)
+    entry = ema - 25.0  # 挂在均线下方 25 点（回调区）
+    res = detect_spike_chase(df, entry, 1)  # direction=1 (BUY)
+    assert res is None, f"BUY 在 EMA 下方（低吸）不应触发 spike_chase，但得到 {res}"
+
+
+def test_sell_above_ema_is_not_chase():
+    """[jev-451] SELL 挂单价在 EMA20 上方 = 反弹反抽，绝非杀跌 → 不得标记。"""
+    df = _trend_df(up=False)
+    ema = _ema20(df)
+    entry = ema + 25.0  # 挂在均线上方（反抽区）
+    res = detect_spike_chase(df, entry, -1)  # direction=-1 (SELL)
+    assert res is None, f"SELL 在 EMA 上方（反抽）不应触发 spike_chase，但得到 {res}"
+
+
+def test_buy_above_ema_still_flags():
+    """方向校验不得放宽顺向判定：BUY 在 EMA 上方（真追涨）仍应标记。"""
+    df = _trend_df(up=True)
+    ema = _ema20(df)
+    entry = ema + 40.0  # 明显买在均线上方
+    res = detect_spike_chase(df, entry, 1)
+    assert res is not None, "BUY 在 EMA 上方（追涨）仍应触发"
+    assert res.severity in ("warn", "block")
+
+
+def test_sell_below_ema_still_flags():
+    """方向校验不得放宽顺向判定：SELL 在 EMA 下方（真杀跌）仍应标记。"""
+    df = _trend_df(up=False)
+    ema = _ema20(df)
+    entry = ema - 40.0  # 明显卖在均线下方
+    res = detect_spike_chase(df, entry, -1)
+    assert res is not None, "SELL 在 EMA 下方（杀跌）仍应触发"
+    assert res.severity in ("warn", "block")
