@@ -5,10 +5,11 @@
 gate 委托、挂单 symbol 归一化;防火墙逻辑在 Gate 测试覆盖。
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from unittest.mock import AsyncMock, MagicMock
 
 
 def _make_test_app(gate):
@@ -131,6 +132,17 @@ async def test_get_review_404(client):
     gate.get_review.return_value = None
     resp = await c.get("/api/trading/reviews/999")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_review_passes_account_login(client):
+    """IDOR 防护：get_review 必须把当前账号传给 gate，由服务层按账号校验归属。
+    否则枚举 review_id 可跨账号读取审查记录（含 LLM verdict / ticket）。"""
+    c, gate = client
+    resp = await c.get("/api/trading/reviews/42")
+    assert resp.status_code == 200
+    assert gate.get_review.await_args.args == (42,)
+    assert gate.get_review.await_args.kwargs["account_login"] == "10086"
 
 
 @pytest.mark.asyncio

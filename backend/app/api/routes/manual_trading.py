@@ -124,7 +124,9 @@ async def list_reviews(
 @router.get("/reviews/{review_id}")
 async def get_review(review_id: int, request: Request):
     gate = _gate(request)
-    review = await gate.get_review(review_id)
+    # 账号隔离：把当前账号传给 gate，服务层按 OrderAudit.account_login 校验归属
+    #（IDOR 防护：枚举 review_id 不得读到其它账号的审查记录）。
+    review = await gate.get_review(review_id, account_login=_account_login(request))
     if review is None:
         raise HTTPException(status_code=404, detail="Review not found")
     return review

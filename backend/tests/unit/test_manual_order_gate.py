@@ -272,6 +272,49 @@ async def test_confirm_wrong_status_rejected(gate, session_patched):
     gate.connector.place_order.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_confirm_cross_account_rejected(gate, session_patched):
+    """跨账号执行防护：A 账号的 PENDING_CONFIRM 单不得在 B 账号下被确认执行。
+
+    否则切到 B 后可用 B 的 bridge 连接执行 A 的单，且 preflight 风控参数
+    与执行账号错位（手动防火墙不变量 ⑤：执行类请求不得跨账号）。
+    """
+    gate.ai_client.complete_json_async.return_value = {
+        "verdict": "CAUTION", "confidence": 0.6, "risk_flags": [],
+        "emotional_indicators": [], "reasoning": "size near limit",
+    }
+    result = await gate.submit_order(symbol="GOLD", order_kind="market", order_type="BUY",
+                                     lot=0.1, sl=1900.0, tp=2100.0, account_login="11111111")
+    await _drain_tasks(gate)
+    review = await gate.get_review(result["review_id"])
+    assert review["status"] == "PENDING_CONFIRM"
+
+    # 用另一个账号确认 → 拒绝，且不得下单
+    confirm = await gate.confirm_and_execute(result["review_id"], account_login="22222222")
+    assert confirm["status"] == "REJECTED"
+    assert "不属于当前账号" in confirm["reason"]
+    gate.connector.place_order.assert_not_called()
+
+    # 用归属账号确认 → 正常执行（不误伤）
+    confirm_ok = await gate.confirm_and_execute(result["review_id"], account_login="11111111")
+    assert confirm_ok["status"] == "EXECUTED"
+    gate.connector.place_order.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_review_cross_account_returns_none(gate, session_patched):
+    """get_review 传 account_login 时按归属过滤：跨账号读不到（IDOR 防护）。"""
+    result = await gate.submit_order(symbol="GOLD", order_kind="market", order_type="BUY",
+                                     lot=0.1, sl=1900.0, tp=2100.0, account_login="11111111")
+    await _drain_tasks(gate)
+
+    assert await gate.get_review(result["review_id"], account_login="22222222") is None
+    own = await gate.get_review(result["review_id"], account_login="11111111")
+    assert own is not None and own["account_login"] == "11111111"
+    # 不传账号保持旧行为（内部路径兼容）
+    assert await gate.get_review(result["review_id"]) is not None
+
+
 # ─── LLM fail-closed ──────────────────────────────────────────────────────
 
 

@@ -7,7 +7,7 @@ from datetime import datetime
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.db.models import Trade
+from app.db.models import MT5Account, Trade
 from app.db.session import get_db
 
 
@@ -81,9 +81,14 @@ class TestHistoryRoutes:
         assert "trades" in data
 
     async def test_get_trades_account_login(self, client, db_session):
-        """bot 单必须透传 account_login（前端复盘触发按 (ticket, account_login) 归属）。"""
+        """bot 单必须透传 account_login（前端复盘触发按 (ticket, account_login) 归属）。
+
+        账号隔离后语义：只有「当前活跃账号 + '0' 遗留桶」的行可见，
+        因此本用例先登记 active 账号 12345678 再验证透传。
+        """
         from datetime import datetime as _dt
 
+        db_session.add(MT5Account(login=12345678, password_encrypted=b"x", password_nonce=b"y", is_active=True))
         db_session.add(Trade(
             ticket=7771, symbol="GOLD", type="BUY", lot=0.1,
             open_price=2000.0, close_price=2010.0, sl=1990.0, tp=2020.0,
@@ -98,6 +103,56 @@ class TestHistoryRoutes:
         assert bot_rows, "bot 行应存在"
         assert all(r.get("account_login") for r in bot_rows)
         assert any(r.get("account_login") == "12345678" for r in bot_rows)
+
+    async def test_get_trades_account_isolation(self, client, db_session):
+        """跨账号隔离：切换到账号 B 后，A 账号的 bot 单不可见；'0' 桶与 B 账号可见。"""
+        from datetime import datetime as _dt
+
+        db_session.add(MT5Account(login=11111111, password_encrypted=b"x", password_nonce=b"y"))
+        db_session.add(MT5Account(login=22222222, password_encrypted=b"x", password_nonce=b"y", is_active=True))
+        db_session.add(Trade(
+            ticket=8801, symbol="GOLD", type="BUY", lot=0.1,
+            open_price=2000.0, close_price=2010.0, sl=1990.0, tp=2020.0,
+            open_time=_dt.now(), close_time=_dt.now(), profit=10.0,
+            strategy_name="ema_crossover", account_login="11111111",
+        ))
+        db_session.add(Trade(
+            ticket=8802, symbol="GOLD", type="BUY", lot=0.1,
+            open_price=2000.0, close_price=2010.0, sl=1990.0, tp=2020.0,
+            open_time=_dt.now(), close_time=_dt.now(), profit=20.0,
+            strategy_name="ema_crossover", account_login="22222222",
+        ))
+        db_session.add(Trade(
+            ticket=8803, symbol="GOLD", type="BUY", lot=0.1,
+            open_price=2000.0, close_price=2010.0, sl=1990.0, tp=2020.0,
+            open_time=_dt.now(), close_time=_dt.now(), profit=30.0,
+            strategy_name="ema_crossover", account_login="0",
+        ))
+        await db_session.commit()
+
+        resp = await client.get("/api/history/trades?days=30")
+        assert resp.status_code == 200
+        bot_rows = [r for r in resp.json()["trades"] if r["source"] == "bot"]
+        logins = {r["account_login"] for r in bot_rows}
+        assert logins == {"0", "22222222"}, f"只应含 '0' 桶与当前活跃账号，实际 {logins}"
+        assert all(r["ticket"] != 8801 for r in bot_rows), "A 账号的交易不得泄漏"
+
+    async def test_get_trades_no_active_account_shows_legacy_only(self, client, db_session):
+        """无活跃账号时退化为仅 '0' 遗留桶（fail-closed：宁可少显示不跨账号泄漏）。"""
+        from datetime import datetime as _dt
+
+        db_session.add(Trade(
+            ticket=8901, symbol="GOLD", type="BUY", lot=0.1,
+            open_price=2000.0, close_price=2010.0, sl=1990.0, tp=2020.0,
+            open_time=_dt.now(), close_time=_dt.now(), profit=10.0,
+            strategy_name="ema_crossover", account_login="55555555",
+        ))
+        await db_session.commit()
+
+        resp = await client.get("/api/history/trades?days=30")
+        assert resp.status_code == 200
+        bot_rows = [r for r in resp.json()["trades"] if r["source"] == "bot"]
+        assert all(r["account_login"] == "0" for r in bot_rows), "未隔离时 55555555 不得出现"
 
     async def test_get_trades_empty(self, client):
         resp = await client.get("/api/history/trades?days=1")

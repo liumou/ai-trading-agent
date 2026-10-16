@@ -34,6 +34,32 @@ def _deal_matches_symbol(deal: dict, symbol: str | None) -> bool:
     return get_canonical_symbol(deal.get("symbol") or "") == symbol
 
 
+async def _resolve_analytics_owned(db: AsyncSession) -> set[str]:
+    """分析端点可见账号集合 = {当前活跃账号} ∪ {'0' 遗留桶}。
+
+    与 history._resolve_history_owned 同口径（见彼处 docstring）：
+    交易/盈亏聚合严格按当前账号隔离，'0' 桶保留单账号期存量数据；
+    DB 异常退化为 {'0'}，不 fail-open。
+    """
+    from sqlalchemy import select as _select
+
+    from app.db.models import MT5Account
+
+    owned: set[str] = {"0"}
+    try:
+        login = (await db.execute(
+            _select(MT5Account.login).where(
+                MT5Account.is_active.is_(True),
+                MT5Account.is_deleted.is_(False),
+            )
+        )).scalar_one_or_none()
+    except Exception:
+        return owned
+    if login is not None:
+        owned.add(str(login))
+    return owned
+
+
 @router.get("/performance")
 async def get_performance_analytics(
     request: Request,
@@ -55,12 +81,14 @@ async def get_performance_analytics(
     async def _compute():
         return await _compute_performance(symbol, days, db, _manager, SimpleNamespace)
 
+    # 缓存键含账号维度：切换账号后 60s 内不得读到旧账号的聚合缓存
+    current_login = str(getattr(_manager, "current_account_login", "0") or "0") if _manager else "0"
     redis_client = getattr(request.app.state, "redis", None)
     if redis_client is None:
         return await _compute()
     return await cached(
         redis_client,
-        f"cache:analytics_perf:{symbol or 'all'}:{days}",
+        f"cache:analytics_perf:{current_login}:{symbol or 'all'}:{days}",
         60,
         _compute,
     )
@@ -68,11 +96,14 @@ async def get_performance_analytics(
 
 async def _compute_performance(symbol, days, db, _manager, SimpleNamespace):
     cutoff = datetime.utcnow() - timedelta(days=days)
+    # 账号隔离：只聚合当前活跃账号 + '0' 遗留桶（修复跨账号统计混算）
+    owned = await _resolve_analytics_owned(db)
     query = select(Trade).where(
         Trade.open_time >= cutoff,
         Trade.profit.isnot(None),
         Trade.close_time.isnot(None),
         Trade.is_archived.is_(False),
+        Trade.account_login.in_(owned),
     )
     if symbol:
         query = query.where(Trade.symbol == symbol)
@@ -157,7 +188,9 @@ async def _compute_performance(symbol, days, db, _manager, SimpleNamespace):
     gross_profit = sum(wins) if wins else 0
     gross_loss = abs(sum(losses)) if losses else 0
     win_rate = len(wins) / len(profits) if profits else 0
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+    # 全盈利窗口无亏损样本：profit_factor 无定义，用大而有界的占位值，
+    # 避免 float("inf") 导致 JSON 序列化 500（前端 .toFixed(2) 也需数字）。
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 999.99
 
     # Equity curve + max drawdown
     equity = []
@@ -299,11 +332,14 @@ async def get_slippage_analysis(
         symbol = resolve_canonical_symbol(symbol)
 
     cutoff = datetime.utcnow() - timedelta(days=days)
+    # 账号隔离：滑点分析只统计当前活跃账号 + '0' 遗留桶
+    owned = await _resolve_analytics_owned(db)
     query = select(Trade).where(
         Trade.open_time >= cutoff,
         Trade.expected_price.isnot(None),
         Trade.open_price.isnot(None),
         Trade.is_archived.is_(False),
+        Trade.account_login.in_(owned),
     )
     if symbol:
         query = query.where(Trade.symbol == symbol)

@@ -27,6 +27,37 @@ def _deal_matches_symbol(deal: dict, symbol: str | None) -> bool:
     return get_canonical_symbol(deal.get("symbol") or "") == symbol
 
 
+async def _resolve_history_owned(db: AsyncSession) -> set[str]:
+    """历史记录可见账号集合 = {当前活跃账号} ∪ {'0' 遗留桶}。
+
+    - 当前活跃账号：唯一 `is_active && !is_deleted` 的 mt5_accounts.login
+      （与 symbol_config_service.get_current_account_login 同口径）。
+    - '0' 遗留桶：单账号期未标记账号的存量 trades（旧数据 account_login
+      默认 '0'，必须保留否则老记录消失）。
+    - DB 异常时退化为 {'0'}：不 fail-open（宁可少显示也不跨账号泄漏），
+      '0' 桶兜底避免整页空。
+
+    修复背景：此前 DB 查询不过滤账号，切换账号后仍能查到其它账号的 bot 单。
+    """
+    from sqlalchemy import select as _select
+
+    from app.db.models import MT5Account
+
+    owned: set[str] = {"0"}
+    try:
+        login = (await db.execute(
+            _select(MT5Account.login).where(
+                MT5Account.is_active.is_(True),
+                MT5Account.is_deleted.is_(False),
+            )
+        )).scalar_one_or_none()
+    except Exception:
+        return owned
+    if login is not None:
+        owned.add(str(login))
+    return owned
+
+
 router = APIRouter(
     prefix="/api/history",
     tags=["history"],
@@ -54,8 +85,15 @@ async def get_trades(
 
     cutoff = datetime.utcnow() - timedelta(days=days)
 
+    # 账号隔离：DB 只查当前活跃账号 + '0' 遗留桶（修复跨账号泄漏）
+    owned = await _resolve_history_owned(db)
+
     # 1. Pull from DB (with fallback if new columns not yet migrated)
-    query = select(Trade).where(Trade.open_time >= cutoff, Trade.is_archived.is_(False))
+    query = select(Trade).where(
+        Trade.open_time >= cutoff,
+        Trade.is_archived.is_(False),
+        Trade.account_login.in_(owned),
+    )
     if strategy:
         query = query.where(Trade.strategy_name == strategy)
     if trade_type:
@@ -72,13 +110,14 @@ async def get_trades(
         await db.rollback()
         from sqlalchemy import text
 
+        owned_list = list(owned)
         raw = await db.execute(
             text(
                 "SELECT id, ticket, symbol, type, lot, open_price, close_price, sl, tp, "
                 "open_time, close_time, profit, strategy_name, ai_sentiment_score, ai_sentiment_label "
-                "FROM trades WHERE open_time >= :cutoff ORDER BY open_time DESC"
+                "FROM trades WHERE open_time >= :cutoff AND account_login IN :owned ORDER BY open_time DESC"
             ),
-            {"cutoff": cutoff},
+            {"cutoff": cutoff, "owned": owned_list},
         )
         db_trades = raw.fetchall()
 
@@ -323,10 +362,17 @@ async def get_daily_pnl(
     async def _fetch():
         return await _fetch_daily_pnl(symbol, db, _manager)
 
+    # 缓存键含账号维度：切换账号后 15s 内不得读到旧账号的当日盈亏缓存
+    current_login = str(getattr(_manager, "current_account_login", "0") or "0") if _manager else "0"
     redis_client = getattr(request.app.state, "redis", None)
     if redis_client is None:
         return await _fetch()
-    return await cached(redis_client, f"cache:daily_pnl:{symbol or 'all'}", 15, _fetch)
+    return await cached(
+        redis_client,
+        f"cache:daily_pnl:{current_login}:{symbol or 'all'}",
+        15,
+        _fetch,
+    )
 
 
 async def _fetch_daily_pnl(symbol, db, _manager):
@@ -354,10 +400,13 @@ async def _fetch_daily_pnl(symbol, db, _manager):
             pass
 
     # 2. Also pull from DB (covers paper trades and offline history)
+    #    账号隔离：只统计当前活跃账号 + '0' 遗留桶（修复跨账号盈亏混算）
+    owned = await _resolve_history_owned(db)
     db_query = select(Trade).where(
         Trade.close_time >= today,
         Trade.profit.isnot(None),
         Trade.is_archived.is_(False),
+        Trade.account_login.in_(owned),
     )
     if symbol:
         db_query = db_query.where(Trade.symbol == symbol)
@@ -403,7 +452,13 @@ async def get_performance(
         symbol = resolve_canonical_symbol(symbol)
 
     cutoff = datetime.utcnow() - timedelta(days=days)
-    query = select(Trade).where(Trade.open_time >= cutoff, Trade.profit.isnot(None), Trade.is_archived.is_(False))
+    owned = await _resolve_history_owned(db)
+    query = select(Trade).where(
+        Trade.open_time >= cutoff,
+        Trade.profit.isnot(None),
+        Trade.is_archived.is_(False),
+        Trade.account_login.in_(owned),
+    )
     if symbol:
         query = query.where(Trade.symbol == symbol)
     result = await db.execute(query)

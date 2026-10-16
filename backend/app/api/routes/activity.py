@@ -15,6 +15,32 @@ from app.db.session import get_db
 router = APIRouter(prefix="/api/ai/activity", tags=["activity"])
 
 
+async def _resolve_activity_owned(db: AsyncSession) -> set[str] | None:
+    """AI 活动可见账号集合。
+
+    返回 None 表示不施加账号过滤（BotEvent.account_login 可空 —— 早期事件
+    无账号归属，故该集合仅用于 Trade 过滤）；返回 set 为「当前活跃账号 +
+    '0' 遗留桶」，口径与 history/analytics 一致。DB 异常退化返回 None。
+    """
+    from sqlalchemy import select as _select
+
+    from app.db.models import MT5Account
+
+    owned: set[str] = {"0"}
+    try:
+        login = (await db.execute(
+            _select(MT5Account.login).where(
+                MT5Account.is_active.is_(True),
+                MT5Account.is_deleted.is_(False),
+            )
+        )).scalar_one_or_none()
+    except Exception:
+        return None
+    if login is not None:
+        owned.add(str(login))
+    return owned
+
+
 # Event type → category mapping (includes system events for visibility)
 _AI_EVENT_MAP: dict[str, str] = {
     "TRADE_OPENED": "trade",
@@ -47,6 +73,9 @@ async def get_activity_log(
     """Unified AI activity timeline from multiple data sources."""
     cutoff = datetime.utcnow() - timedelta(days=days)
 
+    # 账号隔离：活动日志只显示当前活跃账号 + '0' 遗留桶的 Trade/BotEvent
+    owned = await _resolve_activity_owned(db)
+
     # 1. Bot events (AI + system)
     ai_event_types = list(_AI_EVENT_MAP.keys())
     try:
@@ -56,12 +85,21 @@ async def get_activity_log(
             .order_by(desc(BotEvent.created_at))
             .limit(500)
         )
+        # BotEvent.account_login 可空（早期事件无归属），仅对非空值过滤
+        if owned is not None:
+            events_q = events_q.where(
+                (BotEvent.account_login.is_(None)) | (BotEvent.account_login.in_(owned))
+            )
         events_result = await db.execute(events_q)
         bot_events = events_result.scalars().all()
     except Exception:
         # Enum mismatch (e.g. STRATEGY_CHANGED not in DB yet) — fall back to no filter
         await db.rollback()
         events_q = select(BotEvent).where(BotEvent.created_at >= cutoff).order_by(desc(BotEvent.created_at)).limit(500)
+        if owned is not None:
+            events_q = events_q.where(
+                (BotEvent.account_login.is_(None)) | (BotEvent.account_login.in_(owned))
+            )
         events_result = await db.execute(events_q)
         bot_events = events_result.scalars().all()
 
@@ -164,6 +202,9 @@ async def get_activity_log(
             .order_by(desc(Trade.created_at))
             .limit(100)
         )
+        # 账号隔离：只显示当前活跃账号 + '0' 遗留桶的交易
+        if owned is not None:
+            trade_q = trade_q.where(Trade.account_login.in_(owned))
         try:
             trade_result = await db.execute(trade_q)
             trades = trade_result.scalars().all()
@@ -217,15 +258,24 @@ async def get_activity_summary(
     """Quick summary counts for the activity dashboard header."""
     cutoff = datetime.utcnow() - timedelta(days=days)
 
+    # 账号隔离：计数口径与主日志一致（当前活跃账号 + '0' 遗留桶）
+    owned = await _resolve_activity_owned(db)
+
     # Count queries in parallel-ish (SQLAlchemy async)
-    events_count = await db.execute(select(func.count(BotEvent.id)).where(BotEvent.created_at >= cutoff))
-    sentiment_count = await db.execute(select(func.count(NewsSentiment.id)).where(NewsSentiment.created_at >= cutoff))
-    trade_count = await db.execute(
-        select(func.count(Trade.id)).where(
-            Trade.created_at >= cutoff,
-            Trade.ai_sentiment_label.isnot(None),
+    events_q = select(func.count(BotEvent.id)).where(BotEvent.created_at >= cutoff)
+    if owned is not None:
+        events_q = events_q.where(
+            (BotEvent.account_login.is_(None)) | (BotEvent.account_login.in_(owned))
         )
+    events_count = await db.execute(events_q)
+    sentiment_count = await db.execute(select(func.count(NewsSentiment.id)).where(NewsSentiment.created_at >= cutoff))
+    trade_q = select(func.count(Trade.id)).where(
+        Trade.created_at >= cutoff,
+        Trade.ai_sentiment_label.isnot(None),
     )
+    if owned is not None:
+        trade_q = trade_q.where(Trade.account_login.in_(owned))
+    trade_count = await db.execute(trade_q)
     opt_count = await db.execute(select(func.count(AIOptimizationLog.id)).where(AIOptimizationLog.created_at >= cutoff))
 
     return {

@@ -422,6 +422,11 @@ class ManualOrderGate:
         audit = await self._load_audit(review_id)
         if audit is None:
             return {"status": "REJECTED", "reason": "审查记录不存在"}
+        # 跨账号执行防护：审计行归属的账号必须等于当前确认账号。
+        # 否则切到 B 账号后可用 B 的 bridge 连接执行 A 账号的 PENDING_CONFIRM 单，
+        # 且 preflight 风控参数与执行账号错位（CLAUDE.md 手动防火墙不变量 ⑤）。
+        if str(audit.account_login or "0") != str(account_login or "0"):
+            return {"status": "REJECTED", "reason": "该审查不属于当前账号"}
         if audit.status != "PENDING_CONFIRM":
             return {"status": audit.status, "reason": f"该审查不在待确认状态（当前 status={audit.status}）"}
         review = dict(audit.review or {})
@@ -692,8 +697,12 @@ class ManualOrderGate:
 
     # ─── 查询 ─────────────────────────────────────────────────────────────
 
-    async def get_review(self, review_id: int) -> dict | None:
-        audit = await self._load_audit(review_id)
+    async def get_review(self, review_id: int, account_login: str | None = None) -> dict | None:
+        """单条审查记录。account_login 传值时按账号校验归属（IDOR 防护）：
+        跨账号的 review_id 一律按不存在处理（404），避免枚举探测他号记录。
+        未传 account_login 保持旧行为（内部调用路径如 confirm 轮询前校验）。
+        """
+        audit = await self._load_audit(review_id, account_login=account_login)
         if audit is None:
             return None
         return _audit_to_dict(audit)
@@ -947,11 +956,20 @@ class ManualOrderGate:
             await session.commit()
             return audit.id
 
-    async def _load_audit(self, audit_id: int) -> OrderAudit | None:
+    async def _load_audit(self, audit_id: int, account_login: str | None = None) -> OrderAudit | None:
+        """按 id 加载 OrderAudit；account_login 传值时仅返回归属该账号的行。
+
+        传值场景：对外查询（get_review）做 IDOR 防护。内部写路径
+        （confirm / _execute_approved / _reject_inline）不传，由调用方另行
+        校验归属，避免改挂单/平仓等写操作被这里误拦。
+        """
         from app.db.session import async_session
 
         async with async_session() as session:
-            return (await session.execute(select(OrderAudit).where(OrderAudit.id == audit_id))).scalar_one_or_none()
+            stmt = select(OrderAudit).where(OrderAudit.id == audit_id)
+            if account_login:
+                stmt = stmt.where(OrderAudit.account_login == account_login)
+            return (await session.execute(stmt)).scalar_one_or_none()
 
     async def _update_audit(self, audit_id: int, **fields):
         from app.db.session import async_session
