@@ -436,12 +436,15 @@ async def get_events(
     async def _fetch():
         owned = await _resolve_owned()
         cutoff = datetime.utcnow() - timedelta(days=days)
-        query = select(BotEvent).where(BotEvent.created_at >= cutoff)
-        # BotEvent.account_login 可空：早期事件无归属，不误杀；仅过滤有归属的
-        if owned:
-            query = query.where(
+        # BotEvent.account_login 可空：早期事件无归属，不误杀；仅过滤有归属的。
+        # owned 至少含 '0'（_resolve_owned 恒播种遗留桶），无需空集守卫。
+        query = (
+            select(BotEvent)
+            .where(BotEvent.created_at >= cutoff)
+            .where(
                 (BotEvent.account_login.is_(None)) | (BotEvent.account_login.in_(owned))
             )
+        )
         if event_type:
             query = query.where(BotEvent.event_type == event_type)
         query = query.order_by(desc(BotEvent.created_at)).limit(limit)

@@ -153,7 +153,6 @@ async def place_order(
     if order_result.get("success"):
         # 开仓只记频率/间隔，不记胜负 —— 胜负由平仓路径按实际盈亏
         # record_trade_closed(is_win) 记录，否则连亏熔断永不触发。
-        await _guardrails.record_order_opened()
         # 纪律日/周开仓计数 + flip 方向记账（AI 通道，评审 2 R5 按通道分池；
         # 账号维度：从全局 manager 取当前账号，与 OrderAudit 落库口径一致，
         # 账号切换后纪律计数不写死 "0" 错位）
@@ -163,6 +162,8 @@ async def place_order(
 
             _mgr = get_global_manager()
             _ai_login = str(getattr(_mgr, "current_account_login", "0") or "0")
+            # 频率/间隔计数（评审 I2：按账号隔离，账号 A 不卡死账号 B）
+            await _guardrails.record_order_opened(channel="ai", account_login=_ai_login)
             await record_order_opened_discipline(
                 _redis,
                 account_login=_ai_login,

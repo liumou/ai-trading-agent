@@ -82,11 +82,27 @@ def _daily_key(name: str) -> str:
     return f"{_KEY_PREFIX}:{name}:{date}"
 
 
-def _hourly_key(name: str) -> str:
+def _norm_acc(account_login: str | None) -> str | None:
+    """账号归一化：None/"0" → None（旧全局 key 口径）。
+
+    None 表示「无账号维度」（引导期/单账号遗留），"0" 是遗留桶哨兵值但也走
+    全局 key —— 与 record_trade_closed / _get_consecutive_losses 同口径，
+    保证频率/间隔 key 的读端与写端落在同一个 key 上。
+    """
+    return None if account_login in (None, "0") else account_login
+
+
+def _hourly_key(name: str, account_login: str | None = None) -> str:
+    """小时粒度 key。account_login 传入时按账号隔离（评审 I2）。
+
+    频率/间隔闸门此前读全局 key（无账号维度）—— 账号 A 本小时交易 5 次
+    会卡死账号 B 的下单，A 的最后交易时间戳也会压制 B 的最小间隔判断。
+    """
     from app.services.discipline import discipline_now
 
     hour = (discipline_now() - timedelta(hours=22)).strftime("%Y-%m-%dT%H")
-    return f"{_KEY_PREFIX}:{name}:{hour}"
+    _acc = f":{_norm_acc(account_login)}" if _norm_acc(account_login) else ""
+    return f"{_KEY_PREFIX}:{name}:{hour}{_acc}"
 
 
 # ─── Validation Result ───────────────────────────────────────────────────────
@@ -335,18 +351,18 @@ class TradingGuardrails:
                 f"连续亏损 {consecutive_losses} 笔（熔断阈值 {halt}）",
             )
 
-        # 6. Trades per hour
+        # 6. Trades per hour（评审 I2：按账号隔离，账号 A 频率不卡死账号 B）
         trades_per_hour = _env_limit("guardrails_max_trades_per_hour", MAX_TRADES_PER_HOUR)
-        trades_this_hour = await self._get_trades_this_hour()
+        trades_this_hour = await self._get_trades_this_hour(account_login)
         if trades_this_hour >= trades_per_hour:
             return GuardrailResult(
                 False,
                 f"本小时已交易 {trades_this_hour} 次（上限 {trades_per_hour}）",
             )
 
-        # 7. Min time between trades
+        # 7. Min time between trades（评审 I2：按账号隔离）
         min_interval = _env_limit("guardrails_min_interval_seconds", MIN_TIME_BETWEEN_TRADES)
-        last_trade_time = await self._get_last_trade_time()
+        last_trade_time = await self._get_last_trade_time(account_login)
         if last_trade_time:
             elapsed = time.time() - last_trade_time
             if elapsed < min_interval:
@@ -387,20 +403,27 @@ class TradingGuardrails:
         """
         await self.record_order_opened()
 
-    async def record_order_opened(self, channel: str = "manual") -> None:
+    async def record_order_opened(self, channel: str = "manual", account_login: str | None = None) -> None:
         """Record an order open for frequency + interval limits (not P&L outcome).
 
         channel: manual/engine/ai —— 纪律日/周开仓计数按通道分池（评审 2 R5），
         引擎自动单不挤占手动额度。account_login/symbol/direction 由各通道
         调用点传入纪律计数（见 app.services.discipline_gate）。
+
+        account_login（评审 I2）：传入后频率计数与最后交易时间戳按账号隔离，
+        账号 A 的交易不再卡死账号 B 的小时频率/最小间隔闸门。与连亏熔断
+        （record_trade_closed）同口径：None/"0" 归一化为旧全局 key，兼容无
+        账号调用与引导期。
         """
         # Update hourly counter
-        hour_key = _hourly_key("trades")
+        hour_key = _hourly_key("trades", account_login)
         await self.redis.incr(hour_key)
         await self.redis.expire(hour_key, 3600)
 
         # Update last trade time
-        await self.redis.set(f"{_KEY_PREFIX}:last_trade_time", str(time.time()))
+        _acc_login = _norm_acc(account_login)
+        _acc = f":{_acc_login}" if _acc_login else ""
+        await self.redis.set(f"{_KEY_PREFIX}:last_trade_time{_acc}", str(time.time()))
 
     async def record_trade_closed(self, is_win: bool, ticket: int | None = None, account_login: str | None = None) -> None:
         """Record a closed trade outcome for consecutive loss tracking.
@@ -521,15 +544,17 @@ class TradingGuardrails:
                 break
         return count
 
-    async def _get_trades_this_hour(self) -> int:
-        """Get trade count for the current hour."""
-        key = _hourly_key("trades")
+    async def _get_trades_this_hour(self, account_login: str | None = None) -> int:
+        """Get trade count for the current hour（评审 I2：按账号隔离）。"""
+        key = _hourly_key("trades", account_login)
         val = await self.redis.get(key)
         return int(val) if val else 0
 
-    async def _get_last_trade_time(self) -> float | None:
-        """Get timestamp of last trade."""
-        val = await self.redis.get(f"{_KEY_PREFIX}:last_trade_time")
+    async def _get_last_trade_time(self, account_login: str | None = None) -> float | None:
+        """Get timestamp of last trade（评审 I2：按账号隔离）。"""
+        _acc_login = _norm_acc(account_login)
+        _acc = f":{_acc_login}" if _acc_login else ""
+        val = await self.redis.get(f"{_KEY_PREFIX}:last_trade_time{_acc}")
         return float(val) if val else None
 
     async def _get_daily_agent_calls(self) -> int:

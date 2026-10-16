@@ -1208,7 +1208,9 @@ strict_symbol=False,
         try:
             from mcp_server.guardrails import TradingGuardrails
 
-            await TradingGuardrails(self.redis).record_order_opened()
+            await TradingGuardrails(self.redis).record_order_opened(
+                channel="engine", account_login=self.account_login or "0"
+            )
         except Exception as gr_err:
             logger.warning(f"Guardrail order-opened record failed [{self.symbol}]: {gr_err!r}")
         # 纪律日/周开仓计数 + flip 方向记账（引擎通道，评审 2 R5 按通道分池）
@@ -1421,7 +1423,7 @@ strict_symbol=False,
                             )
                         return
                     logger.warning(
-                        f"Position fetch empty and history check failed — skipping sync (possible timeout)"
+                        "Position fetch empty and history check failed — skipping sync (possible timeout)"
                     )
                     return
                 except Exception as e:

@@ -194,9 +194,9 @@ async def test_approved_executes_with_manual_magic(gate, session_patched):
     assert kwargs["comment"].startswith("M")  # [Manual] 前缀清洗
     gate.connector.get_account.assert_awaited()  # record_order_opened 前置的执行已发生
     # 频率计数被更新（否则手动通道对频率限制免疫）——key 走 22:00 UTC 外汇日界
-    from app.services.discipline import discipline_day_key
+    from mcp_server.guardrails import _hourly_key
 
-    hour_key = f"guardrails:trades:{discipline_day_key()}T{(datetime.now(UTC) - timedelta(hours=22)).hour:02d}"
+    hour_key = _hourly_key("trades")
     assert int(await gate.redis.get(hour_key) or 0) == 1
 
 

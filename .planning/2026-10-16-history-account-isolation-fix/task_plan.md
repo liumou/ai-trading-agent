@@ -86,6 +86,8 @@ Phase 3 (Implementation)
 - [x] 反向验证：revert bot.py 过滤/缓存键/POST 账号 → 4 用例失败；revert position_close → 1 用例失败
 - [x] 相关套件 36 passed
 - [x] 全量回归：1342 passed；10 失败全部既有环境性/顺序性（多智能体模型常量、本地 FEISHU_WEBHOOK、ML band 顺序），与改动零交集
+- [x] 代码审查（superpowers:requesting-code-review）处置完成：**I2 频率/节流闸门按账号隔离**（`_norm_acc` 规范化 + `_hourly_key`/`_get_trades_this_hour`/`_get_last_trade_time` 账号参数 + 三通道调用点传账号），补 `test_frequency_isolated_by_account` + 反转验证通过；C1/C2 已带测试；M1 已修；I1/M2/M3/M4 记录并保持（附理由）
+- [x] 收尾：修复 engine.py 既有 F541 lint 错误（无占位符 f-string），本次改动 10 文件 ruff 全通过；相关套件 94 passed；全量回归 1344 passed，10 失败 stash 反证与改动零交集
 - **Status:** complete
 
 ## Phase 7 (用户复报): 手动交易连亏熔断跨账号

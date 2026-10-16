@@ -98,20 +98,23 @@ async def close_position_gated(
     if engine_records:
         engine_records = engine.state == BotState.RUNNING
 
+    # 账号维度（H3）：先取引擎绑定账号，缺失时回退 manager 当前账号。
+    # 必须在 engine_records 分支之前无条件解析 —— 事件写入（第 6 步）在
+    # 所有路径都要用，若只在 not engine_records 分支赋值，引擎 RUNNING
+    # 路径会 UnboundLocalError 导致 [Manual] TRADE_CLOSED 事件整条丢失。
+    account_login = getattr(engine, "account_login", None) if engine else None
+    if not account_login:
+        try:
+            from app.bot.manager import get_global_manager
+
+            mgr = get_global_manager()
+            if mgr is not None:
+                account_login = getattr(mgr, "current_account_login", None)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Manual close [{ticket}] account_login lookup failed: {e!r}")
+
     if not engine_records:
         canonical = get_canonical_symbol(pos_symbol) or pos_symbol
-        # 账号维度（H3）：不传则写入旧 circuit: 前缀 key，与引擎切换后读的
-        # circuit:acc:{login}: 前缀 key 错位 —— 日亏闸门读不到手动平仓的盈亏。
-        account_login = getattr(engine, "account_login", None) if engine else None
-        if not account_login:
-            try:
-                from app.bot.manager import get_global_manager
-
-                mgr = get_global_manager()
-                if mgr is not None:
-                    account_login = getattr(mgr, "current_account_login", None)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"Manual close [{ticket}] account_login lookup failed: {e!r}")
         try:
             await CircuitBreaker(redis, symbol=canonical, account_login=account_login).record_trade_result(
                 profit, ticket=ticket

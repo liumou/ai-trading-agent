@@ -546,7 +546,9 @@ class ManualOrderGate:
                                  latency_ms=latency_ms)
         # 频率/间隔计数（评审 M-2：不调用则手动通道对频率限制免疫）
         try:
-            await ctx.guardrails.record_order_opened()
+            await ctx.guardrails.record_order_opened(
+                channel="manual", account_login=getattr(ctx, "account_login", None)
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"ManualGate record_order_opened failed: {e!r}")
         # 纪律日/周开仓计数 + flip 方向记账（手动通道；account_login/symbol 正确传入）

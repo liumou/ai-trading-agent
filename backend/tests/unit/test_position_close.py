@@ -155,6 +155,41 @@ async def test_close_success_with_engine_skips_accounting(
 
 
 @pytest.mark.asyncio
+async def test_close_success_with_engine_still_writes_event(
+    connector, redis_client, db_session_patched, monkeypatch, live_mode
+):
+    """引擎 RUNNING 路径回归：手动平仓事件必须仍落库且带 engine 绑定账号。
+
+    此前 account_login 只在「无引擎记账」分支内解析，引擎 RUNNING（最常见
+    的引擎托管品种手动平仓路径）跳过该分支，第 6 步事件写入 UnboundLocalError
+    → [Manual] TRADE_CLOSED 事件整条丢失（且被 try/except 静默吞掉）。本用例
+    锁定：事件必须写入，且归属引擎绑定账号。
+    """
+    from app.bot.engine import BotState
+
+    engine = MagicMock()
+    engine.state = BotState.RUNNING
+    engine.account_login = "11111111"
+    monkeypatch.setattr(position_close_module, "_lookup_engine", lambda symbol: engine)
+
+    result = await close_position_gated(connector, redis_client, 111)
+    assert result["closed"] is True
+
+    from sqlalchemy import select
+
+    from app.db.models import BotEvent, BotEventType
+
+    async with db_session_patched() as session:
+        events = (
+            await session.execute(
+                select(BotEvent).where(BotEvent.event_type == BotEventType.TRADE_CLOSED)
+            )
+        ).scalars().all()
+    assert any("[Manual]" in e.message for e in events), "引擎 RUNNING 路径不得丢事件"
+    assert any(e.account_login == "11111111" for e in events), "引擎托管平仓事件须归属引擎账号"
+
+
+@pytest.mark.asyncio
 async def test_close_success_event_stamps_account_login(
     connector, redis_client, db_session_patched, monkeypatch, live_mode
 ):

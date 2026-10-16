@@ -325,6 +325,49 @@ class TestValidateOrderTradeFrequency:
         assert "本小时已交易" in result.reason
 
     @pytest.mark.asyncio
+    async def test_frequency_isolated_by_account(self, guardrails, redis_client):
+        """评审 I2：账号 A 刷满本小时频率不卡死账号 B 的下单闸门。"""
+        acct_a, acct_b = "11111111", "22222222"
+        # A 账号刷满本小时交易次数
+        for _ in range(MAX_TRADES_PER_HOUR):
+            await guardrails.record_order_opened(channel="manual", account_login=acct_a)
+
+        # A 账号应被频率闸门拦截
+        result_a = await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=0,
+            spread=1.5,
+            avg_spread=1.5,
+            account_login=acct_a,
+        )
+        assert result_a.allowed is False
+        assert "本小时已交易" in result_a.reason
+
+        # B 账号不受 A 的频率计数影响
+        result_b = await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=0,
+            spread=1.5,
+            avg_spread=1.5,
+            account_login=acct_b,
+        )
+        assert result_b.allowed is True
+
+        # key 按账号分桶
+        from mcp_server.guardrails import _hourly_key
+
+        assert int(await redis_client.get(_hourly_key("trades", acct_a)) or 0) == MAX_TRADES_PER_HOUR
+        assert int(await redis_client.get(_hourly_key("trades", acct_b)) or 0) == 0
+
+    @pytest.mark.asyncio
     async def test_min_time_between_trades(self, guardrails):
         await guardrails.record_trade(is_win=True)
 
