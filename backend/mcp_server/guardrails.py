@@ -184,6 +184,7 @@ class TradingGuardrails:
         sl: float | None = None,
         tp: float | None = None,
         account_daily_pnl: float | None = None,
+        account_login: str | None = None,
     ) -> GuardrailResult:
         """Validate a trade order against all guardrails.
 
@@ -201,6 +202,10 @@ class TradingGuardrails:
             tp: Take-profit price (None skips validation)
             account_daily_pnl: Today's realized P&L across ALL symbols
                 (账户级日亏，None 跳过——单品种检查可能漏掉分散亏损)
+            account_login: 账号维度（评审 H3）。传入后连亏熔断 key 带
+                ``guardrails:loss_streak:{login}`` 前缀 —— 多账号环境下账号 A
+                连亏不会令账号 B 触达 CONSECUTIVE_LOSS_HALT。None/"0" 保持旧
+                全局 key（兼容无账号调用与引导期）。
         """
         result = await self._validate_order_core(
             symbol=symbol,
@@ -215,6 +220,7 @@ class TradingGuardrails:
             sl=sl,
             tp=tp,
             account_daily_pnl=account_daily_pnl,
+            account_login=account_login,
         )
         if not result.allowed:
             await self._audit_rejection(symbol, result.reason)
@@ -249,6 +255,7 @@ class TradingGuardrails:
         sl: float | None = None,
         tp: float | None = None,
         account_daily_pnl: float | None = None,
+        account_login: str | None = None,
     ) -> GuardrailResult:
         """Core guardrail checks (see :meth:`validate_order` for docs)."""
         # 1. Max lot per trade
@@ -318,8 +325,9 @@ class TradingGuardrails:
                     f"账户当日亏损 {acct_loss_pct:.1%} 超过上限 {daily_loss_limit:.0%}（全品种）",
                 )
 
-        # 5. Consecutive loss halt
-        consecutive_losses = await self._get_consecutive_losses()
+        # 5. Consecutive loss halt（账号维度：record_trade_closed 按账号写
+        #    loss_streak；此处同 key 读取，避免账号 A 连亏误拦账号 B）
+        consecutive_losses = await self._get_consecutive_losses(account_login)
         halt = _env_limit("guardrails_consecutive_loss_halt", CONSECUTIVE_LOSS_HALT)
         if consecutive_losses >= halt:
             return GuardrailResult(
@@ -492,7 +500,13 @@ class TradingGuardrails:
                 return int(val)
             except (TypeError, ValueError):
                 return 0
-        # 回退：日粒度尾部（无 loss_streak key 的旧环境）
+        # 明确账号（非 None/"0"）无自身 streak key → 该账号无连亏记录。
+        # 不得回退全局日粒度 trade_results —— 该列表是全部账号共写（
+        # record_trade_closed 无条件 rpush），回退会把账号 A 的连亏泄漏
+        # 给账号 B（切换账号后 B 被 A 的连亏误拦）。
+        if account_login is not None:
+            return 0
+        # 旧单账号环境（无账号维度）：回退日粒度尾部（旧数据兼容）
         key = _daily_key("trade_results")
         results = await self.redis.lrange(key, 0, -1)
         if not results:

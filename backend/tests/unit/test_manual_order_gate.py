@@ -647,3 +647,41 @@ async def test_llm_reject_preserves_review_evidence(gate, session_patched):
     assert review["review"]["llm"]["verdict"] == "APPROVED"
     assert review["review"]["llm"]["reasoning"] == "sane order"
     gate.connector.place_order.assert_not_awaited()
+
+
+# ─── 连亏情绪规则账号隔离 ───────────────────────────────────────────────
+
+
+def _emotion_ctx(account_login="22222222"):
+    """构造 _emotion_flags 需要的 PreflightContext（最小字段）。"""
+    from app.services.order_preflight import PreflightContext
+
+    return PreflightContext(
+        symbol="GOLD", broker_symbol="GOLD", order_type="BUY",
+        base_lot=0.1, lot=0.1, sl=1900.0, tp=2100.0,
+        account={"balance": 10000.0, "equity": 10000.0, "profit": 0.0},
+        positions=[], tick={"bid": 2000.0, "ask": 2000.5},
+        spread=0.5, avg_spread=0.5, daily_pnl=0.0,
+        entry_ref=2000.0, rollout_mode="live",
+        guardrails=AsyncMock(), profile={}, account_login=account_login,
+    )
+
+
+@pytest.mark.asyncio
+async def test_loss_streak_flag_isolated_by_account(gate, redis_client, connector):
+    """连亏 warn flag 账号隔离：账号 A 连亏不触发账号 B 的 warn。
+    _emotion_flags 读账号隔离的 loss_streak key（而非全局日粒度 trade_results）。"""
+    acct_a, acct_b = "11111111", "22222222"
+    # A 账号连亏 5 笔（record_trade_closed 写 guardrails:loss_streak:{a}）
+    for _ in range(5):
+        from mcp_server.guardrails import TradingGuardrails
+
+        await TradingGuardrails(redis_client).record_trade_closed(is_win=False, account_login=acct_a)
+
+    # B 账号 ctx 触发 _emotion_flags —— 不应产生 loss_streak flag
+    flags_b = await gate._emotion_flags([], _emotion_ctx(acct_b))
+    assert not any(f["flag"] == "loss_streak" for f in flags_b), "B 账号不应看到 A 的连亏"
+
+    # A 账号 ctx —— 应产生 loss_streak warn flag
+    flags_a = await gate._emotion_flags([], _emotion_ctx(acct_a))
+    assert any(f["flag"] == "loss_streak" and f["severity"] == "warn" for f in flags_a)

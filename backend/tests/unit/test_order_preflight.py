@@ -264,6 +264,37 @@ async def test_account_scoped_daily_pnl_key(ok_connector, redis_client, ok_guard
 
 
 @pytest.mark.asyncio
+async def test_validate_order_receives_account_login(ok_connector, redis_client, ok_guardrails, monkeypatch):
+    """账号隔离：preflight 必须把 account_login 透传给 guardrails.validate_order，
+    使连亏熔断按账号读 key —— 否则切换账号后旧账号连亏误拦当前账号。"""
+    _allow_manager(monkeypatch)
+    SYMBOL_PROFILES["GOLD"] = {"pip_value": 1.0, "volume_min": 0.01, "volume_step": 0.01}
+    captured = {}
+
+    async def _capture(**kwargs):
+        captured["account_login"] = kwargs.get("account_login")
+        return SimpleNamespace(allowed=True, reason="ok")
+
+    ok_guardrails.validate_order = _capture
+    pf = await preflight_order(
+        ok_connector,
+        redis_client,
+        ok_guardrails,
+        "GOLD",
+        "BUY",
+        0.1,
+        1900.0,
+        2100.0,
+        strict_symbol=True,
+        account_login="123",
+    )
+    assert pf.ok is True
+    # validate_order 收到账号，且 ctx 也携带（供 manual gate 情绪规则）
+    assert captured["account_login"] == "123"
+    assert pf.ctx.account_login == "123"
+
+
+@pytest.mark.asyncio
 async def test_default_account_login_aligns_with_bootstrap(ok_connector, redis_client, ok_guardrails, monkeypatch):
     """C1 引导期回归:account_login="0"(默认占位)时必须落到无前缀 key
     (circuit:daily_pnl:{symbol}),与引擎引导期无前缀构造对齐 ——

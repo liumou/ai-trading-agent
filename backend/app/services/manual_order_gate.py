@@ -862,18 +862,16 @@ class ManualOrderGate:
                         ),
                     })
 
-        # 连亏计数（guardrails:trade_results:{date}，引擎/AI/手动平仓都会写）
+        # 连亏计数（账号隔离：record_trade_closed 按账号维护 loss_streak，
+        # 跨日序列语义；读当前账号 key，避免切换账号后旧账号连亏污染）。
         try:
-            results = await self.redis.lrange(f"guardrails:trade_results:{now.date().isoformat()}", 0, -1)
-            streak = 0
-            for r in reversed(results):
-                if (r.decode() if isinstance(r, bytes) else str(r)) == "0":
-                    streak += 1
-                else:
-                    break
+            from mcp_server.guardrails import TradingGuardrails as _TG
+
+            account_login = getattr(ctx, "account_login", None) or "0"
+            streak = await _TG(self.redis)._get_consecutive_losses(account_login)
             if streak >= 3:
                 flags.append({"flag": "loss_streak", "severity": "warn",
-                              "detail": f"今日已连续亏损 {streak} 笔"})
+                              "detail": f"已连续亏损 {streak} 笔"})
         except Exception:  # noqa: BLE001
             pass
 

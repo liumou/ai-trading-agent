@@ -124,6 +124,8 @@ async def close_position_gated(
             logger.error(f"Manual close [{ticket}] guardrail record failed: {e!r}")
 
     # 6. Event + WS push ([Manual] prefix distinguishes user-initiated closes).
+    #    账号归属（评审 H1）：上方已解析出 account_login，事件必须带上 ——
+    #    否则手动平仓事件 account_login 恒空，切换账号后仍回看。
     from app.db.models import BotEvent, BotEventType
 
     message = f"[Manual] CLOSE {pos_symbol} ticket={ticket} P&L=${profit:+.2f}"
@@ -131,7 +133,13 @@ async def close_position_gated(
         from app.db.session import async_session
 
         async with async_session() as session:
-            session.add(BotEvent(event_type=BotEventType.TRADE_CLOSED, message=message))
+            session.add(
+                BotEvent(
+                    event_type=BotEventType.TRADE_CLOSED,
+                    message=message,
+                    account_login=account_login or None,
+                )
+            )
             await session.commit()
     except Exception as e:  # noqa: BLE001
         logger.error(f"Manual close [{ticket}] event log failed: {e!r}")

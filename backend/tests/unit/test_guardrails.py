@@ -264,6 +264,46 @@ class TestValidateOrderConsecutiveLosses:
         losses = await guardrails._get_consecutive_losses()
         assert losses == 0
 
+    @pytest.mark.asyncio
+    async def test_consecutive_losses_isolated_by_account(self, guardrails):
+        """账号隔离：账号 A 连亏不触发账号 B 的连亏熔断（切换账号后 B 可正常下单）。"""
+        acct_a, acct_b = "11111111", "22222222"
+        # A 账号连亏达到阈值
+        for _ in range(CONSECUTIVE_LOSS_HALT):
+            await guardrails.record_trade_closed(is_win=False, account_login=acct_a)
+
+        # B 账号连亏计数应为 0
+        assert await guardrails._get_consecutive_losses(acct_b) == 0
+
+        # B 账号 validate_order（传 account_login）不触发连亏熔断
+        result = await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=0,
+            spread=1.5,
+            avg_spread=1.5,
+            account_login=acct_b,
+        )
+        assert result.allowed is True
+
+        # 但 A 账号 validate_order（传 account_login）触发连亏熔断
+        result_a = await guardrails.validate_order(
+            symbol="GOLD",
+            lot=0.1,
+            order_type="BUY",
+            current_positions=[],
+            account_balance=10000,
+            daily_pnl=0,
+            spread=1.5,
+            avg_spread=1.5,
+            account_login=acct_a,
+        )
+        assert result_a.allowed is False
+        assert "连续亏损" in result_a.reason
+
 
 class TestValidateOrderTradeFrequency:
     @pytest.mark.asyncio

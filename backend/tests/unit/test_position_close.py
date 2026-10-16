@@ -155,6 +155,40 @@ async def test_close_success_with_engine_skips_accounting(
 
 
 @pytest.mark.asyncio
+async def test_close_success_event_stamps_account_login(
+    connector, redis_client, db_session_patched, monkeypatch, live_mode
+):
+    """手动平仓 BotEvent 必须带当前账号（否则无归属事件跨账号可见）。
+
+    无引擎品种走 manager.current_account_login 解析账号；事件若不带
+    account_login，切换账号后仍会在旧账号视图下回看手动平仓记录。
+    """
+    monkeypatch.setattr(position_close_module, "_lookup_engine", lambda symbol: None)
+    from app.bot import manager as manager_module
+
+    fake_mgr = MagicMock()
+    fake_mgr.current_account_login = "22222222"
+    monkeypatch.setattr(manager_module, "get_global_manager", lambda: fake_mgr)
+
+    result = await close_position_gated(connector, redis_client, 111)
+    assert result["closed"] is True
+
+    from sqlalchemy import select
+
+    from app.db.models import BotEvent, BotEventType
+
+    async with db_session_patched() as session:
+        row = (
+            await session.execute(
+                select(BotEvent).where(BotEvent.event_type == BotEventType.TRADE_CLOSED)
+            )
+        ).scalars().first()
+    assert row is not None
+    assert "[Manual]" in row.message
+    assert row.account_login == "22222222", "手动平仓事件必须绑定当前账号"
+
+
+@pytest.mark.asyncio
 async def test_close_with_paused_engine_records_accounting(
     connector, redis_client, db_session_patched, monkeypatch, live_mode
 ):

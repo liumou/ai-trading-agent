@@ -43,6 +43,9 @@ class PreflightContext:
     # 账户级日亏（聚合全部在线品种，order_preflight 4b 步已算）——
     # SystemOne loss_chase_combo 规则用；单品种 daily_pnl 会漏掉分散亏损。
     account_daily_pnl: float | None = None
+    # 账号维度（连亏/频率等 guardrails 计数按账号隔离）：调用方传入的
+    # account_login，供下游（manual gate 情绪规则等）读账号隔离的 Redis key。
+    account_login: str | None = None
 
 
 @dataclass
@@ -322,6 +325,7 @@ async def preflight_order(
         sl=sl,
         tp=tp,
         account_daily_pnl=account_daily_pnl,
+        account_login=account_login,
     )
     if not result.allowed:
         return _reject(result.reason, "guardrail")
@@ -448,5 +452,6 @@ async def preflight_order(
         rollout_mode=rollout_mode,
         guardrails=guardrails,
         profile=profile,
+        account_login=account_login,
     )
     return PreflightOutcome(ok=True, ctx=ctx)

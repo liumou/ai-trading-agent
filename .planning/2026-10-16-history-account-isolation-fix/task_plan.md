@@ -66,7 +66,43 @@ Phase 3 (Implementation)
 - [x] 反向验证：临时置 owned=None → 3 用例全失败，证明测试真实覆盖隔离逻辑
 - **Status:** complete
 
-## Errors Encountered
+## Phase 8 (任务4): 全风控组件账号隔离审计
+
+> 用户请求：「请检查其他的风控查控是否隔离了账号?请给我一个完整检查报告.」
+> 审计范围：全部风控/查控组件的 Redis key + DB 查询 + Bridge/引擎绑定维度。
+
+### 审计结论
+- **已隔离 ✅**：CircuitBreaker（circuit:acc:{login}:*）、DisciplineGate（全部 key 含账号）、DisciplineStats、guardrails 连亏（Phase 7 修复）、history/analytics/activity、positions（engine.executor 天然绑定）、portfolio（bridge 天然绑定）、trade_reviews、manual_order_gate 连亏、preflight spread_history（按 symbol 非账号数据）
+- **泄漏 ❌（3 处，均 BotEvent 相关）**：
+  1. `bot.py GET /api/bot/events`（line 413）— BotEvent 查询未过滤 account_login + 缓存 key `cache:bot_events:{days}:{type}:{limit}` 无账号维度（dashboard 首页调用，与 activity.py 同类泄漏）
+  2. `bot.py POST /api/bot/events`（line 476）— 创建事件未设 account_login（journal.py MCP 工具调用）→ 无归属事件切换账号后仍显示
+  3. `position_close.py:134` — 手动平仓 BotEvent 未传 account_login（上方已解析出账号，一行遗漏）
+- **边界 ⚠️（轻微，建议关注）**：guardrails 频率/节流 key（`guardrails:trades:{hour}`、`guardrails:last_trade_time`）跨账号共享——账号切换后旧账号交易频率污染新账号节流判断（"本小时已交易 N 次"），影响轻微（仅节流计数，不泄露数据、不阻断风控）
+- **有意设计 ℹ️**：discipline:cfg:* 全局配置、session:agent:{symbol}:{date}（AI 记忆按 symbol）、strategy_switch（引擎级按 symbol）、PriceAlert 用户级配置、新闻/宏观/行情全局共享、ai_usage（全局 AI 资源预算）、metrics（观测指标）、quant（placeholder 假数据非真实持仓）、LLM circuit breaker（基础设施）
+- [x] bot.py `GET /api/bot/events`：DB 按 owned 过滤（`IS NULL OR IN owned`）+ 缓存 key 加账号维度 `cache:bot_events:{login}:...`
+- [x] bot.py `POST /api/bot/events`：事件打上 `manager.current_account_login`（无 manager 保持 NULL 不臆造）
+- [x] position_close.py：手动平仓 BotEvent 传 `account_login`（复用上方已解析的账号）
+- [x] 补测试：test_api_bot_events_isolation.py 6 用例 + test_position_close.py 1 用例（事件账号归属）
+- [x] 反向验证：revert bot.py 过滤/缓存键/POST 账号 → 4 用例失败；revert position_close → 1 用例失败
+- [x] 相关套件 36 passed
+- [x] 全量回归：1342 passed；10 失败全部既有环境性/顺序性（多智能体模型常量、本地 FEISHU_WEBHOOK、ML band 顺序），与改动零交集
+- **Status:** complete
+
+## Phase 7 (用户复报): 手动交易连亏熔断跨账号
+
+> 用户复报「拦截原因: 连续亏损 10 笔（熔断阈值 3）」—— 手动交易风控仍跨账号。
+> 根因：`validate_order` 连亏熔断读**全局 key** `guardrails:loss_streak`
+> （无账号维度），且 `_get_consecutive_losses` 在账号无自身 key 时**回退到
+> 全账号共写的日粒度 trade_results 列表**——账号 A 连亏泄漏给账号 B。
+
+- [x] PreflightContext 新增 account_login 字段（order_preflight.py）
+- [x] preflight_order 构造 ctx 时存入 account_login，并透传给 validate_order
+- [x] validate_order / _validate_order_core 新增 account_login 参数，连亏熔断按账号读 key
+- [x] _get_consecutive_losses：明确账号无自身 streak key → 返回 0（不再回退全局 trade_results）
+- [x] manual_gate._emotion_flags warn 级连亏改用账号隔离 key（ctx.account_login）
+- [x] 补测试：guardrails 账号隔离 1 用例 + manual_gate 连亏隔离 1 用例 + preflight 透传 1 用例
+- [x] 反向验证：revert guardrails 改动 → 2 个隔离测试失败，证明真实覆盖
+- **Status:** complete
 | Error | Resolution |
 |-------|------------|
 | 既有 test_get_trades_account_login 失败 | 新隔离逻辑生效——更新该用例为登记 active 账号 |

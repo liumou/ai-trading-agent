@@ -406,11 +406,42 @@ async def get_events(
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get bot events — signals, blocks, trades, errors."""
+    """Get bot events — signals, blocks, trades, errors.
+
+    账号隔离：事件日志按「当前活跃账号 + '0' 遗留桶」过滤（与
+    activity.py 同口径）。BotEvent.account_login 可空（早期事件无归属），
+    仅对非空值过滤；缓存 key 带账号维度，避免切换账号后 10s 内读到
+    旧账号事件缓存。
+    """
+
+    async def _resolve_owned() -> set[str]:
+        from sqlalchemy import select as _select
+
+        from app.db.models import MT5Account
+
+        owned: set[str] = {"0"}
+        try:
+            login = (await db.execute(
+                _select(MT5Account.login).where(
+                    MT5Account.is_active.is_(True),
+                    MT5Account.is_deleted.is_(False),
+                )
+            )).scalar_one_or_none()
+        except Exception:
+            return owned
+        if login is not None:
+            owned.add(str(login))
+        return owned
 
     async def _fetch():
+        owned = await _resolve_owned()
         cutoff = datetime.utcnow() - timedelta(days=days)
         query = select(BotEvent).where(BotEvent.created_at >= cutoff)
+        # BotEvent.account_login 可空：早期事件无归属，不误杀；仅过滤有归属的
+        if owned:
+            query = query.where(
+                (BotEvent.account_login.is_(None)) | (BotEvent.account_login.in_(owned))
+            )
         if event_type:
             query = query.where(BotEvent.event_type == event_type)
         query = query.order_by(desc(BotEvent.created_at)).limit(limit)
@@ -431,12 +462,17 @@ async def get_events(
             "total": len(events),
         }
 
+    # 缓存 key 带账号维度（评审 H4）：切换账号后不得读到旧账号事件
+    from app.bot.manager import get_global_manager
+
+    _manager = get_global_manager()
+    _login = str(getattr(_manager, "current_account_login", "0") or "0") if _manager else "0"
     redis_client = getattr(request.app.state, "redis", None)
     if redis_client is None:
         return await _fetch()
     return await cached(
         redis_client,
-        f"cache:bot_events:{days}:{event_type or ''}:{limit}",
+        f"cache:bot_events:{_login}:{days}:{event_type or ''}:{limit}",
         10,
         _fetch,
     )
@@ -473,7 +509,15 @@ async def post_event(
             parts.append(str(decision)[:500])
     message = " ".join(parts) or "agent_event"
 
-    event = BotEvent(event_type=etype, message=message[:1000])
+    # 账号归属（评审 H4）：事件必须绑定当前账号，否则切换账号后无归属事件
+    # （account_login IS NULL）在所有账号下都可见 —— MCP journal 写入的
+    # AI 决策事件此前恒为空，构成跨账号回看泄漏。
+    from app.bot.manager import get_global_manager
+
+    _mgr = get_global_manager()
+    _login = getattr(_mgr, "current_account_login", None) if _mgr else None
+
+    event = BotEvent(event_type=etype, message=message[:1000], account_login=_login or None)
     db.add(event)
     await db.commit()
     await db.refresh(event)
