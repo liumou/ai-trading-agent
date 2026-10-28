@@ -72,6 +72,7 @@ export const updateSettings = (data: {
   fixed_lot?: number;
   lot_mode?: "fixed" | "auto";
   enable_auto_strategy_switch?: boolean;
+  feishu_send_market_image?: boolean;
 }) => api.put("/api/bot/settings", data);
 export const getAccount = () => api.get("/api/bot/account");
 export const getBotEvents = (params?: { days?: number; event_type?: string; limit?: number }) =>

@@ -87,6 +87,7 @@ class SettingsUpdate(BaseModel):
     fixed_lot: float | None = Field(None, ge=0.01, le=1.0)
     lot_mode: Literal["fixed", "auto"] | None = None
     enable_auto_strategy_switch: bool | None = None
+    feishu_send_market_image: bool | None = None
 
 
 @router.post("/start")
@@ -349,6 +350,19 @@ async def update_settings(data: SettingsUpdate, request: Request, db: AsyncSessi
             settings.enable_auto_strategy_switch = data.enable_auto_strategy_switch
         except Exception as e:
             logger.debug(f"Redis enable_auto_strategy_switch write failed: {e}")
+
+    # Persist feishu market-image toggle to Redis + settings 实例（KlineSender 每 15 分钟
+    # 轮询 settings.feishu_send_market_image，运行时切换免重启，对齐 auto_strategy_switch 模式）
+    if data.feishu_send_market_image is not None:
+        try:
+            engine = _get_engine()
+            await engine.redis.set(
+                "feishu_send_market_image",
+                "1" if data.feishu_send_market_image else "0",
+            )
+            settings.feishu_send_market_image = data.feishu_send_market_image
+        except Exception as e:
+            logger.debug(f"Redis feishu_send_market_image write failed: {e}")
 
     await log_audit(
         db,

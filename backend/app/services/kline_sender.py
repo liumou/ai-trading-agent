@@ -66,6 +66,7 @@ class KlineSender:
         engines_provider,
         market_open=None,
         night_check=None,
+        enabled_provider=None,
     ):
         self.feishu_notifier = feishu_notifier
         self.uploader = uploader
@@ -73,6 +74,9 @@ class KlineSender:
         self.market_open = market_open or self._default_market_open
         # 夜窗判定可注入（测试隔离真实时间；生产默认用实时 Asia/Shanghai 墙钟）
         self.night_check = night_check or is_night_window
+        # 总开关：发送行情图片到飞书（默认关闭，读 settings.feishu_send_market_image）。
+        # 可注入（测试用 lambda: True），生产默认从 settings 读。
+        self.enabled_provider = enabled_provider or self._default_enabled
         # 并发信号量：单轮最多 CONCURRENCY_LIMIT 个品种并行处理
         self._semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
         # 上传器未配置时只告警一次（对齐 price_alert_service 的一次性告警，防每 15 分钟刷屏）
@@ -84,11 +88,21 @@ class KlineSender:
 
         return is_market_open(symbol)
 
+    @staticmethod
+    def _default_enabled() -> bool:
+        """总开关默认值：读 settings.feishu_send_market_image（默认关闭）。"""
+        from app.config import settings
+
+        return settings.feishu_send_market_image
+
     async def send_all(self) -> None:
         """遍历启用且有行情的品种，为每个品种发送 M15 + H1 两张 K 线图。
 
-        夜窗直接跳过；飞书未启用或上传器未配置时记录一次告警后跳过。
+        夜窗直接跳过；总开关关闭时跳过；飞书未启用或上传器未配置时记录一次告警后跳过。
         """
+        if not self.enabled_provider():
+            logger.debug("Kline sender skipped: feishu_send_market_image disabled")
+            return
         if not self.feishu_notifier.enabled:
             logger.debug("Kline sender skipped: feishu notifier disabled")
             return

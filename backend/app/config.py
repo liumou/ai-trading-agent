@@ -403,6 +403,9 @@ class Settings(BaseSettings):
     feishu_app_id: str = ""  # 应用 App ID
     feishu_app_secret: str = ""  # 应用 App Secret
 
+    # 发送品种行情图片（K 线图）到飞书的总开关，默认关闭
+    feishu_send_market_image: bool = False
+
     # FRED API (macro data)
     fred_api_key: str = ""
 

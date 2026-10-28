@@ -218,6 +218,7 @@ class BotManager:
             "active_count": running,
             "total_count": len(self.engines),
             "enable_auto_strategy_switch": settings.enable_auto_strategy_switch,
+            "feishu_send_market_image": settings.feishu_send_market_image,
         }
 
     async def get_active_positions(self) -> dict[str, list[dict]]:

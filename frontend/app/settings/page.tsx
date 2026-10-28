@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Shield, AlertTriangle, CheckCircle2, XCircle, Info, RefreshCw, Loader2,
+  Shield, AlertTriangle, CheckCircle2, XCircle, Info, RefreshCw, Loader2, BarChart3,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import {
@@ -76,6 +76,7 @@ export default function SettingsPage() {
   const [confirmLive, setConfirmLive] = useState(false);
   const [strategies, setStrategies] = useState<{ name: string; worst_case: string }[]>([]);
   const [autoStrategySwitch, setAutoStrategySwitch] = useState(false);
+  const [feishuMarketImage, setFeishuMarketImage] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -94,6 +95,9 @@ export default function SettingsPage() {
       }
       if (statusRes?.data?.enable_auto_strategy_switch !== undefined) {
         setAutoStrategySwitch(statusRes.data.enable_auto_strategy_switch);
+      }
+      if (statusRes?.data?.feishu_send_market_image !== undefined) {
+        setFeishuMarketImage(statusRes.data.feishu_send_market_image);
       }
       if (readinessRes?.data) {
         setChecks(readinessRes.data.checks || []);
@@ -206,6 +210,38 @@ export default function SettingsPage() {
                   await updateSettings({ enable_auto_strategy_switch: v });
                   setAutoStrategySwitch(v);
                   showSuccess(v ? t("autoSwitchEnabled") : t("autoSwitchDisabled"));
+                } catch {
+                  showError(t("settingUpdateFailed"));
+                }
+              }}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Feishu Market Image ───────────────────────────────── */}
+      <Card>
+        <CardHeader className="p-4 sm:p-6">
+          <CardTitle className="text-sm font-bold flex items-center gap-2">
+            <BarChart3 className="size-4" />
+            {t("feishuMarketImage")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm">{t("feishuMarketImageDesc")}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {t("feishuMarketImageNote")}
+              </p>
+            </div>
+            <Switch
+              checked={feishuMarketImage}
+              onCheckedChange={async (v) => {
+                try {
+                  await updateSettings({ feishu_send_market_image: v });
+                  setFeishuMarketImage(v);
+                  showSuccess(v ? t("feishuMarketImageEnabled") : t("feishuMarketImageDisabled"));
                 } catch {
                   showError(t("settingUpdateFailed"));
                 }

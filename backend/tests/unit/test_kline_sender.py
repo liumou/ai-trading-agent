@@ -89,6 +89,7 @@ def _build_sender(
     uploader=None,
     market_open=None,
     night_check=None,
+    enabled_provider=None,
 ) -> KlineSender:
     return KlineSender(
         feishu_notifier=notifier or FakeNotifier(),
@@ -97,6 +98,9 @@ def _build_sender(
         market_open=market_open or _noop_market_open,
         # 默认不在夜窗，主链路测试不受真实时间影响；夜窗场景单独注入
         night_check=night_check or (lambda: False),
+        # 默认开启行情图片发送（绕过 settings.feishu_send_market_image 默认关闭）；
+        # 关闭场景测试单独注入 enabled_provider=lambda: False
+        enabled_provider=enabled_provider or (lambda: True),
     )
 
 
@@ -152,6 +156,16 @@ class TestSendAll:
         sender = _build_sender({"GOLD": FakeEngine("GOLD")}, uploader=FakeUploader(enabled=False))
         await sender.send_all()
         assert sender.feishu_notifier.sent_cards == []
+
+    async def test_disabled_flag_skips_all(self):
+        # 总开关关闭（feishu_send_market_image=False）：不发送任何卡片，优先于其他检查
+        sender = _build_sender(
+            {"GOLD": FakeEngine("GOLD")},
+            enabled_provider=lambda: False,
+        )
+        notifier = sender.feishu_notifier
+        await sender.send_all()
+        assert notifier.sent_cards == []
 
     async def test_uploader_disabled_warns_once(self):
         # 上传器未配置：连续触发只打一次告警（对齐 price_alert_service 的一次性告警）
